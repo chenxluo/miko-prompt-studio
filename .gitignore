@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+dist-electron/
+release/
+
+# Data & runtime
+*.db
+*.db-journal
+master.key
+.uploads/
+cache/
+test_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Vite
+frontend/dist/
+
+# Electron
+electron/dist-electron/

@@ -1,0 +1,44 @@
+{
+  "name": "miko-prompt-studio",
+  "version": "0.1.0",
+  "description": "Image annotation lab - prompt, API, cost, and result quality test bench",
+  "main": "electron/dist-electron/main.js",
+  "scripts": {
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 21317 --reload",
+    "dev:electron": "tsc -p electron/tsconfig.json && electron .",
+    "dev": "concurrently -k -n BACKEND,FRONTEND,ELECTRON -c cyan,teal,yellow \"npm:dev:backend\" \"npm:dev:frontend\" \"wait-on tcp:21317 tcp:5173 && npm run dev:electron\"",
+    "build:frontend": "cd frontend && npm run build",
+    "build:electron": "tsc -p electron/tsconfig.json",
+    "build": "npm run build:frontend && npm run build:electron",
+    "start": "npm run build:electron && electron .",
+    "pack": "npm run build && electron-builder --dir"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.0",
+    "concurrently": "^9.0.0",
+    "wait-on": "^8.0.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  },
+  "build": {
+    "appId": "com.miko.prompt-studio",
+    "productName": "Miko Prompt Studio",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "frontend/dist/**/*",
+      "electron/dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend"
+      }
+    ]
+  }
+}
