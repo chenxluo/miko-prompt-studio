@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import math
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -140,9 +141,38 @@ def _apply_transform(image: Image.Image, config: ImagePreprocessConfig) -> Image
             method=Image.Resampling.LANCZOS,
             centering=(0.5, 0.5),
         )
+    if mode == "limit_total_pixels" and config.target_pixels:
+        return resize_to_total_pixels(image, config.target_pixels)
     if mode in {"original", "convert_format"}:
         return image
     return image
+
+
+def resize_to_total_pixels(image: Image.Image, target_pixels: int) -> Image.Image:
+    """Proportionally downscale an image so width * height does not exceed target_pixels."""
+
+    if target_pixels <= 0:
+        raise ValueError("target_pixels must be greater than zero.")
+
+    width, height = image.size
+    current_pixels = width * height
+    if current_pixels <= target_pixels or current_pixels <= 0:
+        return image
+
+    scale = math.sqrt(target_pixels / current_pixels)
+    new_width = max(1, round(width * scale))
+    new_height = max(1, round(height * scale))
+
+    # Rounding both dimensions can overshoot tiny targets; reduce the larger side if needed.
+    while new_width * new_height > target_pixels and (new_width > 1 or new_height > 1):
+        if new_width >= new_height and new_width > 1:
+            new_width -= 1
+        elif new_height > 1:
+            new_height -= 1
+        else:
+            break
+
+    return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
 
 def _resize_by_edge(image: Image.Image, edge: int, *, use_long: bool) -> Image.Image:

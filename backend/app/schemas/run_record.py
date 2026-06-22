@@ -16,7 +16,7 @@ later edited.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -78,6 +78,8 @@ class RunSummary(BaseModel):
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_image_count: int = 0
+    total_latency_ms: int = 0
+    avg_latency_ms: float = 0.0
 
 
 class RunSession(TimestampedModel):
@@ -131,6 +133,7 @@ class NormalizedResponse(BaseModel):
     text: str = ""
     finish_reason: str | None = None
     safety: SafetyInfo = Field(default_factory=SafetyInfo)
+    reasoning_text: str | None = None
 
 
 class ParsedResponse(BaseModel):
@@ -140,6 +143,15 @@ class ParsedResponse(BaseModel):
     parsed: Any = None
     parse_status: ParseStatus = ParseStatus.NOT_PARSED
     parse_errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class StreamEvent(BaseModel):
+    """Server-sent event emitted while a provider response is streaming."""
+
+    event: Literal["reasoning", "content", "usage", "done", "error"]
+    delta: str | None = None
+    usage: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------

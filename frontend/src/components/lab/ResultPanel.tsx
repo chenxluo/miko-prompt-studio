@@ -1,16 +1,21 @@
 import {
   AlertCircle,
   AlertTriangle,
+  Brain,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Coins,
   Cpu,
   ImageIcon,
   Layers,
   Loader2,
+  Sparkles,
   Terminal,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useState } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 import { useI18n } from '../../i18n';
 import { useLabStore } from '../../store/labStore';
@@ -24,7 +29,7 @@ export function ResultPanel() {
 
   if (isRunning && !lastRunItem) {
     return (
-      <div className="panel flex min-h-[12rem] flex-col items-center justify-center gap-3 p-6">
+      <div className="panel flex flex-1 flex-col items-center justify-center gap-3 p-6">
         <Loader2 size={28} className="animate-spin text-accent" />
         <p className="text-sm text-ink-muted">{t('result.runningExperiment')}</p>
       </div>
@@ -33,7 +38,7 @@ export function ResultPanel() {
 
   if (!lastRunItem) {
     return (
-      <div className="panel flex min-h-[12rem] flex-col items-center justify-center gap-3 p-6">
+      <div className="panel flex flex-1 flex-col items-center justify-center gap-3 p-6">
         <Terminal size={28} className="text-ink-dim" />
         <p className="text-sm text-ink-muted">
           {t('result.runToSee')}
@@ -56,6 +61,8 @@ export function ResultPanel() {
     typeof response.parse_status === 'string'
       ? response.parse_status
       : undefined;
+
+  const reasoningText = extractReasoningText(response);
 
   return (
     <div className="panel flex flex-col overflow-hidden">
@@ -92,22 +99,23 @@ export function ResultPanel() {
           </div>
         )}
 
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
-            <Terminal size={12} />
-            {t('result.raw')}
+        {isRunning && (
+          <div className="flex items-center gap-2 rounded-md border border-accent/20 bg-accent/5 px-3 py-2 text-xs text-accent">
+            <Loader2 size={12} className="animate-spin" />
+            {t('result.streaming')}
           </div>
-          <pre className="max-h-64 overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-            {rawText ?? t('result.noRawOutput')}
-          </pre>
-        </div>
+        )}
+
+        <ReasoningBlock reasoningText={reasoningText} />
+
+        <CollapsibleRawOutput rawText={rawText} />
 
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
             <CheckCircle2 size={12} />
             {t('result.parsed')}
           </div>
-          <ParsedOutputView parsed={parsed} parseStatus={parseStatus} />
+          <ParsedOutputView parsed={parsed} parseStatus={parseStatus} fallbackText={rawText} />
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -115,6 +123,90 @@ export function ResultPanel() {
           <CostBlock cost={cost} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function extractReasoningText(response: Record<string, unknown>): string | undefined {
+  const normalized = response.normalized_response;
+  if (normalized && typeof normalized === 'object') {
+    const value = (normalized as Record<string, unknown>).reasoning_text;
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+  const value = response.reasoning_text;
+  if (typeof value === 'string' && value.trim()) {
+    return value;
+  }
+  return undefined;
+}
+
+function ReasoningBlock({ reasoningText }: { reasoningText: string | undefined }) {
+  const { t } = useI18n();
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (!reasoningText) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setIsExpanded((prev) => !prev)}
+        className="flex items-center justify-between rounded-md border border-accent/20 bg-accent/5 px-3 py-2 text-left transition-colors hover:border-accent/30 hover:bg-accent/10"
+      >
+        <div className="flex items-center gap-2 text-xs font-medium text-accent">
+          <Sparkles size={12} />
+          <Brain size={14} />
+          <span>{t('result.reasoning')}</span>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-ink-muted">
+          <span>{isExpanded ? t('result.hideReasoning') : t('result.showReasoning')}</span>
+          <ChevronDown
+            size={14}
+            className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+          />
+        </div>
+      </button>
+      {isExpanded && (
+        <div className="markdown-body overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 text-sm text-ink">
+          <ReactMarkdown>{reasoningText}</ReactMarkdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CollapsibleRawOutput({ rawText }: { rawText: string | undefined }) {
+  const { t } = useI18n();
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setIsExpanded((prev) => !prev)}
+        className="flex items-center justify-between rounded-md border border-surface-800 bg-surface-950 px-3 py-2 text-left transition-colors hover:border-surface-700 hover:bg-surface-800"
+      >
+        <div className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
+          <Terminal size={12} />
+          {t('result.raw')}
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-ink-muted">
+          <span>{isExpanded ? t('result.hideRaw') : t('result.showRaw')}</span>
+          <ChevronDown
+            size={14}
+            className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+          />
+        </div>
+      </button>
+      {isExpanded && (
+        <pre className="overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
+          {rawText ?? t('result.noRawOutput')}
+        </pre>
+      )}
     </div>
   );
 }
@@ -155,25 +247,33 @@ function StatusBadge({ status }: { status: string }) {
 function ParsedOutputView({
   parsed,
   parseStatus,
+  fallbackText,
 }: {
   parsed: unknown;
   parseStatus: string | undefined;
+  fallbackText: string | undefined;
 }) {
   const { t } = useI18n();
-  if (parseStatus === 'parse_failed') {
-    return (
-      <div className="rounded-md bg-danger/10 px-3 py-3 text-sm text-danger">
-        <div className="mb-1 flex items-center gap-1.5 font-semibold">
-          <AlertTriangle size={14} />
-          {t('result.parseFailed')}
+
+  if (parseStatus === 'not_parsed' || parseStatus === 'parse_failed') {
+    const text = typeof parsed === 'string' ? parsed : fallbackText;
+    if (text) {
+      return (
+        <div className="markdown-body overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 text-sm text-ink">
+          <ReactMarkdown>{text}</ReactMarkdown>
         </div>
+      );
+    }
+    return (
+      <div className="rounded-md border border-surface-800 bg-surface-950 p-3 text-xs text-ink-dim">
+        {t('result.notParsed')}
       </div>
     );
   }
 
   if (parseStatus === 'parsed' && parsed !== undefined) {
     return (
-      <pre className="max-h-64 overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
+      <pre className="overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
         {formatParsedOutput(parsed)}
       </pre>
     );
@@ -187,7 +287,7 @@ function ParsedOutputView({
           {t('result.partiallyParsed')}
         </div>
         {parsed !== undefined && (
-          <pre className="mt-2 max-h-48 overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
+          <pre className="mt-2 overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
             {formatParsedOutput(parsed)}
           </pre>
         )}
@@ -310,12 +410,19 @@ function CostMetric({ label, value }: { label: string; value: number }) {
 }
 
 function findLatencyMs(item: {
+  latency_ms?: number | null;
   response: Record<string, unknown>;
 }): number | undefined {
+  // Prefer the top-level latency_ms field persisted on RunItem
+  if (typeof item.latency_ms === 'number') {
+    return item.latency_ms;
+  }
+  // Fallback: check response.latency_ms (legacy location)
   const response = item.response;
   if (typeof response.latency_ms === 'number') {
     return response.latency_ms;
   }
+  // Fallback: check response.attempt.latency_ms (deep legacy location)
   const attempt = response.attempt;
   if (attempt && typeof attempt === 'object') {
     const attemptRecord = attempt as Record<string, unknown>;

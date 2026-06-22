@@ -67,13 +67,14 @@ class ImagePreprocessConfig(BaseModel):
     affects image token cost, bbox coordinates, and output quality.
     """
 
-    mode: str = "original"  # original | resize_long_edge | resize_short_edge | fit_within_box | center_crop | convert_format
+    mode: str = "original"  # original | resize_long_edge | resize_short_edge | fit_within_box | center_crop | convert_format | limit_total_pixels
     long_edge: int | None = None
     short_edge: int | None = None
     box_width: int | None = None
     box_height: int | None = None
     format: str | None = None  # jpeg | png | webp
     quality: int | None = None  # 1-100 for jpeg/webp
+    target_pixels: int | None = None
 
 
 class ResolvedImage(BaseModel):

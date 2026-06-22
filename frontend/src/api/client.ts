@@ -7,12 +7,14 @@ import type {
   Prompt,
   RunSession,
   SampleRecord,
+  Task,
   UploadImageResponse,
 } from '../types';
 import type {
   CreateModelConfigPayload,
   CreatePricingPayload,
   SavePromptPayload,
+  SaveTaskPayload,
   UpdateReviewPayload,
 } from './payloads';
 
@@ -139,7 +141,8 @@ export async function listProviders(): Promise<{ providers: ProviderMetadata[] }
 }
 
 export interface FetchModelsPayload {
-  adapter_id: string;
+  provider_config_id?: string;
+  adapter_id?: string;
   api_key?: string;
   base_url?: string | null;
 }
@@ -166,6 +169,9 @@ export interface ProviderConfig {
   base_url: string | null;
   api_key_set: boolean;
   api_key_masked: string;
+  cached_models: string[];
+  selected_models: string[];
+  models_cached_at: string | null;
   notes: string;
   created_at: string;
 }
@@ -175,6 +181,7 @@ export interface SaveProviderConfigPayload {
   adapter_id?: string;
   base_url?: string | null;
   api_key?: string | null;
+  selected_models?: string[];
   notes?: string;
   provider_config_id?: string | null;
 }
@@ -191,6 +198,9 @@ export async function saveProviderConfig(
   adapter_id: string;
   base_url: string | null;
   api_key_set: boolean;
+  cached_models: string[];
+  selected_models: string[];
+  models_cached_at: string | null;
   created: boolean;
 }> {
   return request<
@@ -200,6 +210,9 @@ export async function saveProviderConfig(
       adapter_id: string;
       base_url: string | null;
       api_key_set: boolean;
+      cached_models: string[];
+      selected_models: string[];
+      models_cached_at: string | null;
       created: boolean;
     }
   >('POST', '/api/provider-configs', payload);
@@ -232,11 +245,106 @@ export interface LabRunPayload {
   provider_options?: Record<string, unknown>;
   output_contract?: Record<string, unknown>;
   pricing_profile_id?: string | null;
+  image_resolution_enabled?: boolean;
+  image_resolution_target?: number;
   run_name?: string;
 }
 
 export async function runLab(payload: LabRunPayload): Promise<RunSession> {
   return request<RunSession>('POST', '/api/lab/run', payload);
+}
+
+export interface LabStreamEvent {
+  event: 'reasoning' | 'content' | 'usage' | 'done' | 'error';
+  delta?: string | null;
+  usage?: Record<string, unknown> | null;
+  error?: Record<string, unknown> | null;
+}
+
+export async function runLabStream(
+  payload: LabRunPayload,
+  onEvent: (event: LabStreamEvent) => void,
+): Promise<void> {
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+  const response = await fetch(`${baseUrl}/api/lab/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorBody = await parseErrorBody(response);
+    const message =
+      typeof errorBody?.detail === 'string'
+        ? errorBody.detail
+        : `POST /api/lab/run failed with status ${response.status}`;
+    throw new ApiError(message, response.status, errorBody);
+  }
+
+  if (!response.body) {
+    throw new ApiError('Streaming response body is not available.', response.status, null);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const flushBlocks = (isFinal = false) => {
+    const normalized = buffer.replace(/\r\n/g, '\n');
+    const blocks = normalized.split('\n\n');
+    buffer = isFinal ? '' : blocks.pop() ?? '';
+    const readyBlocks = isFinal ? blocks.filter(Boolean) : blocks;
+    for (const block of readyBlocks) {
+      const data = block
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice('data:'.length).trimStart())
+        .join('\n');
+      if (!data) continue;
+      onEvent(JSON.parse(data) as LabStreamEvent);
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    flushBlocks();
+  }
+  buffer += decoder.decode();
+  flushBlocks(true);
+}
+
+// ---------------------------------------------------------------------------
+// Tasks
+// ---------------------------------------------------------------------------
+
+export type { Task };
+
+export async function listTasks(): Promise<Task[]> {
+  return request<Task[]>('GET', '/api/tasks');
+}
+
+export async function getTask(taskId: string): Promise<Task> {
+  return request<Task>('GET', `/api/tasks/${encodeURIComponent(taskId)}`);
+}
+
+export async function createTask(payload: SaveTaskPayload): Promise<Task> {
+  return request<Task>('POST', '/api/tasks', payload);
+}
+
+export async function updateTask(
+  taskId: string,
+  payload: SaveTaskPayload,
+): Promise<Task> {
+  return request<Task>('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, payload);
+}
+
+export async function deleteTask(taskId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(
+    'DELETE',
+    `/api/tasks/${encodeURIComponent(taskId)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +387,7 @@ export interface RunItemSummary {
   output_contract_snapshot: Record<string, unknown> | null;
   pricing_snapshot: Record<string, unknown> | null;
   final_attempt_id: string | null;
+  latency_ms: number | null;
   response: Record<string, unknown>;
   usage: Record<string, unknown>;
   cost: Record<string, unknown>;
@@ -431,6 +540,7 @@ export type { PricingProfile };
 export interface PricingListItem {
   pricing_profile_id: string;
   provider_id: string;
+  provider_config_id: string | null;
   model_id: string;
   currency: string;
   effective_date: string | null;
@@ -443,8 +553,15 @@ export interface PricingListItem {
   created_at: string;
 }
 
-export async function listPricing(): Promise<PricingListItem[]> {
-  return request<PricingListItem[]>('GET', '/api/pricing');
+export async function listPricing(filters?: {
+  provider_config_id?: string | null;
+  model_id?: string | null;
+}): Promise<PricingListItem[]> {
+  const params = new URLSearchParams();
+  if (filters?.provider_config_id) params.set('provider_config_id', filters.provider_config_id);
+  if (filters?.model_id) params.set('model_id', filters.model_id);
+  const query = params.toString();
+  return request<PricingListItem[]>('GET', `/api/pricing${query ? `?${query}` : ''}`);
 }
 
 export async function savePricing(
@@ -453,31 +570,12 @@ export async function savePricing(
   return request('POST', '/api/pricing', payload);
 }
 
-// ---------------------------------------------------------------------------
-// API keys
-// ---------------------------------------------------------------------------
-
-export async function listApiKeys(): Promise<{ providers: string[] }> {
-  return request<{ providers: string[] }>('GET', '/api/settings/api-keys');
-}
-
-export async function setApiKey(
-  providerId: string,
-  apiKey: string,
-): Promise<{ provider_id: string; masked: string }> {
-  return request<{ provider_id: string; masked: string }>(
-    'PUT',
-    `/api/settings/api-keys/${encodeURIComponent(providerId)}`,
-    { api_key: apiKey },
-  );
-}
-
-export async function removeApiKey(
-  providerId: string,
+export async function deletePricing(
+  pricingProfileId: string,
 ): Promise<{ deleted: boolean }> {
   return request<{ deleted: boolean }>(
     'DELETE',
-    `/api/settings/api-keys/${encodeURIComponent(providerId)}`,
+    `/api/pricing/${encodeURIComponent(pricingProfileId)}`,
   );
 }
 

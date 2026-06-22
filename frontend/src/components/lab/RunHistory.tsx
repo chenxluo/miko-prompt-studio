@@ -36,7 +36,7 @@ export function RunHistory() {
   }
 
   return (
-    <div className="panel flex max-h-[16rem] flex-col overflow-hidden">
+    <div className="panel flex flex-1 flex-col overflow-hidden">
       <div className="flex items-center gap-2 border-b border-surface-800 px-4 py-3">
         <History size={16} className="text-accent" />
         <span className="text-sm font-semibold text-ink">{t('history.title')}</span>

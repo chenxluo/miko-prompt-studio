@@ -8,6 +8,7 @@ from app.models import (  # noqa: F401
     run,
     sample,
     settings,
+    task,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "run",
     "sample",
     "settings",
+    "task",
 ]

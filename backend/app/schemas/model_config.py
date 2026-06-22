@@ -35,6 +35,9 @@ class ModelParameters(BaseModel):
     thinking_budget: int | None = None
     reasoning_effort: str | None = None  # "low" | "medium" | "high"
 
+    # Streaming — UI placeholder, NOT yet sent to the provider API.
+    stream: bool | None = None
+
 
 class ModelConfig(TimestampedModel):
     """A named, saved set of model + parameters."""

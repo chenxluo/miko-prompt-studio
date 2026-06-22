@@ -17,6 +17,7 @@ class PricingProfileORM(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     pricing_profile_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     provider_id: Mapped[str] = mapped_column(String, index=True)
+    provider_config_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     model_id: Mapped[str] = mapped_column(String, index=True)
     currency: Mapped[str] = mapped_column(String, default="USD")
     effective_date: Mapped[str | None] = mapped_column(String, nullable=True)

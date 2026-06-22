@@ -185,6 +185,7 @@ export interface ModelParameters {
   enable_thinking?: boolean | null;
   thinking_budget?: number | null;
   reasoning_effort?: string | null;
+  stream?: boolean | null;
 }
 
 export interface ModelConfig extends Timestamps {
@@ -205,6 +206,23 @@ export interface ModelConfigSnapshot {
   adapter_id: string;
   parameters?: ModelParameters;
   provider_options?: Record<string, unknown>;
+}
+
+export interface Task extends Timestamps {
+  task_id: string;
+  name: string;
+  provider_config_id?: string | null;
+  model_id: string;
+  model_parameters?: ModelParameters;
+  system_prompt?: string;
+  user_prompt?: string;
+  format_instruction?: string;
+  output_contract?: OutputContract;
+  pricing_profile_id?: string | null;
+  image_resolution_enabled?: boolean;
+  image_resolution_target?: number;
+  sample_set_id?: string | null;
+  notes?: string;
 }
 
 export interface ProviderCapability {
@@ -270,6 +288,7 @@ export interface ImagePriceMode {
 export interface PricingProfile extends Timestamps {
   pricing_profile_id: string;
   provider_id: string;
+  provider_config_id?: string | null;
   model_id: string;
   currency?: string;
   effective_date?: string | null;
@@ -435,6 +454,8 @@ export interface RunSummary {
   total_input_tokens?: number;
   total_output_tokens?: number;
   total_image_count?: number;
+  total_latency_ms?: number;
+  avg_latency_ms?: number;
 }
 
 export interface RunSession extends Timestamps {
@@ -473,6 +494,7 @@ export interface NormalizedResponse {
   text?: string;
   finish_reason?: string | null;
   safety?: SafetyInfo;
+  reasoning_text?: string | null;
 }
 
 export interface ParsedResponse {
@@ -533,6 +555,7 @@ export interface RunItem extends Timestamps {
   completed_at?: string | null;
   internal_request_snapshot?: Record<string, unknown> | null;
   final_attempt_id?: string | null;
+  latency_ms?: number | null;
   response?: ParsedResponse;
   usage?: Usage;
   cost?: CostEstimate;

@@ -1,26 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Plus, Trash2, AlertCircle, Check, Server } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, Check, Server, RefreshCw, Loader2 } from 'lucide-react';
 
-import { useSettingsStore } from '../store/settingsStore';
 import { useI18n } from '../i18n';
 import * as api from '../api/client';
-import type { ProviderConfig } from '../api/client';
+import type { PricingListItem, ProviderConfig } from '../api/client';
 
 export function SettingsView() {
   const { t } = useI18n();
-  const {
-    apiKeyProviders,
-    isLoading,
-    error,
-    loadAll,
-    setApiKey,
-    removeApiKey,
-    clearError,
-  } = useSettingsStore();
-
-  const [newProvider, setNewProvider] = useState('');
-  const [newKey, setNewKey] = useState('');
-  const [savedFlash, setSavedFlash] = useState<string | null>(null);
 
   // Provider configs
   const [providerConfigs, setProviderConfigs] = useState<ProviderConfig[]>([]);
@@ -28,6 +14,8 @@ export function SettingsView() {
   const [configLoading, setConfigLoading] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [configSavedFlash, setConfigSavedFlash] = useState(false);
+  const [refreshingConfigId, setRefreshingConfigId] = useState<string | null>(null);
+  const [configSelectedModels, setConfigSelectedModels] = useState<Record<string, string[]>>({});
 
   const [newConfigName, setNewConfigName] = useState('');
   const [newConfigAdapter, setNewConfigAdapter] = useState('');
@@ -35,11 +23,26 @@ export function SettingsView() {
   const [newConfigApiKey, setNewConfigApiKey] = useState('');
   const [newConfigNotes, setNewConfigNotes] = useState('');
 
+  // Pricing
+  const [pricingRows, setPricingRows] = useState<PricingListItem[]>([]);
+  const [pricingError, setPricingError] = useState<string | null>(null);
+  const [pricingLoading, setPricingLoading] = useState(false);
+  const [pricingProviderConfigId, setPricingProviderConfigId] = useState('');
+  const [pricingModelId, setPricingModelId] = useState('');
+  const [pricingInput, setPricingInput] = useState('0');
+  const [pricingOutput, setPricingOutput] = useState('0');
+  const [pricingCached, setPricingCached] = useState('');
+  const [pricingImageMode, setPricingImageMode] = useState('token');
+  const [pricingImagePrice, setPricingImagePrice] = useState('0');
+  const [pricingDiscount, setPricingDiscount] = useState('1');
+  const [pricingCurrency, setPricingCurrency] = useState('USD');
+  const [pricingNotes, setPricingNotes] = useState('');
+
   useEffect(() => {
-    loadAll();
     loadProviderConfigs();
+    loadPricing();
     api.listProviders().then((res) => setProviders(res.providers)).catch(() => {});
-  }, [loadAll]);
+  }, []);
 
   const loadProviderConfigs = useCallback(async () => {
     setConfigLoading(true);
@@ -47,6 +50,9 @@ export function SettingsView() {
     try {
       const configs = await api.listProviderConfigs();
       setProviderConfigs(configs);
+      setConfigSelectedModels(Object.fromEntries(
+        configs.map((config) => [config.provider_config_id, config.selected_models ?? []]),
+      ));
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : 'Failed to load provider configs');
     } finally {
@@ -56,22 +62,22 @@ export function SettingsView() {
 
   const selectedMeta = providers.find((p) => p.adapter_id === newConfigAdapter);
   const requiresBaseUrl = selectedMeta?.requires_base_url ?? false;
-
-  const handleSave = useCallback(async () => {
-    if (!newProvider.trim() || !newKey.trim()) return;
-    await setApiKey(newProvider.trim(), newKey.trim());
-    setNewProvider('');
-    setNewKey('');
-    setSavedFlash(newProvider.trim());
-    setTimeout(() => setSavedFlash(null), 2000);
-  }, [newProvider, newKey, setApiKey]);
-
-  const handleRemove = useCallback(
-    async (provider: string) => {
-      await removeApiKey(provider);
-    },
-    [removeApiKey],
+  const selectedPricingConfig = providerConfigs.find(
+    (config) => config.provider_config_id === pricingProviderConfigId,
   );
+  const pricingModelOptions = getExposedModels(selectedPricingConfig);
+
+  const loadPricing = useCallback(async () => {
+    setPricingLoading(true);
+    setPricingError(null);
+    try {
+      setPricingRows(await api.listPricing());
+    } catch (err) {
+      setPricingError(err instanceof Error ? err.message : 'Failed to load pricing');
+    } finally {
+      setPricingLoading(false);
+    }
+  }, []);
 
   const handleSaveConfig = useCallback(async () => {
     const name = newConfigName.trim();
@@ -86,6 +92,7 @@ export function SettingsView() {
         adapter_id: adapterId,
         base_url: newConfigBaseUrl.trim() || null,
         api_key: newConfigApiKey.trim() || null,
+        selected_models: [],
         notes: newConfigNotes.trim(),
       });
       setNewConfigName('');
@@ -122,7 +129,159 @@ export function SettingsView() {
     [loadProviderConfigs],
   );
 
+  const handleRefreshModels = useCallback(
+    async (configId: string) => {
+      setConfigError(null);
+      setRefreshingConfigId(configId);
+      try {
+        await api.fetchProviderModels({ provider_config_id: configId });
+        await loadProviderConfigs();
+      } catch (err) {
+        setConfigError(err instanceof Error ? err.message : 'Failed to fetch models');
+      } finally {
+        setRefreshingConfigId(null);
+      }
+    },
+    [loadProviderConfigs],
+  );
+
+  const handleToggleSelectedModel = useCallback(
+    async (config: ProviderConfig, modelId: string, checked: boolean) => {
+      const current = configSelectedModels[config.provider_config_id] ?? config.selected_models ?? [];
+      // When current selection is empty (meaning "all models" in Lab), materialize the full
+      // cached_models list so that unchecking a model actually removes it instead of being a no-op.
+      const effective = current.length > 0 ? current : config.cached_models;
+      const next = checked
+        ? Array.from(new Set([...effective, modelId]))
+        : effective.filter((id) => id !== modelId);
+      setConfigSelectedModels((prev) => ({ ...prev, [config.provider_config_id]: next }));
+      setConfigError(null);
+      try {
+        await api.saveProviderConfig({
+          provider_config_id: config.provider_config_id,
+          name: config.name,
+          adapter_id: config.adapter_id,
+          base_url: config.base_url,
+          api_key: null,
+          selected_models: next,
+          notes: config.notes,
+        });
+        await loadProviderConfigs();
+      } catch (err) {
+        setConfigSelectedModels((prev) => ({
+          ...prev,
+          [config.provider_config_id]: current,
+        }));
+        setConfigError(err instanceof Error ? err.message : 'Failed to save selected models');
+      }
+    },
+    [configSelectedModels, loadProviderConfigs],
+  );
+
+  const handleSelectAll = useCallback(
+    async (config: ProviderConfig) => {
+      const allModels = config.cached_models;
+      const prev = configSelectedModels[config.provider_config_id] ?? config.selected_models ?? [];
+      setConfigSelectedModels((prevState) => ({ ...prevState, [config.provider_config_id]: allModels }));
+      setConfigError(null);
+      try {
+        await api.saveProviderConfig({
+          provider_config_id: config.provider_config_id,
+          name: config.name,
+          adapter_id: config.adapter_id,
+          base_url: config.base_url,
+          api_key: null,
+          selected_models: allModels,
+          notes: config.notes,
+        });
+        await loadProviderConfigs();
+      } catch (err) {
+        setConfigSelectedModels((prevState) => ({
+          ...prevState,
+          [config.provider_config_id]: prev,
+        }));
+        setConfigError(err instanceof Error ? err.message : 'Failed to save selected models');
+      }
+    },
+    [configSelectedModels, loadProviderConfigs],
+  );
+
+  const handleInvertSelection = useCallback(
+    async (config: ProviderConfig) => {
+      const current = configSelectedModels[config.provider_config_id] ?? config.selected_models ?? [];
+      const effective = current.length > 0 ? current : config.cached_models;
+      const inverted = config.cached_models.filter((id) => !effective.includes(id));
+      setConfigSelectedModels((prevState) => ({ ...prevState, [config.provider_config_id]: inverted }));
+      setConfigError(null);
+      try {
+        await api.saveProviderConfig({
+          provider_config_id: config.provider_config_id,
+          name: config.name,
+          adapter_id: config.adapter_id,
+          base_url: config.base_url,
+          api_key: null,
+          selected_models: inverted,
+          notes: config.notes,
+        });
+        await loadProviderConfigs();
+      } catch (err) {
+        setConfigSelectedModels((prevState) => ({
+          ...prevState,
+          [config.provider_config_id]: current,
+        }));
+        setConfigError(err instanceof Error ? err.message : 'Failed to save selected models');
+      }
+    },
+    [configSelectedModels, loadProviderConfigs],
+  );
+
+  const handleSavePricing = useCallback(async () => {
+    if (!pricingProviderConfigId || !pricingModelId.trim()) return;
+    const selected = providerConfigs.find((c) => c.provider_config_id === pricingProviderConfigId);
+    const imagePrice = parseFloat(pricingImagePrice || '0') || 0;
+    setPricingError(null);
+    try {
+      await api.savePricing({
+        provider_config_id: pricingProviderConfigId,
+        provider_id: selected?.name ?? pricingProviderConfigId,
+        model_id: pricingModelId.trim(),
+        currency: pricingCurrency.trim() || 'USD',
+        input_token_price: parseFloat(pricingInput || '0') || 0,
+        output_token_price: parseFloat(pricingOutput || '0') || 0,
+        cached_input_price: pricingCached.trim() ? parseFloat(pricingCached) : null,
+        batch_discount: parseFloat(pricingDiscount || '1') || 1,
+        image_pricing: {
+          mode: pricingImageMode,
+          image_token_price: pricingImageMode === 'token' ? imagePrice : null,
+          image_per_request_price: pricingImageMode === 'per_request' ? imagePrice : null,
+        },
+        notes: pricingNotes.trim(),
+      });
+      setPricingModelId('');
+      setPricingInput('0');
+      setPricingOutput('0');
+      setPricingCached('');
+      setPricingImagePrice('0');
+      setPricingDiscount('1');
+      setPricingNotes('');
+      await loadPricing();
+    } catch (err) {
+      setPricingError(err instanceof Error ? err.message : 'Failed to save pricing');
+    }
+  }, [loadPricing, pricingCached, pricingCurrency, pricingDiscount, pricingImageMode, pricingImagePrice, pricingInput, pricingModelId, pricingNotes, pricingOutput, pricingProviderConfigId, providerConfigs]);
+
+  const handleDeletePricing = useCallback(async (pricingProfileId: string) => {
+    setPricingError(null);
+    try {
+      await api.deletePricing(pricingProfileId);
+      await loadPricing();
+    } catch (err) {
+      setPricingError(err instanceof Error ? err.message : 'Failed to delete pricing');
+    }
+  }, [loadPricing]);
+
   return (
+    <section className="flex-1 overflow-y-auto bg-surface-950">
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       {/* Provider configs section */}
       <div>
@@ -156,13 +315,93 @@ export function SettingsView() {
           providerConfigs.map((config) => (
             <div key={config.provider_config_id} className="flex items-center gap-3 px-4 py-3">
               <Server size={16} className="text-accent" />
-              <div className="flex flex-1 flex-col">
+              <div className="flex flex-1 flex-col gap-2">
                 <span className="text-sm font-medium text-ink">{config.name}</span>
                 <span className="text-xs text-ink-dim">
                   {config.adapter_id}
                   {config.base_url ? ` · ${config.base_url}` : ' · default'}
                 </span>
+                <span className="text-xs text-ink-dim">
+                  {config.cached_models.length > 0
+                    ? t('settings.modelCacheStatus', { count: config.cached_models.length })
+                    : t('settings.modelCacheEmpty')}
+                  {config.models_cached_at
+                    ? ` · ${t('settings.modelCacheAt', { time: formatCacheTime(config.models_cached_at) })}`
+                    : ''}
+                </span>
+                {config.cached_models.length > 0 && (
+                  <div className="rounded-md border border-surface-800 bg-surface-900/60 p-2">
+                    <div className="mb-2 flex items-center justify-between gap-2 text-xs text-ink-muted">
+                      <span>{t('settings.selectedModels')}</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleSelectAll(config)}
+                          className="text-accent hover:text-accent-hover"
+                        >
+                          {t('settings.selectAll')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleInvertSelection(config)}
+                          className="text-accent hover:text-accent-hover"
+                        >
+                          {t('settings.invertSelection')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void api.saveProviderConfig({
+                            provider_config_id: config.provider_config_id,
+                            name: config.name,
+                            adapter_id: config.adapter_id,
+                            base_url: config.base_url,
+                            api_key: null,
+                            selected_models: [],
+                            notes: config.notes,
+                          }).then(loadProviderConfigs).catch((err: unknown) => {
+                            setConfigError(err instanceof Error ? err.message : 'Failed to save selected models');
+                          })}
+                          className="text-accent hover:text-accent-hover"
+                        >
+                          {t('settings.allModels')}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid max-h-36 grid-cols-1 gap-1 overflow-y-auto sm:grid-cols-2">
+                      {config.cached_models.map((model) => {
+                        const selectedModels = getSelectedModelIdsForEditing(
+                          config,
+                          configSelectedModels[config.provider_config_id],
+                        );
+                        return (
+                          <label key={model} className="flex items-center gap-2 rounded px-2 py-1 text-xs text-ink-muted hover:bg-surface-800">
+                            <input
+                              type="checkbox"
+                              checked={selectedModels.includes(model)}
+                              onChange={(e) => void handleToggleSelectedModel(config, model, e.target.checked)}
+                              className="h-3.5 w-3.5 accent-accent"
+                            />
+                            <span className="truncate font-mono" title={model}>{model}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
+              <button
+                onClick={() => void handleRefreshModels(config.provider_config_id)}
+                disabled={refreshingConfigId === config.provider_config_id}
+                className="flex items-center gap-1 rounded px-2 py-1.5 text-xs text-ink-dim transition-colors hover:bg-surface-800 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                title={t('settings.syncModels')}
+              >
+                {refreshingConfigId === config.provider_config_id ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <RefreshCw size={14} />
+                )}
+                {t('settings.syncModels')}
+              </button>
               <button
                 onClick={() => handleDeleteConfig(config.provider_config_id)}
                 className="rounded p-1.5 text-ink-dim transition-colors hover:bg-surface-800 hover:text-danger"
@@ -247,88 +486,130 @@ export function SettingsView() {
         </button>
       </div>
 
-      {/* API keys section */}
+      {/* Pricing section */}
       <div className="border-t border-surface-800 pt-6">
-        <div>
-          <h2 className="text-lg font-semibold text-ink">{t('settings.title')}</h2>
-          <p className="mt-1 text-sm text-ink-muted">{t('settings.description')}</p>
-        </div>
+        <h2 className="text-lg font-semibold text-ink">{t('pricing.title')}</h2>
+        <p className="mt-1 text-sm text-ink-muted">{t('pricing.description')}</p>
       </div>
 
-      {error && (
+      {pricingError && (
         <div className="flex items-center gap-2 rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
           <AlertCircle size={16} />
-          <span>{error}</span>
-          <button
-            onClick={clearError}
-            className="ml-auto text-danger/70 hover:text-danger"
-          >
-            ✕
-          </button>
+          <span>{pricingError}</span>
+          <button onClick={() => setPricingError(null)} className="ml-auto text-danger/70 hover:text-danger">✕</button>
         </div>
       )}
 
-      <div className="panel divide-y divide-surface-800">
-        {isLoading && apiKeyProviders.length === 0 ? (
+      <div className="panel overflow-hidden">
+        {pricingLoading && pricingRows.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-ink-dim">{t('settings.loading')}</div>
-        ) : apiKeyProviders.length === 0 ? (
-          <div className="px-4 py-8 text-center text-sm text-ink-dim">
-            {t('settings.noKeys')}
-          </div>
+        ) : pricingRows.length === 0 ? (
+          <div className="px-4 py-8 text-center text-sm text-ink-dim">{t('pricing.empty')}</div>
         ) : (
-          apiKeyProviders.map((provider) => (
-            <div key={provider} className="flex items-center gap-3 px-4 py-3">
-              <KeyRound size={16} className="text-accent" />
-              <span className="flex-1 font-mono text-sm text-ink">{provider}</span>
-              {savedFlash === provider && (
-                <span className="flex items-center gap-1 text-xs text-accent">
-                  <Check size={14} /> {t('settings.saved')}
-                </span>
-              )}
-              <button
-                onClick={() => handleRemove(provider)}
-                className="rounded p-1.5 text-ink-dim transition-colors hover:bg-surface-800 hover:text-danger"
-                title={t('settings.remove')}
-              >
-                <Trash2 size={15} />
-              </button>
-            </div>
-          ))
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-surface-900 text-ink-muted">
+                <tr>
+                  <th className="px-3 py-2">{t('pricing.providerConfig')}</th>
+                  <th className="px-3 py-2">{t('pricing.model')}</th>
+                  <th className="px-3 py-2">{t('pricing.input')}</th>
+                  <th className="px-3 py-2">{t('pricing.output')}</th>
+                  <th className="px-3 py-2">{t('pricing.image')}</th>
+                  <th className="px-3 py-2">{t('pricing.discount')}</th>
+                  <th className="px-3 py-2">{t('pricing.currency')}</th>
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-800">
+                {pricingRows.map((row) => {
+                  const config = providerConfigs.find((c) => c.provider_config_id === row.provider_config_id);
+                  return (
+                    <tr key={row.pricing_profile_id}>
+                      <td className="px-3 py-2 text-ink">{config?.name ?? row.provider_config_id ?? row.provider_id}</td>
+                      <td className="px-3 py-2 font-mono text-ink-muted">{row.model_id}</td>
+                      <td className="px-3 py-2 text-ink-muted">{row.input_token_price}/1M</td>
+                      <td className="px-3 py-2 text-ink-muted">{row.output_token_price}/1M</td>
+                      <td className="px-3 py-2 text-ink-muted">{formatImagePricing(row.image_pricing)}</td>
+                      <td className="px-3 py-2 text-ink-muted">{Math.round(row.batch_discount * 100)}%</td>
+                      <td className="px-3 py-2 text-ink-muted">{row.currency}</td>
+                      <td className="px-3 py-2 text-right">
+                        <button onClick={() => void handleDeletePricing(row.pricing_profile_id)} className="rounded p-1.5 text-ink-dim transition-colors hover:bg-surface-800 hover:text-danger" title={t('settings.remove')}>
+                          <Trash2 size={15} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
       <div className="panel space-y-3 p-4">
-        <h3 className="text-sm font-semibold text-ink">{t('settings.addKey')}</h3>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[200px_1fr]">
-          <input
-            type="text"
-            placeholder={t('settings.provider')}
-            value={newProvider}
-            onChange={(e) => setNewProvider(e.target.value)}
-            className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
-          />
-          <input
-            type="password"
-            placeholder={t('settings.apiKey')}
-            value={newKey}
-            onChange={(e) => setNewKey(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSave()}
-            className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
-          />
+        <h3 className="text-sm font-semibold text-ink">{t('pricing.add')}</h3>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <select value={pricingProviderConfigId} onChange={(e) => { setPricingProviderConfigId(e.target.value); setPricingModelId(''); }} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none">
+            <option value="" disabled>{t('pricing.providerConfig')}</option>
+            {providerConfigs.map((config) => <option key={config.provider_config_id} value={config.provider_config_id}>{config.name}</option>)}
+          </select>
+          <select value={pricingModelId} onChange={(e) => setPricingModelId(e.target.value)} disabled={!pricingProviderConfigId || pricingModelOptions.length === 0} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-40">
+            <option value="" disabled>{pricingModelOptions.length > 0 ? t('pricing.model') : t('model.noModels')}</option>
+            {pricingModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
+          </select>
+          <input value={pricingCurrency} onChange={(e) => setPricingCurrency(e.target.value)} placeholder={t('pricing.currency')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none" />
+          <input type="number" step="0.01" value={pricingInput} onChange={(e) => setPricingInput(e.target.value)} placeholder={t('pricing.input')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none" />
+          <input type="number" step="0.01" value={pricingOutput} onChange={(e) => setPricingOutput(e.target.value)} placeholder={t('pricing.output')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none" />
+          <input type="number" step="0.01" value={pricingCached} onChange={(e) => setPricingCached(e.target.value)} placeholder={t('pricing.cached')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none" />
+          <select value={pricingImageMode} onChange={(e) => setPricingImageMode(e.target.value)} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none">
+            <option value="token">{t('pricing.imageToken')}</option>
+            <option value="per_request">{t('pricing.imageRequest')}</option>
+            <option value="none">{t('pricing.imageNone')}</option>
+          </select>
+          <input type="number" step="0.01" value={pricingImagePrice} onChange={(e) => setPricingImagePrice(e.target.value)} placeholder={t('pricing.imagePrice')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none" />
+          <input type="number" step="0.01" value={pricingDiscount} onChange={(e) => setPricingDiscount(e.target.value)} placeholder={t('pricing.discount')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none" />
+          <input value={pricingNotes} onChange={(e) => setPricingNotes(e.target.value)} placeholder={t('settings.notes')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none sm:col-span-3" />
         </div>
-        <button
-          onClick={handleSave}
-          disabled={!newProvider.trim() || !newKey.trim()}
-          className="btn-primary disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <Plus size={16} />
-          {t('settings.save')}
+        <button onClick={handleSavePricing} disabled={!pricingProviderConfigId || !pricingModelId.trim()} className="btn-primary disabled:cursor-not-allowed disabled:opacity-40">
+          <Plus size={16} /> {t('pricing.save')}
         </button>
       </div>
 
-      <div className="rounded-md border border-surface-800 bg-surface-900/50 p-4 text-xs text-ink-dim">
-        <p className="mt-1">{t('settings.providerHint')}</p>
-      </div>
     </div>
+    </section>
   );
+}
+
+function formatCacheTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getExposedModels(config: ProviderConfig | undefined): string[] {
+  if (!config) return [];
+  return config.selected_models.length > 0 ? config.selected_models : config.cached_models;
+}
+
+function getSelectedModelIdsForEditing(
+  config: ProviderConfig,
+  draftSelected: string[] | undefined,
+): string[] {
+  const selected = draftSelected ?? config.selected_models ?? [];
+  return selected.length > 0 ? selected : config.cached_models;
+}
+
+function formatImagePricing(imagePricing: Record<string, unknown>): string {
+  const mode = typeof imagePricing.mode === 'string' ? imagePricing.mode : 'token';
+  if (mode === 'none') return 'none';
+  if (mode === 'per_request') {
+    return `${Number(imagePricing.image_per_request_price ?? 0)}/img`;
+  }
+  return `${Number(imagePricing.image_token_price ?? 0)}/1M`;
 }

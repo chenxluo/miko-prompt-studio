@@ -3,6 +3,7 @@ import {
   FileImage,
   FileText,
   Layers,
+  ListChecks,
   Settings,
   Sparkles,
   Tag,
@@ -13,10 +14,11 @@ import { LocaleSwitch } from './components/LocaleSwitch';
 import { NavButton } from './components/NavButton';
 import { LabView } from './views/LabView';
 import { SettingsView } from './views/SettingsView';
+import { TasksView } from './views/TasksView';
 import { PlaceholderView } from './components/PlaceholderView';
 import { useI18n } from './i18n';
 
-type View = 'lab' | 'prompts' | 'samples' | 'runs' | 'pricing' | 'settings';
+type View = 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'pricing' | 'settings';
 
 interface NavItem {
   id: View;
@@ -26,6 +28,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: 'lab', labelKey: 'nav.lab', icon: Beaker },
+  { id: 'tasks', labelKey: 'nav.tasks', icon: ListChecks },
   { id: 'prompts', labelKey: 'nav.prompts', icon: FileText },
   { id: 'samples', labelKey: 'nav.samples', icon: FileImage },
   { id: 'runs', labelKey: 'nav.runs', icon: Layers },
@@ -34,7 +37,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 const PLACEHOLDER_KEYS: Record<
-  Exclude<View, 'lab' | 'settings'>,
+  Exclude<View, 'lab' | 'tasks' | 'settings'>,
   { titleKey: string; descKey: string }
 > = {
   prompts: { titleKey: 'nav.prompts', descKey: 'nav.prompts' },
@@ -93,8 +96,9 @@ export default function App() {
 
       <main className="flex flex-1 flex-col overflow-hidden">
         {activeView === 'lab' && <LabView />}
+        {activeView === 'tasks' && <TasksView />}
         {activeView === 'settings' && <SettingsView />}
-        {activeView !== 'lab' && activeView !== 'settings' && (
+        {activeView !== 'lab' && activeView !== 'tasks' && activeView !== 'settings' && (
           <>
             <header className="flex items-center justify-between border-b border-surface-800 bg-surface-900/50 px-6 py-3 backdrop-blur">
               <h1 className="text-sm font-semibold uppercase tracking-wider text-ink-muted">

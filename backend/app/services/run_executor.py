@@ -15,6 +15,7 @@ Flow::
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from uuid import uuid4
 
@@ -33,7 +34,7 @@ from app.schemas.common import (
     RunType,
     utc_now,
 )
-from app.schemas.internal_request import InternalRequest
+from app.schemas.internal_request import ImagePreprocessConfig, InternalRequest
 from app.schemas.model_config import ModelConfig, ModelConfigSnapshot
 from app.schemas.output_contract import OutputContract
 from app.schemas.pricing import PricingProfile, PricingSnapshot
@@ -48,6 +49,7 @@ from app.schemas.run_record import (
     RunSession,
     RunSource,
     RunSummary,
+    StreamEvent,
     Usage,
 )
 from app.schemas.sample_record import SampleRecord
@@ -73,6 +75,8 @@ class LabRunRequest:
         api_base_url: str | None = None,
         run_name: str = "",
         provider_config_id: str | None = None,
+        image_resolution_enabled: bool = False,
+        image_resolution_target: int = 1024,
     ):
         self.sample = sample
         self.prompt = prompt
@@ -82,13 +86,19 @@ class LabRunRequest:
         self.api_base_url = api_base_url
         self.run_name = run_name
         self.provider_config_id = provider_config_id
+        self.image_resolution_enabled = image_resolution_enabled
+        self.image_resolution_target = image_resolution_target
 
 
 # ---------------------------------------------------------------------------
 # Main executor
 # ---------------------------------------------------------------------------
 
-async def execute_lab_run(db: AsyncSession, request: LabRunRequest) -> RunSession:
+async def execute_lab_run(
+    db: AsyncSession,
+    request: LabRunRequest,
+    stream_callback: Callable[[StreamEvent], Awaitable[None]] | None = None,
+) -> RunSession:
     """Execute a single-sample Lab run end-to-end.
 
     Returns the persisted :class:`RunSession` (with one :class:`RunItem`).
@@ -100,12 +110,20 @@ async def execute_lab_run(db: AsyncSession, request: LabRunRequest) -> RunSessio
     now = utc_now()
 
     # 1. Build the Internal Request -------------------------------------------
+    preprocess_config = None
+    if request.image_resolution_enabled:
+        preprocess_config = ImagePreprocessConfig(
+            mode="limit_total_pixels",
+            target_pixels=request.image_resolution_target ** 2,
+        )
+
     internal_request = build_internal_request(
         sample=request.sample,
         prompt_version=request.prompt,
         model_config=request.model_config,
         output_contract=request.output_contract,
         pricing=request.pricing,
+        preprocess_config=preprocess_config,
     )
 
     # 2. Prepare snapshots for the Run Session --------------------------------
@@ -191,12 +209,26 @@ async def execute_lab_run(db: AsyncSession, request: LabRunRequest) -> RunSessio
         )
         return _to_session(session_orm)
 
-    result = await adapter.execute(
-        request=internal_request,
-        api_key=api_key,
-        base_url=request.api_base_url,
-        timeout=internal_request.runtime.timeout_seconds,
-    )
+    should_stream = request.model_config.parameters.stream is True
+    if should_stream:
+        async def forward_stream_event(event: StreamEvent) -> None:
+            if stream_callback is not None and event.event != "done":
+                await stream_callback(event)
+
+        result = await adapter.execute_stream(
+            request=internal_request,
+            api_key=api_key,
+            base_url=request.api_base_url,
+            timeout=internal_request.runtime.timeout_seconds,
+            on_event=forward_stream_event,
+        )
+    else:
+        result = await adapter.execute(
+            request=internal_request,
+            api_key=api_key,
+            base_url=request.api_base_url,
+            timeout=internal_request.runtime.timeout_seconds,
+        )
 
     # 6. Parse the response --------------------------------------------------
     raw_text = ""
@@ -243,6 +275,7 @@ async def execute_lab_run(db: AsyncSession, request: LabRunRequest) -> RunSessio
     item_orm.final_attempt_id = attempt_id
     item_orm.response = parsed.model_dump(mode="json")
     item_orm.usage = usage.model_dump(mode="json")
+    item_orm.latency_ms = result.latency_ms
     if cost:
         item_orm.cost = cost.model_dump(mode="json")
         item_orm.estimated_cost = cost.estimated_cost
@@ -328,6 +361,11 @@ def _update_session_summary(session_orm: RunSessionORM, item_orm: RunItemORM) ->
     summary.total_input_tokens = usage_data.get("input_tokens", 0) or 0
     summary.total_output_tokens = usage_data.get("output_tokens", 0) or 0
     summary.total_image_count = usage_data.get("image_count", 0) or 0
+
+    # Update latency summary
+    item_latency = item_orm.latency_ms or 0
+    summary.total_latency_ms = item_latency
+    summary.avg_latency_ms = float(item_latency)
 
     session_orm.summary = summary.model_dump(mode="json")
     session_orm.status = (

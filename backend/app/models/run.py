@@ -68,6 +68,7 @@ class RunItemORM(Base):
     provider_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     model_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     estimated_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
     accepted: Mapped[bool | None] = mapped_column(Integer, nullable=True)  # 0/1/NULL
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -12,7 +13,7 @@ import httpx
 from app.schemas.common import AttemptStatus, ErrorType, NormalizedError
 from app.schemas.internal_request import InternalRequest
 from app.schemas.model_config import ProviderCapability
-from app.schemas.run_record import AdapterResult, Usage
+from app.schemas.run_record import AdapterResult, NormalizedResponse, SafetyInfo, StreamEvent, Usage
 
 
 class BaseAdapter(ABC):
@@ -60,6 +61,16 @@ class BaseAdapter(ABC):
         timeout: int,
     ) -> httpx.Response:
         """Send the provider request and return the raw HTTP response."""
+
+    @abstractmethod
+    async def stream(
+        self,
+        provider_request: dict[str, Any],
+        api_key: str,
+        base_url: str | None,
+        timeout: int,
+    ) -> AsyncIterator[StreamEvent]:
+        """Send the provider request and yield normalized streaming events."""
 
     @abstractmethod
     def parse_response(self, response: httpx.Response, request: InternalRequest) -> AdapterResult:
@@ -122,6 +133,132 @@ class BaseAdapter(ABC):
                 or self.redact_provider_request(provider_request)
                 if provider_request is not None
                 else None,
+            )
+
+    async def execute_stream(
+        self,
+        request: InternalRequest,
+        api_key: str,
+        base_url: str | None = None,
+        timeout: int = 120,
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
+    ) -> AdapterResult:
+        """Build, stream, accumulate, and normalize a provider API call."""
+
+        started = time.perf_counter()
+        provider_request: dict[str, Any] | None = None
+        snapshot: dict[str, Any] | None = None
+
+        try:
+            provider_request = self.build_provider_request(request)
+            provider_request["stream"] = True
+            snapshot = self.redact_provider_request(provider_request)
+            return await self._result_from_stream_events(
+                self.stream(provider_request, api_key, base_url, timeout),
+                request=request,
+                started=started,
+                provider_request_snapshot=snapshot,
+                on_event=on_event,
+            )
+        except Exception as exc:
+            error = self.normalize_error(response=None, exception=exc)
+            return AdapterResult(
+                status=self._status_from_error(error),
+                error=error,
+                latency_ms=self._elapsed_ms(started),
+                provider_request_snapshot=snapshot
+                or self.redact_provider_request(provider_request)
+                if provider_request is not None
+                else None,
+            )
+
+    async def _result_from_stream_events(
+        self,
+        events: AsyncIterator[StreamEvent],
+        request: InternalRequest,
+        started: float | None = None,
+        provider_request_snapshot: dict[str, Any] | None = None,
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
+    ) -> AdapterResult:
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        raw_usage: dict[str, Any] | None = None
+        stream_error: NormalizedError | None = None
+
+        async for event in events:
+            if on_event is not None:
+                await on_event(event)
+
+            if event.event == "reasoning" and event.delta:
+                reasoning_parts.append(event.delta)
+            elif event.event == "content" and event.delta:
+                content_parts.append(event.delta)
+            elif event.event == "usage" and event.usage:
+                raw_usage = event.usage
+            elif event.event == "error":
+                stream_error = self._stream_error_to_normalized(event.error)
+                break
+
+        usage = self._usage_from_stream(raw_usage, request)
+        text = "".join(content_parts)
+        reasoning_text = "".join(reasoning_parts) or None
+        status = (
+            AttemptStatus.SUCCEEDED
+            if stream_error is None
+            else self._status_from_error(stream_error)
+        )
+
+        return AdapterResult(
+            status=status,
+            normalized_response=NormalizedResponse(
+                text=text,
+                reasoning_text=reasoning_text,
+                safety=SafetyInfo(),
+            )
+            if stream_error is None or text or reasoning_text
+            else None,
+            usage=usage,
+            error=stream_error,
+            latency_ms=self._elapsed_ms(started) if started is not None else None,
+            provider_request_snapshot=provider_request_snapshot,
+            provider_response_raw={"stream": True, "usage": raw_usage},
+        )
+
+    def _usage_from_stream(
+        self,
+        raw_usage: dict[str, Any] | None,
+        request: InternalRequest,
+    ) -> Usage:
+        usage = self.parse_usage({"usage": raw_usage or {}})
+        usage.image_count = len(request.images)
+        if usage.image_tokens is None:
+            image_pixels = 0
+            for image in request.images:
+                resolved = image.resolved
+                if resolved and resolved.width and resolved.height:
+                    image_pixels += resolved.width * resolved.height
+            usage.image_tokens = image_pixels or None
+        return usage
+
+    def _stream_error_to_normalized(
+        self,
+        error_data: dict[str, Any] | None,
+    ) -> NormalizedError:
+        if not error_data:
+            return NormalizedError(
+                type=ErrorType.UNKNOWN_ERROR,
+                message="Unknown streaming provider error.",
+                retryable=False,
+            )
+        try:
+            return NormalizedError(**error_data)
+        except Exception:
+            message = error_data.get("message") or error_data.get("detail") or str(error_data)
+            return NormalizedError(
+                type=ErrorType.UNKNOWN_ERROR,
+                message=str(message),
+                retryable=False,
+                raw_error=error_data,
             )
 
     def redact_provider_request(

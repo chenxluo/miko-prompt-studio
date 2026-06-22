@@ -26,7 +26,7 @@ class ImagePriceMode(BaseModel):
     """
 
     mode: str = "token"  # "token" | "per_request" | "none"
-    image_token_price: float | None = None       # per 1k tokens
+    image_token_price: float | None = None       # per million tokens
     image_per_request_price: float | None = None  # flat per image
 
 
@@ -35,11 +35,12 @@ class PricingProfile(TimestampedModel):
 
     pricing_profile_id: str
     provider_id: str
+    provider_config_id: str | None = None
     model_id: str
     currency: str = "USD"
     effective_date: date | None = None
 
-    # Token prices (per 1k tokens)
+    # Token prices (per million tokens)
     input_token_price: float = 0.0
     output_token_price: float = 0.0
     cached_input_price: float | None = None

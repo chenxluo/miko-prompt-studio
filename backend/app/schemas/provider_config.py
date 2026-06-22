@@ -9,6 +9,8 @@ in the Lab, picking a model from its catalog.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 from app.schemas.common import TimestampedModel
@@ -20,6 +22,7 @@ class ProviderConfigData(BaseModel):
     name: str
     adapter_id: str = "openai"
     base_url: str | None = None
+    selected_models: list[str] = []
     notes: str = ""
 
 
@@ -33,6 +36,8 @@ class ProviderConfig(ProviderConfigData, TimestampedModel):
     provider_config_id: str
     api_key_set: bool = False
     api_key_masked: str = ""
+    cached_models: list[str] = Field(default_factory=list)
+    models_cached_at: datetime | None = None
 
 
 class ProviderConfigWithKey(ProviderConfigData):

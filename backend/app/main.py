@@ -5,6 +5,8 @@ Run with:  uvicorn app.main:app --reload
 
 from __future__ import annotations
 
+import asyncio
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
@@ -12,6 +14,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,11 +33,14 @@ from app.models.pricing import PricingProfileORM
 from app.models.prompt import PromptORM, PromptVersionORM
 from app.models.run import RunItemORM, RunSessionORM
 from app.models.sample import SampleRecordORM, SampleSetORM
+from app.models.task import TaskORM
 from app.schemas.model_config import ModelConfig, ModelParameters
 from app.schemas.output_contract import OutputContract, OutputMode
 from app.schemas.pricing import PricingProfile
 from app.schemas.prompt import PromptVersion, PromptVersionData
 from app.schemas.sample_record import ImageRef, SampleRecord
+from app.schemas.run_record import StreamEvent
+from app.schemas.task import Task
 from app.services.importer import ColumnMapping, import_csv, preview_csv, detect_columns
 from app.services.run_executor import LabRunRequest, execute_lab_run
 
@@ -95,6 +101,8 @@ class LabRunPayload(BaseModel):
 
     output_contract: OutputContract = Field(default_factory=OutputContract)
     pricing_profile_id: str | None = None
+    image_resolution_enabled: bool = False
+    image_resolution_target: int = 1024
 
     run_name: str = ""
 
@@ -110,7 +118,8 @@ class CreateModelConfigPayload(BaseModel):
 
 
 class CreatePricingPayload(BaseModel):
-    provider_id: str
+    provider_id: str | None = None
+    provider_config_id: str | None = None
     model_id: str
     currency: str = "USD"
     input_token_price: float = 0.0
@@ -148,6 +157,22 @@ class CsvImportPayload(BaseModel):
     sample_set_name: str = ""
 
 
+class SaveTaskPayload(BaseModel):
+    name: str
+    provider_config_id: str | None = None
+    model_id: str
+    model_parameters: ModelParameters = Field(default_factory=ModelParameters)
+    system_prompt: str = ""
+    user_prompt: str = ""
+    format_instruction: str = ""
+    output_contract: OutputContract = Field(default_factory=OutputContract)
+    pricing_profile_id: str | None = None
+    image_resolution_enabled: bool = False
+    image_resolution_target: int = 1024
+    sample_set_id: str | None = None
+    notes: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -171,8 +196,9 @@ async def list_providers():
 
 
 class FetchModelsPayload(BaseModel):
+    provider_config_id: str | None = None
     adapter_id: str = "openai"
-    api_key: str
+    api_key: str | None = None
     base_url: str | None = None
 
 
@@ -180,25 +206,55 @@ class FetchModelsPayload(BaseModel):
 async def fetch_provider_models(payload: FetchModelsPayload, db: AsyncSession = Depends(get_db)):
     """Fetch the live model list from a provider's ``/v1/models`` endpoint.
 
-    If ``api_key`` is empty, the stored key for the adapter's provider is used.
+    Resolution order:
+    1. If ``provider_config_id`` is supplied, load the stored ``ProviderConfig``
+       and use its ``adapter_id``, ``base_url`` and decrypted ``api_key``.
+    2. Explicit overrides on the payload (``adapter_id``, ``api_key``,
+       ``base_url``) take precedence over the stored config.
+    3. If no key is resolved yet, fall back to the legacy
+       ``get_api_key(db, adapter_id)`` lookup.
     """
 
     from app.adapters.registry import get_adapter, get_adapter_metadata
+    from app.core.security import decrypt_value as _decrypt
+    from app.models.provider_config import ProviderConfigORM
 
-    adapter = get_adapter(payload.adapter_id)
-    meta = get_adapter_metadata(payload.adapter_id) or {}
+    pc_orm: ProviderConfigORM | None = None
+    adapter_id = payload.adapter_id
+    base_url = payload.base_url
+    api_key = payload.api_key
+
+    if payload.provider_config_id:
+        pc_stmt = select(ProviderConfigORM).where(
+            ProviderConfigORM.provider_config_id == payload.provider_config_id
+        )
+        pc_result = await db.execute(pc_stmt)
+        pc_orm = pc_result.scalar_one_or_none()
+        if pc_orm is None:
+            raise HTTPException(
+                404,
+                f"ProviderConfig '{payload.provider_config_id}' not found.",
+            )
+        # Stored config provides defaults; explicit payload fields override them.
+        if not adapter_id or adapter_id == "openai":
+            adapter_id = pc_orm.adapter_id or adapter_id
+        if not base_url:
+            base_url = pc_orm.base_url
+        if not api_key and pc_orm.api_key_encrypted:
+            api_key = _decrypt(pc_orm.api_key_encrypted)
+
+    adapter = get_adapter(adapter_id)
+    meta = get_adapter_metadata(adapter_id) or {}
     requires_base_url = bool(meta.get("requires_base_url", False))
 
-    api_key = payload.api_key
     if not api_key:
         # Fall back to stored key — use adapter_id as provider identifier
-        api_key = await get_api_key(db, payload.adapter_id) or ""
+        api_key = await get_api_key(db, adapter_id) or ""
 
-    base_url = payload.base_url
     if requires_base_url and not base_url:
         raise HTTPException(
             400,
-            f"Adapter '{payload.adapter_id}' requires a base_url to fetch models.",
+            f"Adapter '{adapter_id}' requires a base_url to fetch models.",
         )
 
     try:
@@ -208,7 +264,12 @@ async def fetch_provider_models(payload: FetchModelsPayload, db: AsyncSession = 
     except Exception as exc:
         raise HTTPException(502, f"Provider model discovery failed: {exc}") from exc
 
-    return {"models": models, "adapter_id": payload.adapter_id}
+    if pc_orm is not None:
+        pc_orm.cached_models = models
+        pc_orm.models_cached_at = datetime.utcnow()
+        await db.commit()
+
+    return {"models": models, "adapter_id": adapter_id}
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +333,13 @@ async def lab_run(payload: LabRunPayload, db: AsyncSession = Depends(get_db)):
     )
 
     # Load or create pricing snapshot
-    pricing = await _get_pricing(db, provider_id, payload.model_id, payload.pricing_profile_id)
+    pricing = await _get_pricing(
+        db,
+        provider_id,
+        payload.model_id,
+        payload.pricing_profile_id,
+        payload.provider_config_id,
+    )
 
     run_request = LabRunRequest(
         sample=payload.sample,
@@ -283,11 +350,142 @@ async def lab_run(payload: LabRunPayload, db: AsyncSession = Depends(get_db)):
         api_base_url=api_base_url,
         run_name=payload.run_name,
         provider_config_id=payload.provider_config_id,
+        image_resolution_enabled=payload.image_resolution_enabled,
+        image_resolution_target=payload.image_resolution_target,
     )
+
+    if payload.parameters.stream is True:
+        return StreamingResponse(
+            _stream_lab_run(db, run_request),
+            media_type="text/event-stream",
+        )
 
     session = await execute_lab_run(db, run_request)
     await db.commit()
     return session.model_dump(mode="json")
+
+
+async def _stream_lab_run(db: AsyncSession, run_request: LabRunRequest):
+    queue: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
+
+    async def on_event(event: StreamEvent) -> None:
+        await queue.put(event)
+
+    async def run_worker() -> None:
+        try:
+            session = await execute_lab_run(db, run_request, stream_callback=on_event)
+            await db.commit()
+            await queue.put(StreamEvent(event="done", usage={"run_id": session.run_id}))
+        except Exception as exc:
+            await db.rollback()
+            await queue.put(
+                StreamEvent(
+                    event="error",
+                    error={"message": str(exc), "type": "unknown_error"},
+                )
+            )
+        finally:
+            await queue.put(None)
+
+    task = asyncio.create_task(run_worker())
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            data = event.model_dump(mode="json", exclude_none=True)
+            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+
+def _task_to_schema(row: TaskORM) -> Task:
+    return Task(
+        task_id=row.task_id,
+        name=row.name,
+        provider_config_id=row.provider_config_id,
+        model_id=row.model_id,
+        model_parameters=ModelParameters(**(row.model_parameters or {})),
+        system_prompt=row.system_prompt,
+        user_prompt=row.user_prompt,
+        format_instruction=row.format_instruction,
+        output_contract=OutputContract(**(row.output_contract or {})),
+        pricing_profile_id=row.pricing_profile_id,
+        image_resolution_enabled=row.image_resolution_enabled,
+        image_resolution_target=row.image_resolution_target,
+        sample_set_id=row.sample_set_id,
+        notes=row.notes,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _apply_task_payload(row: TaskORM, payload: SaveTaskPayload) -> None:
+    row.name = payload.name
+    row.provider_config_id = payload.provider_config_id
+    row.model_id = payload.model_id
+    row.model_parameters = payload.model_parameters.model_dump(mode="json", exclude_none=True)
+    row.system_prompt = payload.system_prompt
+    row.user_prompt = payload.user_prompt
+    row.format_instruction = payload.format_instruction
+    row.output_contract = payload.output_contract.model_dump(mode="json", exclude_none=True)
+    row.pricing_profile_id = payload.pricing_profile_id
+    row.image_resolution_enabled = payload.image_resolution_enabled
+    row.image_resolution_target = payload.image_resolution_target
+    row.sample_set_id = payload.sample_set_id
+    row.notes = payload.notes
+    row.updated_at = datetime.utcnow().isoformat()
+
+
+@app.get("/api/tasks")
+async def list_tasks(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(TaskORM).order_by(TaskORM.updated_at.desc()))
+    return [_task_to_schema(row).model_dump(mode="json") for row in result.scalars().all()]
+
+
+@app.post("/api/tasks")
+async def create_task(payload: SaveTaskPayload, db: AsyncSession = Depends(get_db)):
+    row = TaskORM(task_id=f"task_{uuid4().hex[:12]}", name=payload.name, model_id=payload.model_id)
+    _apply_task_payload(row, payload)
+    db.add(row)
+    await db.commit()
+    return _task_to_schema(row).model_dump(mode="json")
+
+
+@app.get("/api/tasks/{task_id}")
+async def get_task(task_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(TaskORM).where(TaskORM.task_id == task_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Task not found")
+    return _task_to_schema(row).model_dump(mode="json")
+
+
+@app.put("/api/tasks/{task_id}")
+async def update_task(task_id: str, payload: SaveTaskPayload, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(TaskORM).where(TaskORM.task_id == task_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Task not found")
+    _apply_task_payload(row, payload)
+    await db.commit()
+    return _task_to_schema(row).model_dump(mode="json")
+
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(TaskORM).where(TaskORM.task_id == task_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Task not found")
+    await db.delete(row)
+    await db.commit()
+    return {"deleted": True}
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +563,7 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
                 "provider_id": i.provider_id,
                 "model_id": i.model_id,
                 "estimated_cost": i.estimated_cost,
+                "latency_ms": i.latency_ms,
                 "created_at": i.created_at,
             }
             for i in items
@@ -395,6 +594,7 @@ async def get_run_item(run_id: str, run_item_id: str, db: AsyncSession = Depends
         "review": item.review,
         "error": item.error,
         "estimated_cost": item.estimated_cost,
+        "latency_ms": item.latency_ms,
         "created_at": item.created_at,
     }
 
@@ -618,14 +818,22 @@ async def save_model_config(payload: CreateModelConfigPayload, db: AsyncSession 
 # ---------------------------------------------------------------------------
 
 @app.get("/api/pricing")
-async def list_pricing(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(PricingProfileORM).order_by(PricingProfileORM.created_at.desc())
-    )
+async def list_pricing(
+    provider_config_id: str | None = None,
+    model_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(PricingProfileORM)
+    if provider_config_id:
+        stmt = stmt.where(PricingProfileORM.provider_config_id == provider_config_id)
+    if model_id:
+        stmt = stmt.where(PricingProfileORM.model_id == model_id)
+    result = await db.execute(stmt.order_by(PricingProfileORM.created_at.desc()))
     return [
         {
             "pricing_profile_id": r.pricing_profile_id,
             "provider_id": r.provider_id,
+            "provider_config_id": r.provider_config_id,
             "model_id": r.model_id,
             "currency": r.currency,
             "effective_date": r.effective_date,
@@ -643,22 +851,50 @@ async def list_pricing(db: AsyncSession = Depends(get_db)):
 
 @app.post("/api/pricing")
 async def save_pricing(payload: CreatePricingPayload, db: AsyncSession = Depends(get_db)):
-    profile_id = f"pp_{uuid4().hex[:12]}"
-    orm = PricingProfileORM(
-        pricing_profile_id=profile_id,
-        provider_id=payload.provider_id,
-        model_id=payload.model_id,
-        currency=payload.currency,
-        input_token_price=payload.input_token_price,
-        output_token_price=payload.output_token_price,
-        cached_input_price=payload.cached_input_price,
-        batch_discount=payload.batch_discount,
-        image_pricing=payload.image_pricing,
-        notes=payload.notes,
-    )
-    db.add(orm)
+    provider_id = payload.provider_id or payload.provider_config_id or ""
+    if not provider_id:
+        raise HTTPException(400, "provider_id or provider_config_id is required")
+    lookup = select(PricingProfileORM).where(PricingProfileORM.model_id == payload.model_id)
+    if payload.provider_config_id:
+        lookup = lookup.where(PricingProfileORM.provider_config_id == payload.provider_config_id)
+    else:
+        lookup = lookup.where(PricingProfileORM.provider_id == provider_id)
+    result = await db.execute(lookup.order_by(PricingProfileORM.created_at.desc()).limit(1))
+    orm = result.scalar_one_or_none()
+    created = orm is None
+    if orm is None:
+        orm = PricingProfileORM(
+            pricing_profile_id=f"pp_{uuid4().hex[:12]}",
+            provider_id=provider_id,
+            provider_config_id=payload.provider_config_id,
+            model_id=payload.model_id,
+        )
+        db.add(orm)
+    orm.provider_id = provider_id
+    orm.provider_config_id = payload.provider_config_id
+    orm.currency = payload.currency
+    orm.input_token_price = payload.input_token_price
+    orm.output_token_price = payload.output_token_price
+    orm.cached_input_price = payload.cached_input_price
+    orm.batch_discount = payload.batch_discount
+    orm.image_pricing = payload.image_pricing
+    orm.notes = payload.notes
     await db.commit()
-    return {"pricing_profile_id": profile_id, "created": True}
+    return {"pricing_profile_id": orm.pricing_profile_id, "created": created}
+
+
+@app.delete("/api/pricing/{pricing_profile_id}")
+async def delete_pricing(pricing_profile_id: str, db: AsyncSession = Depends(get_db)):
+    stmt = select(PricingProfileORM).where(
+        PricingProfileORM.pricing_profile_id == pricing_profile_id
+    )
+    result = await db.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Pricing profile not found")
+    await db.delete(row)
+    await db.commit()
+    return {"deleted": True}
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +990,9 @@ async def list_provider_configs(db: AsyncSession = Depends(get_db)):
             "base_url": r.base_url,
             "api_key_set": bool(r.api_key_encrypted),
             "api_key_masked": _mask(_decrypt(r.api_key_encrypted)) if r.api_key_encrypted else "",
+            "cached_models": r.cached_models or [],
+            "selected_models": r.selected_models or [],
+            "models_cached_at": r.models_cached_at.isoformat() if r.models_cached_at else None,
             "notes": r.notes,
             "created_at": r.created_at,
         }
@@ -766,6 +1005,7 @@ class SaveProviderConfigPayload(BaseModel):
     adapter_id: str = "openai"
     base_url: str | None = None
     api_key: str | None = None  # None on update = keep existing
+    selected_models: list[str] = Field(default_factory=list)
     notes: str = ""
     provider_config_id: str | None = None  # None = create new
 
@@ -792,6 +1032,7 @@ async def save_provider_config(payload: SaveProviderConfigPayload, db: AsyncSess
         row.name = payload.name
         row.adapter_id = payload.adapter_id
         row.base_url = payload.base_url
+        row.selected_models = payload.selected_models
         row.notes = payload.notes
         if payload.api_key is not None:
             row.api_key_encrypted = _encrypt(payload.api_key)
@@ -805,6 +1046,7 @@ async def save_provider_config(payload: SaveProviderConfigPayload, db: AsyncSess
             adapter_id=payload.adapter_id,
             base_url=payload.base_url,
             api_key_encrypted=encrypted_key,
+            selected_models=payload.selected_models,
             notes=payload.notes,
         )
         db.add(row)
@@ -816,6 +1058,9 @@ async def save_provider_config(payload: SaveProviderConfigPayload, db: AsyncSess
         "adapter_id": row.adapter_id,
         "base_url": row.base_url,
         "api_key_set": bool(row.api_key_encrypted),
+        "cached_models": row.cached_models or [],
+        "selected_models": row.selected_models or [],
+        "models_cached_at": row.models_cached_at.isoformat() if row.models_cached_at else None,
         "created": payload.provider_config_id is None,
     }
 
@@ -885,6 +1130,7 @@ async def _get_pricing(
     provider_id: str,
     model_id: str,
     pricing_profile_id: str | None,
+    provider_config_id: str | None = None,
 ) -> PricingProfile:
     """Load a pricing profile from DB, or create a zero-cost default."""
     from app.models.pricing import PricingProfileORM
@@ -892,6 +1138,16 @@ async def _get_pricing(
     if pricing_profile_id:
         stmt = select(PricingProfileORM).where(
             PricingProfileORM.pricing_profile_id == pricing_profile_id
+        )
+    elif provider_config_id:
+        stmt = (
+            select(PricingProfileORM)
+            .where(
+                PricingProfileORM.provider_config_id == provider_config_id,
+                PricingProfileORM.model_id == model_id,
+            )
+            .order_by(PricingProfileORM.created_at.desc())
+            .limit(1)
         )
     else:
         stmt = (
@@ -907,10 +1163,24 @@ async def _get_pricing(
     result = await db.execute(stmt)
     orm = result.scalar_one_or_none()
 
+    if orm is None and provider_config_id:
+        fallback_stmt = (
+            select(PricingProfileORM)
+            .where(
+                PricingProfileORM.provider_id == provider_id,
+                PricingProfileORM.model_id == model_id,
+            )
+            .order_by(PricingProfileORM.created_at.desc())
+            .limit(1)
+        )
+        fallback_result = await db.execute(fallback_stmt)
+        orm = fallback_result.scalar_one_or_none()
+
     if orm:
         return PricingProfile(
             pricing_profile_id=orm.pricing_profile_id,
             provider_id=orm.provider_id,
+            provider_config_id=orm.provider_config_id,
             model_id=orm.model_id,
             currency=orm.currency,
             input_token_price=orm.input_token_price,
@@ -925,6 +1195,7 @@ async def _get_pricing(
     return PricingProfile(
         pricing_profile_id=f"pp_default_{uuid4().hex[:8]}",
         provider_id=provider_id,
+        provider_config_id=provider_config_id,
         model_id=model_id,
         currency="USD",
         input_token_price=0.0,

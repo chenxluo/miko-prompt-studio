@@ -13,9 +13,10 @@ def calculate_cost(usage: Usage, pricing: PricingSnapshot) -> CostEstimate:
     cached_tokens = usage.cached_input_tokens or 0
     billable_input_tokens = max(usage.input_tokens - cached_tokens, 0)
 
-    input_text = billable_input_tokens * pricing.input_token_price / 1000
-    output_text = usage.output_tokens * pricing.output_token_price / 1000
-    cached_input = cached_tokens * (pricing.cached_input_price or pricing.input_token_price) / 1000
+    input_text = billable_input_tokens * pricing.input_token_price / 1_000_000
+    output_text = usage.output_tokens * pricing.output_token_price / 1_000_000
+    cached_price = pricing.cached_input_price or pricing.input_token_price
+    cached_input = cached_tokens * cached_price / 1_000_000
     image_input = _image_cost(usage, pricing)
 
     breakdown = CostBreakdown(
@@ -76,7 +77,7 @@ def estimate_batch_cost(usage_list: list[Usage], pricing: PricingSnapshot) -> Co
 def _image_cost(usage: Usage, pricing: PricingSnapshot) -> float:
     image_pricing = pricing.image_pricing
     if image_pricing.mode == "token":
-        return (usage.image_tokens or 0) * (image_pricing.image_token_price or 0.0) / 1000
+        return (usage.image_tokens or 0) * (image_pricing.image_token_price or 0.0) / 1_000_000
     if image_pricing.mode == "per_request":
         return usage.image_count * (image_pricing.image_per_request_price or 0.0)
     return 0.0

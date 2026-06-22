@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Integer, String, Text
+from datetime import datetime
+
+from sqlalchemy import JSON, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -20,6 +22,9 @@ class ProviderConfigORM(Base):
     adapter_id: Mapped[str] = mapped_column(String, default="openai")
     base_url: Mapped[str | None] = mapped_column(String, nullable=True)
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cached_models: Mapped[list[str]] = mapped_column(JSON, default=list)
+    selected_models: Mapped[list[str]] = mapped_column(JSON, default=list)
+    models_cached_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(
         String, default=lambda: utc_now().isoformat()

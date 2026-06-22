@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +16,13 @@ from app.adapters.base import BaseAdapter
 from app.schemas.common import AttemptStatus, ErrorType, NormalizedError, OutputMode
 from app.schemas.internal_request import InternalRequest, RequestImage
 from app.schemas.model_config import ProviderCapability
-from app.schemas.run_record import AdapterResult, NormalizedResponse, SafetyInfo, Usage
+from app.schemas.run_record import (
+    AdapterResult,
+    NormalizedResponse,
+    SafetyInfo,
+    StreamEvent,
+    Usage,
+)
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
@@ -147,6 +155,61 @@ class OpenAICompatAdapter(BaseAdapter):
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             return await client.post(url, headers=headers, json=provider_request)
 
+    async def stream(
+        self,
+        provider_request: dict[str, Any],
+        api_key: str,
+        base_url: str | None,
+        timeout: int,
+    ) -> AsyncIterator[StreamEvent]:
+        async for event in self.send_stream(provider_request, api_key, base_url, timeout):
+            yield event
+
+    async def send_stream(
+        self,
+        provider_request: dict[str, Any],
+        api_key: str,
+        base_url: str | None,
+        timeout: int,
+    ) -> AsyncIterator[StreamEvent]:
+        resolved = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
+        if not resolved:
+            raise ValueError(
+                "base_url is required for the openai_compat adapter. "
+                "Provide it in the model config or run request."
+            )
+        url = f"{resolved}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = dict(provider_request)
+        payload["stream"] = True
+        payload.setdefault("stream_options", {"include_usage": True})
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client, client.stream(
+                "POST", url, headers=headers, json=payload
+            ) as response:
+                if response.is_error:
+                    await response.aread()
+                    error = self.normalize_error(response=response, exception=None)
+                    yield StreamEvent(event="error", error=error.model_dump(mode="json"))
+                    return
+
+                async for event in self._events_from_sse_lines(response.aiter_lines()):
+                    yield event
+        except Exception as exc:
+            error = self.normalize_error(response=None, exception=exc)
+            yield StreamEvent(event="error", error=error.model_dump(mode="json"))
+
+    async def stream_to_result(
+        self,
+        events: AsyncIterator[StreamEvent],
+        request: InternalRequest,
+    ) -> AdapterResult:
+        return await self._result_from_stream_events(events, request=request)
+
     def parse_response(self, response: httpx.Response, request: InternalRequest) -> AdapterResult:
         data = response.json()
         choices = data.get("choices") or []
@@ -168,12 +231,14 @@ class OpenAICompatAdapter(BaseAdapter):
         text = self._content_to_text(content)
         finish_reason = first_choice.get("finish_reason")
         blocked = finish_reason == "content_filter"
+        reasoning_text = self._reasoning_to_text(message.get("reasoning_content"))
 
         return AdapterResult(
             status=AttemptStatus.BLOCKED if blocked else AttemptStatus.SUCCEEDED,
             normalized_response=NormalizedResponse(
                 text=text,
                 finish_reason=finish_reason,
+                reasoning_text=reasoning_text,
                 safety=SafetyInfo(
                     blocked=blocked,
                     categories=["content_filter"] if blocked else [],
@@ -192,6 +257,62 @@ class OpenAICompatAdapter(BaseAdapter):
                 else None
             ),
         )
+
+    async def _events_from_sse_lines(
+        self,
+        lines: AsyncIterator[str],
+    ) -> AsyncIterator[StreamEvent]:
+        async for line in lines:
+            line = line.strip()
+            if not line or not line.startswith("data:"):
+                continue
+
+            data_text = line[len("data:") :].strip()
+            if data_text == "[DONE]":
+                continue
+
+            try:
+                data = json.loads(data_text)
+            except json.JSONDecodeError as exc:
+                yield StreamEvent(
+                    event="error",
+                    error={
+                        "type": ErrorType.PROVIDER_ERROR.value,
+                        "message": f"Invalid streaming JSON chunk: {exc}",
+                        "retryable": False,
+                        "raw_error": {"chunk": data_text},
+                    },
+                )
+                return
+
+            usage = data.get("usage") if isinstance(data, dict) else None
+            if isinstance(usage, dict) and usage:
+                yield StreamEvent(event="usage", usage=usage)
+
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not isinstance(choices, list):
+                continue
+
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta") or {}
+                if not isinstance(delta, dict):
+                    continue
+
+                reasoning = delta.get("reasoning_content")
+                if reasoning is None:
+                    reasoning = delta.get("reasoning")
+                reasoning_text = self._reasoning_to_text(reasoning)
+                if reasoning_text:
+                    yield StreamEvent(event="reasoning", delta=reasoning_text)
+
+                content = delta.get("content")
+                content_text = self._content_to_text(content)
+                if content_text:
+                    yield StreamEvent(event="content", delta=content_text)
+
+        yield StreamEvent(event="done")
 
     def parse_usage(self, response_data: dict[str, Any]) -> Usage:
         usage = response_data.get("usage") or {}
@@ -409,6 +530,13 @@ class OpenAICompatAdapter(BaseAdapter):
     ) -> Usage:
         usage = self.parse_usage(response_data)
         usage.image_count = len(request.images)
+        if usage.image_tokens is None:
+            image_pixels = 0
+            for image in request.images:
+                resolved = image.resolved
+                if resolved and resolved.width and resolved.height:
+                    image_pixels += resolved.width * resolved.height
+            usage.image_tokens = image_pixels or None
         return usage
 
     def _content_to_text(self, content: Any) -> str:
@@ -427,6 +555,17 @@ class OpenAICompatAdapter(BaseAdapter):
                     parts.append(item)
             return "".join(parts)
         return str(content)
+
+    def _reasoning_to_text(self, reasoning: Any) -> str | None:
+        if reasoning is None:
+            return None
+        if isinstance(reasoning, str):
+            return reasoning or None
+        if isinstance(reasoning, dict):
+            text = reasoning.get("text")
+            if isinstance(text, str):
+                return text or None
+        return str(reasoning) or None
 
     def _error_body(self, response: httpx.Response) -> dict[str, Any]:
         try:
