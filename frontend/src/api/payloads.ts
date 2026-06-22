@@ -1,5 +1,7 @@
 /** Request payload types for POST/PUT endpoints. */
 
+import type { FewShotExample, ImageSlotSpec } from '../types';
+
 export interface CreateModelConfigPayload {
   name: string;
   provider_id: string;
@@ -29,6 +31,8 @@ export interface SavePromptPayload {
   user_template?: string;
   format_instruction?: string;
   notes?: string;
+  image_slot_specs?: ImageSlotSpec[];
+  few_shot_examples?: FewShotExample[];
   prompt_id?: string | null;
 }
 
@@ -53,4 +57,25 @@ export interface SaveTaskPayload {
   image_resolution_target?: number;
   sample_set_id?: string | null;
   notes?: string;
+}
+
+export interface CreateResultSnapshotPayload {
+  run_id: string;
+  run_item_id?: string | null;
+  attempt_id?: string | null;
+  name: string;
+  description?: string;
+  tags?: string[];
+  notes?: string;
+  starred?: boolean;
+}
+
+export interface UpdateResultSnapshotPayload {
+  name?: string;
+  description?: string;
+  tags?: string[];
+  notes?: string;
+  starred?: boolean;
+  accepted?: boolean | null;
+  rating?: number | null;
 }

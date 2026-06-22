@@ -244,11 +244,39 @@ export interface ProviderCapability {
 // Prompt
 // ---------------------------------------------------------------------------
 
+export interface ImageSlotSpec {
+  slot_id?: string;
+  label?: string;
+  description?: string;
+  role_hint?: string | null;
+  required?: boolean;
+  min_count?: number;
+  max_count?: number | null;
+}
+
+export interface FewShotExample {
+  example_id: string;
+  title?: string;
+  enabled?: boolean;
+  input_text?: string;
+  output_text?: string;
+  parsed_output?: unknown;
+  reasoning_text?: string | null;
+  images?: ImageRef[];
+  source_run_id?: string | null;
+  source_run_item_id?: string | null;
+  source_attempt_id?: string | null;
+  notes?: string;
+  created_from?: string;
+}
+
 export interface PromptVersionData {
   system_prompt?: string;
   user_template?: string;
   format_instruction?: string;
   notes?: string;
+  image_slot_specs?: ImageSlotSpec[];
+  few_shot_examples?: FewShotExample[];
 }
 
 export interface PromptVersion extends PromptVersionData, Timestamps {
@@ -266,12 +294,35 @@ export interface Prompt extends Timestamps {
   tags?: string[];
 }
 
+export interface PromptListItem extends Timestamps {
+  prompt_id: string;
+  name: string;
+  description?: string;
+  current_version_id?: string | null;
+  tags?: string[];
+  latest_version?: {
+    prompt_version_id: string;
+    version_label?: string;
+    system_prompt?: string;
+    user_template?: string;
+    format_instruction?: string;
+    notes?: string;
+    image_slot_specs?: ImageSlotSpec[];
+    few_shot_examples?: FewShotExample[];
+    created_at?: string;
+    updated_at?: string;
+  } | null;
+}
+
 export interface PromptSnapshot {
   prompt_id?: string | null;
   prompt_version_id?: string | null;
   system_prompt?: string;
   user_template?: string;
   format_instruction?: string;
+  notes?: string;
+  image_slot_specs?: ImageSlotSpec[];
+  few_shot_examples?: FewShotExample[];
   version_label?: string | null;
 }
 
@@ -573,6 +624,62 @@ export interface AdapterResult {
   latency_ms?: number | null;
   provider_request_snapshot?: Record<string, unknown> | null;
   provider_response_raw?: Record<string, unknown> | null;
+}
+
+export interface RunItemSummary extends Timestamps {
+  run_item_id: string;
+  run_id: string;
+  sample_id: string;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  internal_request_snapshot?: Record<string, unknown> | null;
+  prompt_snapshot: Record<string, unknown> | null;
+  model_config_snapshot: Record<string, unknown> | null;
+  output_contract_snapshot: Record<string, unknown> | null;
+  pricing_snapshot: Record<string, unknown> | null;
+  final_attempt_id: string | null;
+  latency_ms: number | null;
+  response: Record<string, unknown>;
+  usage: Record<string, unknown>;
+  cost: Record<string, unknown>;
+  review: Record<string, unknown>;
+  error: Record<string, unknown> | null;
+  provider_id: string | null;
+  model_id: string | null;
+  estimated_cost: number;
+}
+
+// ---------------------------------------------------------------------------
+// Result snapshots
+// ---------------------------------------------------------------------------
+
+export interface ResultSnapshot extends Timestamps {
+  snapshot_id: string;
+  run_id: string;
+  run_item_id?: string | null;
+  attempt_id?: string | null;
+  name: string;
+  description?: string;
+  tags?: string[];
+  starred?: boolean;
+  notes?: string;
+  accepted?: boolean | null;
+  rating?: number | null;
+  provider_id?: string | null;
+  model_id?: string | null;
+  prompt_version_id?: string | null;
+  thumbnail_image_uri?: string | null;
+  internal_request_snapshot?: Record<string, unknown> | null;
+  config_snapshot?: Record<string, unknown> | null;
+  image_dir?: string | null;
+}
+
+export interface ResultSnapshotDetail {
+  snapshot: ResultSnapshot;
+  run_session: RunSession;
+  run_item: RunItemSummary | null;
+  attempt: Attempt | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 import {
+  ChevronDown,
   FileText,
   ImageIcon,
+  Info,
   Terminal,
 } from 'lucide-react';
 import {
@@ -13,10 +15,11 @@ import {
   type DragEvent,
 } from 'react';
 
+import * as api from '../../api/client';
 import { useI18n } from '../../i18n';
 import { type ImageSlot } from '../../store/labStore';
 import { useLabStore } from '../../store/labStore';
-import type { ImageRef, OutputContract, OutputMode } from '../../types';
+import type { ImageRef, ImageSlotSpec, OutputContract, OutputMode } from '../../types';
 import { resolveImageSrc } from './ImagePanel';
 
 export function PromptPanel() {
@@ -32,6 +35,7 @@ export function PromptPanel() {
   const outputContract = useLabStore((state) => state.outputContract);
   const images = useLabStore((state) => state.images);
   const imageSlots = useLabStore((state) => state.imageSlots);
+  const templateImageSlotSpecs = useLabStore((state) => state.templateImageSlotSpecs);
 
   const setSystemPrompt = useLabStore((state) => state.setSystemPrompt);
   const setUserPrompt = useLabStore((state) => state.setUserPrompt);
@@ -357,24 +361,81 @@ export function PromptPanel() {
     [outputContract, setOutputContract, t],
   );
 
+  const [prompts, setPrompts] = useState<api.PromptListItem[]>([]);
+  const [promptsLoading, setPromptsLoading] = useState(false);
+  const loadPrompt = useLabStore((state) => state.loadPrompt);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPromptsLoading(true);
+    api
+      .listPrompts()
+      .then((items) => {
+        if (!cancelled) setPrompts(items);
+      })
+      .catch(() => {
+        // Ignore: this is a convenience dropdown, not critical.
+      })
+      .finally(() => {
+        if (!cancelled) setPromptsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSelectPrompt = useCallback(
+    (event: React.ChangeEvent<HTMLSelectElement>) => {
+      const promptId = event.target.value;
+      if (!promptId) return;
+      const prompt = prompts.find((p) => p.prompt_id === promptId);
+      if (prompt) loadPrompt(prompt);
+    },
+    [prompts, loadPrompt],
+  );
+
   return (
     <section className="panel flex flex-col overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-surface-800 px-4 py-3">
-        <FileText size={16} className="text-accent" />
-        <span className="text-sm font-semibold text-ink">{t('prompt.title')}</span>
+      <div className="flex items-center justify-between border-b border-surface-800 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <FileText size={16} className="text-accent" />
+          <span className="text-sm font-semibold text-ink">{t('prompt.title')}</span>
+        </div>
+        <div className="relative">
+          <select
+            value=""
+            onChange={handleSelectPrompt}
+            disabled={promptsLoading}
+            className="appearance-none rounded-md border border-surface-700 bg-surface-950 py-1.5 pl-3 pr-8 text-xs text-ink focus:border-accent focus:outline-none disabled:opacity-50"
+          >
+            <option value="">{t('prompt.selectPrompt')}</option>
+            {prompts.map((prompt) => (
+              <option key={prompt.prompt_id} value={prompt.prompt_id}>
+                {prompt.name}
+              </option>
+            ))}
+          </select>
+          <ChevronDown
+            size={12}
+            className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-dim"
+          />
+        </div>
       </div>
 
       <div className="flex flex-1 flex-col gap-4 overflow-auto p-4">
         <div className="flex flex-col gap-1.5">
-          <label className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
-            <Terminal size={12} />
-            {t('prompt.systemPrompt')}
-          </label>
+          <div className="flex items-center justify-between">
+            <label className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
+              <Terminal size={12} />
+              {t('prompt.systemPrompt')}
+            </label>
+            <span className="text-[10px] text-ink-dim">{t('prompt.systemPromptHint')}</span>
+          </div>
           <textarea
             value={systemPrompt}
             onChange={(event) => setSystemPrompt(event.target.value)}
-            rows={4}
-            className="min-h-[5rem] resize-y rounded-md border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+            rows={6}
+            className="min-h-[8rem] resize-y rounded-md border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
           />
         </div>
 
@@ -458,6 +519,10 @@ export function PromptPanel() {
           />
 
           <p className="text-xs text-ink-dim">{t('prompt.imageRefHint')}</p>
+
+          {templateImageSlotSpecs.length > 0 && (
+            <ExpectedImageSlotGuidance specs={templateImageSlotSpecs} currentImages={images} />
+          )}
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -677,4 +742,56 @@ function extractSectionNames(contract: OutputContract): string {
       .join(', ');
   }
   return '';
+}
+
+interface ExpectedImageSlotGuidanceProps {
+  specs: ImageSlotSpec[];
+  currentImages: ImageRef[];
+}
+
+function ExpectedImageSlotGuidance({ specs, currentImages }: ExpectedImageSlotGuidanceProps) {
+  const { t } = useI18n();
+
+  return (
+    <div className="rounded-md border border-accent/20 bg-accent/5 p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-accent">
+        <Info size={14} />
+        {t('prompt.expectedImageSlots')}
+      </div>
+      <ul className="space-y-2">
+        {specs.map((spec, index) => {
+          const min = spec.min_count ?? (spec.required ? 1 : 0);
+          const max = spec.max_count ?? Number.POSITIVE_INFINITY;
+          const matched = currentImages.length >= min && currentImages.length <= max;
+          return (
+            <li key={spec.slot_id ?? index} className="flex items-start gap-2 text-xs">
+              <span
+                className={[
+                  'mt-0.5 inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold',
+                  matched
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : 'bg-amber-500/20 text-amber-400',
+                ].join(' ')}
+              >
+                {matched ? '✓' : '!'}
+              </span>
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-ink">{spec.label || `${t('prompt.imageSlot')} ${index + 1}`}</span>
+                  {spec.required && (
+                    <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[10px] text-danger">
+                      {t('prompt.required')}
+                    </span>
+                  )}
+                </div>
+                {spec.description && (
+                  <p className="mt-0.5 text-ink-muted">{spec.description}</p>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }

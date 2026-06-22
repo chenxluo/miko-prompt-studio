@@ -2,9 +2,14 @@
 
 import type {
   ApiErrorBody,
+  FewShotExample,
+  ImageSlotSpec,
   ModelConfig,
   PricingProfile,
   Prompt,
+  ResultSnapshot,
+  ResultSnapshotDetail,
+  RunItemSummary,
   RunSession,
   SampleRecord,
   Task,
@@ -13,8 +18,10 @@ import type {
 import type {
   CreateModelConfigPayload,
   CreatePricingPayload,
+  CreateResultSnapshotPayload,
   SavePromptPayload,
   SaveTaskPayload,
+  UpdateResultSnapshotPayload,
   UpdateReviewPayload,
 } from './payloads';
 
@@ -375,30 +382,6 @@ export interface RunDetail {
   items: RunItemSummary[];
 }
 
-export interface RunItemSummary {
-  run_item_id: string;
-  run_id: string;
-  sample_id: string;
-  status: string;
-  started_at: string | null;
-  completed_at: string | null;
-  prompt_snapshot: Record<string, unknown> | null;
-  model_config_snapshot: Record<string, unknown> | null;
-  output_contract_snapshot: Record<string, unknown> | null;
-  pricing_snapshot: Record<string, unknown> | null;
-  final_attempt_id: string | null;
-  latency_ms: number | null;
-  response: Record<string, unknown>;
-  usage: Record<string, unknown>;
-  cost: Record<string, unknown>;
-  review: Record<string, unknown>;
-  error: Record<string, unknown> | null;
-  provider_id: string | null;
-  model_id: string | null;
-  estimated_cost: number;
-  created_at: string;
-}
-
 export async function getRun(runId: string): Promise<RunDetail> {
   return request<RunDetail>('GET', `/api/runs/${encodeURIComponent(runId)}`);
 }
@@ -487,6 +470,8 @@ export interface PromptListItem {
     user_template: string;
     format_instruction: string;
     notes: string;
+    image_slot_specs: ImageSlotSpec[];
+    few_shot_examples: FewShotExample[];
   } | null;
   created_at: string;
 }
@@ -501,6 +486,48 @@ export async function savePrompt(
   payload: SavePromptPayload,
 ): Promise<{ prompt_id: string; prompt_version_id: string; created: boolean }> {
   return request('POST', '/api/prompts', payload);
+}
+
+export async function getPrompt(promptId: string): Promise<PromptListItem> {
+  return request<PromptListItem>('GET', `/api/prompts/${encodeURIComponent(promptId)}`);
+}
+
+export async function getPromptVersion(
+  promptId: string,
+  versionId: string,
+): Promise<{
+  prompt_version_id: string;
+  prompt_id: string;
+  version_label: string;
+  system_prompt: string;
+  user_template: string;
+  format_instruction: string;
+  notes: string;
+  image_slot_specs: ImageSlotSpec[];
+  few_shot_examples: FewShotExample[];
+  created_at: string;
+}> {
+  return request<
+    {
+      prompt_version_id: string;
+      prompt_id: string;
+      version_label: string;
+      system_prompt: string;
+      user_template: string;
+      format_instruction: string;
+      notes: string;
+      image_slot_specs: ImageSlotSpec[];
+      few_shot_examples: FewShotExample[];
+      created_at: string;
+    }
+  >('GET', `/api/prompts/${encodeURIComponent(promptId)}/versions/${encodeURIComponent(versionId)}`);
+}
+
+export async function deletePrompt(promptId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(
+    'DELETE',
+    `/api/prompts/${encodeURIComponent(promptId)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -617,5 +644,57 @@ export async function importCsv(
     'POST',
     '/api/import/csv',
     payload,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Result snapshots
+// ---------------------------------------------------------------------------
+
+export async function createResultSnapshot(
+  payload: CreateResultSnapshotPayload,
+): Promise<ResultSnapshot> {
+  return request<ResultSnapshot>('POST', '/api/result-snapshots', payload);
+}
+
+export async function listResultSnapshots(options?: {
+  limit?: number;
+  starred_only?: boolean;
+  tag?: string;
+  provider_id?: string;
+  model_id?: string;
+}): Promise<ResultSnapshot[]> {
+  const params = new URLSearchParams();
+  if (options?.limit !== undefined) params.set('limit', String(options.limit));
+  if (options?.starred_only !== undefined) params.set('starred_only', String(options.starred_only));
+  if (options?.tag) params.set('tag', options.tag);
+  if (options?.provider_id) params.set('provider_id', options.provider_id);
+  if (options?.model_id) params.set('model_id', options.model_id);
+  const query = params.toString();
+  return request<ResultSnapshot[]>('GET', `/api/result-snapshots${query ? `?${query}` : ''}`);
+}
+
+export async function getResultSnapshot(snapshotId: string): Promise<ResultSnapshotDetail> {
+  return request<ResultSnapshotDetail>(
+    'GET',
+    `/api/result-snapshots/${encodeURIComponent(snapshotId)}`,
+  );
+}
+
+export async function updateResultSnapshot(
+  snapshotId: string,
+  payload: UpdateResultSnapshotPayload,
+): Promise<ResultSnapshot> {
+  return request<ResultSnapshot>(
+    'PATCH',
+    `/api/result-snapshots/${encodeURIComponent(snapshotId)}`,
+    payload,
+  );
+}
+
+export async function deleteResultSnapshot(snapshotId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(
+    'DELETE',
+    `/api/result-snapshots/${encodeURIComponent(snapshotId)}`,
   );
 }

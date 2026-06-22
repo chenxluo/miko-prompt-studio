@@ -1,11 +1,13 @@
 import {
   AlertCircle,
   AlertTriangle,
+  Bookmark,
   Brain,
   CheckCircle2,
   ChevronDown,
   Clock,
   Coins,
+  Copy,
   Cpu,
   ImageIcon,
   Layers,
@@ -18,14 +20,20 @@ import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 
 import { useI18n } from '../../i18n';
+import { useSnapshotStore } from '../../store/snapshotStore';
 import { useLabStore } from '../../store/labStore';
-import type { RunItemType } from '../../types';
+import { UseAsFewShotDialog } from '../prompts/UseAsFewShotDialog';
+import type { RunItemType, RunSession, RunItemSummary } from '../../types';
+import type { CreateResultSnapshotPayload } from '../../api/payloads';
 
 export function ResultPanel() {
   const { t } = useI18n();
   const isRunning = useLabStore((state) => state.isRunning);
   const lastRunItem = useLabStore((state) => state.lastRunItem);
+  const lastResult = useLabStore((state) => state.lastResult);
   const error = useLabStore((state) => state.error);
+  const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
+  const [isFewShotDialogOpen, setIsFewShotDialogOpen] = useState(false);
 
   if (isRunning && !lastRunItem) {
     return (
@@ -78,7 +86,38 @@ export function ResultPanel() {
             {latencyMs} ms
           </div>
         )}
+        <button
+          type="button"
+          onClick={() => setIsSaveDialogOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/20"
+        >
+          <Bookmark size={12} className="fill-accent" />
+          {t('snapshot.save')}
+        </button>
+        <button
+          type="button"
+          onClick={() => setIsFewShotDialogOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 bg-surface-800 px-2.5 py-1.5 text-xs font-medium text-ink-muted hover:bg-surface-700"
+        >
+          <Copy size={12} />
+          {t('prompt.useAsFewShot')}
+        </button>
       </div>
+
+      {isSaveDialogOpen && lastResult && (
+        <SaveSnapshotDialog
+          runSession={lastResult}
+          runItem={lastRunItem}
+          onClose={() => setIsSaveDialogOpen(false)}
+        />
+      )}
+
+      {isFewShotDialogOpen && (
+        <UseAsFewShotDialog
+          runItem={lastRunItem}
+          onClose={() => setIsFewShotDialogOpen(false)}
+        />
+      )}
 
       <div className="flex-1 space-y-4 overflow-auto p-4">
         {error && (
@@ -431,4 +470,127 @@ function findLatencyMs(item: {
     }
   }
   return undefined;
+}
+
+function SaveSnapshotDialog({
+  runSession,
+  runItem,
+  onClose,
+}: {
+  runSession: RunSession;
+  runItem: RunItemSummary;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const createSnapshot = useSnapshotStore((state) => state.createSnapshot);
+  const [name, setName] = useState(runSession.name || `${t('snapshot.title')} ${new Date().toLocaleString()}`);
+  const [description, setDescription] = useState('');
+  const [tags, setTags] = useState('');
+  const [notes, setNotes] = useState('');
+  const [starred, setStarred] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  async function handleSave() {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      window.alert(t('snapshot.nameRequired'));
+      return;
+    }
+    setIsSaving(true);
+    const payload: CreateResultSnapshotPayload = {
+      run_id: runSession.run_id,
+      run_item_id: runItem.run_item_id,
+      name: trimmed,
+      description: description.trim() || undefined,
+      tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+      notes: notes.trim() || undefined,
+      starred,
+    };
+    const snapshot = await createSnapshot(payload);
+    setIsSaving(false);
+    if (snapshot) {
+      onClose();
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-surface-950/60 p-4 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        className="w-full max-w-md rounded-lg border border-surface-700 bg-surface-900 p-5 shadow-panel"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h3 className="mb-4 text-sm font-semibold text-ink">{t('snapshot.save')}</h3>
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs text-ink-muted">{t('snapshot.name')}</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              className="w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-xs text-ink focus:border-accent focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-ink-muted">{t('snapshot.descriptionLabel')}</label>
+            <input
+              type="text"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              className="w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-xs text-ink focus:border-accent focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-ink-muted">{t('snapshot.tags')}</label>
+            <input
+              type="text"
+              value={tags}
+              onChange={(event) => setTags(event.target.value)}
+              placeholder={t('snapshot.tagsHint')}
+              className="w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-ink-muted">{t('snapshot.notes')}</label>
+            <textarea
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              rows={3}
+              className="w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-xs text-ink focus:border-accent focus:outline-none"
+            />
+          </div>
+          <label className="flex items-center gap-2 text-xs text-ink-muted">
+            <input
+              type="checkbox"
+              checked={starred}
+              onChange={(event) => setStarred(event.target.checked)}
+              className="rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent"
+            />
+            {t('snapshot.starred')}
+          </label>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted hover:bg-surface-800"
+          >
+            {t('common.cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={isSaving}
+            className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
+          >
+            {isSaving ? <Loader2 size={12} className="animate-spin" /> : t('common.confirm')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

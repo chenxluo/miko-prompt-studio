@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
@@ -16,7 +18,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -31,16 +33,24 @@ from app.database import get_db, init_db
 from app.models.model_config import ModelConfigORM
 from app.models.pricing import PricingProfileORM
 from app.models.prompt import PromptORM, PromptVersionORM
-from app.models.run import RunItemORM, RunSessionORM
+from app.models.result_snapshot import ResultSnapshotORM
+from app.models.run import AttemptORM, RunItemORM, RunSessionORM
 from app.models.sample import SampleRecordORM, SampleSetORM
 from app.models.task import TaskORM
+from app.schemas.common import utc_now
 from app.schemas.model_config import ModelConfig, ModelParameters
 from app.schemas.output_contract import OutputContract, OutputMode
 from app.schemas.pricing import PricingProfile
-from app.schemas.prompt import PromptVersion, PromptVersionData
+from app.schemas.prompt import FewShotExample, ImageSlotSpec, PromptVersionData
+from app.schemas.result_snapshot import ResultSnapshot as ResultSnapshotSchema
 from app.schemas.sample_record import ImageRef, SampleRecord
 from app.schemas.run_record import StreamEvent
 from app.schemas.task import Task
+from app.services.image_persist import (
+    persist_request_images,
+    request_image_to_image_ref,
+    rewrite_image_uris,
+)
 from app.services.importer import ColumnMapping, import_csv, preview_csv, detect_columns
 from app.services.run_executor import LabRunRequest, execute_lab_run
 
@@ -136,6 +146,8 @@ class SavePromptPayload(BaseModel):
     user_template: str = ""
     format_instruction: str = ""
     notes: str = ""
+    image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
+    few_shot_examples: list[FewShotExample] = Field(default_factory=list)
     prompt_id: str | None = None  # if provided, creates a new version
 
 
@@ -144,6 +156,27 @@ class UpdateReviewPayload(BaseModel):
     rating: int | None = None
     labels: list[str] = Field(default_factory=list)
     notes: str = ""
+
+
+class CreateResultSnapshotPayload(BaseModel):
+    run_id: str
+    run_item_id: str | None = None
+    attempt_id: str | None = None
+    name: str
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    notes: str = ""
+    starred: bool = False
+
+
+class UpdateResultSnapshotPayload(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    notes: str | None = None
+    starred: bool | None = None
+    accepted: bool | None = None
+    rating: int | None = None
 
 
 class ApiKeyPayload(BaseModel):
@@ -439,7 +472,7 @@ def _apply_task_payload(row: TaskORM, payload: SaveTaskPayload) -> None:
     row.image_resolution_target = payload.image_resolution_target
     row.sample_set_id = payload.sample_set_id
     row.notes = payload.notes
-    row.updated_at = datetime.utcnow().isoformat()
+    row.updated_at = utc_now().isoformat()
 
 
 @app.get("/api/tasks")
@@ -491,6 +524,391 @@ async def delete_task(task_id: str, db: AsyncSession = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
+
+def _dict_get(data: dict[str, Any] | None, *keys: str) -> Any:
+    current: Any = data or {}
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _thumbnail_from_images(images: list[dict[str, Any]] | None) -> str | None:
+    if not isinstance(images, list) or not images:
+        return None
+    first = images[0]
+    if isinstance(first, dict):
+        return first.get("uri")
+    return None
+
+
+def _thumbnail_from_run_item(item: RunItemORM | None) -> str | None:
+    if item is None:
+        return None
+    images = _dict_get(item.internal_request_snapshot, "images")
+    return _thumbnail_from_images(images)
+
+
+def _result_snapshot_to_schema(row: ResultSnapshotORM) -> ResultSnapshotSchema:
+    return ResultSnapshotSchema(
+        snapshot_id=row.snapshot_id,
+        run_id=row.run_id,
+        run_item_id=row.run_item_id,
+        attempt_id=row.attempt_id,
+        name=row.name,
+        description=row.description,
+        tags=row.tags or [],
+        starred=bool(row.starred),
+        notes=row.notes,
+        accepted=row.accepted,
+        rating=row.rating,
+        provider_id=row.provider_id,
+        model_id=row.model_id,
+        prompt_version_id=row.prompt_version_id,
+        thumbnail_image_uri=row.thumbnail_image_uri,
+        internal_request_snapshot=row.internal_request_snapshot,
+        config_snapshot=row.config_snapshot,
+        image_dir=row.image_dir,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _run_session_to_dict(session: RunSessionORM) -> dict[str, Any]:
+    return {
+        "run_id": session.run_id,
+        "run_type": session.run_type,
+        "name": session.name,
+        "status": session.status,
+        "started_at": session.started_at,
+        "completed_at": session.completed_at,
+        "source": session.source,
+        "config_snapshot": session.config_snapshot,
+        "summary": session.summary,
+        "notes": session.notes,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+    }
+
+
+def _run_item_to_dict(item: RunItemORM) -> dict[str, Any]:
+    return {
+        "run_item_id": item.run_item_id,
+        "run_id": item.run_id,
+        "sample_id": item.sample_id,
+        "status": item.status,
+        "started_at": item.started_at,
+        "completed_at": item.completed_at,
+        "internal_request_snapshot": item.internal_request_snapshot,
+        "prompt_snapshot": item.prompt_snapshot,
+        "model_config_snapshot": item.model_config_snapshot,
+        "output_contract_snapshot": item.output_contract_snapshot,
+        "pricing_snapshot": item.pricing_snapshot,
+        "final_attempt_id": item.final_attempt_id,
+        "response": item.response,
+        "usage": item.usage,
+        "cost": item.cost,
+        "review": item.review,
+        "error": item.error,
+        "compare_axes": item.compare_axes,
+        "provider_id": item.provider_id,
+        "model_id": item.model_id,
+        "estimated_cost": item.estimated_cost,
+        "latency_ms": item.latency_ms,
+        "accepted": item.accepted,
+        "rating": item.rating,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+
+
+def _attempt_to_dict(attempt: AttemptORM) -> dict[str, Any]:
+    adapter = None
+    if attempt.provider_id or attempt.adapter_id or attempt.model_id:
+        adapter = {
+            "provider_id": attempt.provider_id,
+            "adapter_id": attempt.adapter_id,
+            "model_id": attempt.model_id,
+        }
+    return {
+        "attempt_id": attempt.attempt_id,
+        "run_item_id": attempt.run_item_id,
+        "attempt_index": attempt.attempt_index,
+        "status": attempt.status,
+        "started_at": attempt.started_at,
+        "completed_at": attempt.completed_at,
+        "adapter": adapter,
+        "provider_request_snapshot": attempt.provider_request_snapshot,
+        "provider_response_raw": attempt.provider_response_raw,
+        "normalized_response": attempt.normalized_response,
+        "usage": attempt.usage,
+        "error": attempt.error,
+        "latency_ms": attempt.latency_ms,
+    }
+
+
+async def _get_result_snapshot_or_404(snapshot_id: str, db: AsyncSession) -> ResultSnapshotORM:
+    result = await db.execute(
+        select(ResultSnapshotORM).where(ResultSnapshotORM.snapshot_id == snapshot_id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, f"Result snapshot '{snapshot_id}' not found.")
+    return row
+
+
+@app.post("/api/result-snapshots")
+async def create_result_snapshot(
+    payload: CreateResultSnapshotPayload, db: AsyncSession = Depends(get_db)
+):
+    session_result = await db.execute(
+        select(RunSessionORM).where(RunSessionORM.run_id == payload.run_id)
+    )
+    run_session = session_result.scalar_one_or_none()
+    if run_session is None:
+        raise HTTPException(404, f"Run session '{payload.run_id}' not found.")
+
+    run_item: RunItemORM | None = None
+    if payload.run_item_id:
+        item_result = await db.execute(
+            select(RunItemORM).where(
+                RunItemORM.run_item_id == payload.run_item_id,
+                RunItemORM.run_id == payload.run_id,
+            )
+        )
+        run_item = item_result.scalar_one_or_none()
+        if run_item is None:
+            raise HTTPException(
+                404,
+                f"Run item '{payload.run_item_id}' not found for run '{payload.run_id}'.",
+            )
+
+    if payload.attempt_id:
+        if not payload.run_item_id:
+            raise HTTPException(400, "attempt_id requires run_item_id.")
+        attempt_result = await db.execute(
+            select(AttemptORM).where(
+                AttemptORM.attempt_id == payload.attempt_id,
+                AttemptORM.run_item_id == payload.run_item_id,
+            )
+        )
+        if attempt_result.scalar_one_or_none() is None:
+            raise HTTPException(
+                404,
+                f"Attempt '{payload.attempt_id}' not found for run item '{payload.run_item_id}'.",
+            )
+
+    session_model_snapshot = _dict_get(run_session.config_snapshot, "model_config_snapshot") or {}
+    item_model_snapshot = run_item.model_config_snapshot if run_item else None
+    provider_id = (run_item.provider_id if run_item else None) or _dict_get(
+        item_model_snapshot, "provider_id"
+    ) or _dict_get(session_model_snapshot, "provider_id")
+    model_id = (run_item.model_id if run_item else None) or _dict_get(
+        item_model_snapshot, "model_id"
+    ) or _dict_get(session_model_snapshot, "model_id")
+    prompt_version_id = _dict_get(
+        run_session.config_snapshot, "prompt_version", "prompt_version_id"
+    )
+    review = run_item.review if run_item else {}
+    accepted = review.get("accepted") if isinstance(review, dict) else None
+    rating = review.get("rating") if isinstance(review, dict) else None
+    if accepted is None and run_item is not None and run_item.accepted is not None:
+        accepted = bool(run_item.accepted)
+    if rating is None and run_item is not None:
+        rating = run_item.rating
+
+    snapshot_id = f"rsnap_{uuid4().hex[:16]}"
+    thumbnail_image_uri = _thumbnail_from_run_item(run_item)
+
+    row = ResultSnapshotORM(
+        snapshot_id=snapshot_id,
+        run_id=payload.run_id,
+        run_item_id=payload.run_item_id,
+        attempt_id=payload.attempt_id,
+        name=payload.name,
+        description=payload.description,
+        tags=payload.tags,
+        starred=payload.starred,
+        notes=payload.notes,
+        accepted=accepted,
+        rating=rating,
+        provider_id=provider_id,
+        model_id=model_id,
+        prompt_version_id=prompt_version_id,
+        thumbnail_image_uri=thumbnail_image_uri,
+        internal_request_snapshot=None,
+        config_snapshot=None,
+        image_dir=None,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    # Persist images and full request/config snapshots into the snapshot's own
+    # directory so the bookmark survives after original upload/cache cleanup.
+    settings = get_settings()
+    snapshot_dir = settings.snapshots_dir / snapshot_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    request_snapshot = (
+        run_item.internal_request_snapshot if run_item is not None else None
+    ) or {}
+    images = request_snapshot.get("images") or []
+    persisted_images = persist_request_images(images, snapshot_dir)
+    served_images = rewrite_image_uris(
+        persisted_images, f"/api/result-snapshots/{snapshot_id}/images"
+    )
+    request_snapshot = {**request_snapshot, "images": served_images}
+
+    row.internal_request_snapshot = request_snapshot
+    row.config_snapshot = run_session.config_snapshot if run_session is not None else None
+    row.image_dir = str(snapshot_dir)
+    thumbnail_image_uri = _thumbnail_from_images(served_images)
+    if thumbnail_image_uri:
+        row.thumbnail_image_uri = thumbnail_image_uri
+    await db.commit()
+    await db.refresh(row)
+    return _result_snapshot_to_schema(row).model_dump(mode="json")
+
+
+@app.get("/api/result-snapshots")
+async def list_result_snapshots(
+    limit: int = 50,
+    starred_only: bool = False,
+    tag: str | None = None,
+    provider_id: str | None = None,
+    model_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    limit = max(0, min(limit, 200))
+    stmt = select(ResultSnapshotORM)
+    if starred_only:
+        stmt = stmt.where(ResultSnapshotORM.starred.is_(True))
+    if tag:
+        stmt = stmt.where(
+            text(
+                "EXISTS (SELECT 1 FROM json_each(result_snapshots.tags) "
+                "WHERE json_each.value = :snapshot_tag)"
+            )
+        ).params(snapshot_tag=tag)
+    if provider_id:
+        stmt = stmt.where(ResultSnapshotORM.provider_id == provider_id)
+    if model_id:
+        stmt = stmt.where(ResultSnapshotORM.model_id == model_id)
+    stmt = stmt.order_by(ResultSnapshotORM.created_at.desc()).limit(limit)
+    result = await db.execute(stmt)
+    return [
+        _result_snapshot_to_schema(row).model_dump(mode="json")
+        for row in result.scalars().all()
+    ]
+
+
+@app.get("/api/result-snapshots/{snapshot_id}/images/{filename}")
+async def serve_snapshot_image(snapshot_id: str, filename: str):
+    """Serve a persisted image stored inside a result snapshot."""
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+
+    safe_name = Path(filename).name
+    settings = get_settings()
+    file_path = settings.snapshots_dir / snapshot_id / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(404, "File not found")
+    return FileResponse(file_path)
+
+
+@app.get("/api/result-snapshots/{snapshot_id}/images/{filename}")
+async def serve_snapshot_image(snapshot_id: str, filename: str):
+    """Serve a persisted image stored inside a result snapshot."""
+    from fastapi.responses import FileResponse
+
+    safe_name = Path(filename).name
+    settings = get_settings()
+    file_path = settings.snapshots_dir / snapshot_id / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(404, "File not found")
+    return FileResponse(file_path)
+
+
+@app.get("/api/result-snapshots/{snapshot_id}")
+async def get_result_snapshot(snapshot_id: str, db: AsyncSession = Depends(get_db)):
+    snapshot = await _get_result_snapshot_or_404(snapshot_id, db)
+
+    session_result = await db.execute(
+        select(RunSessionORM).where(RunSessionORM.run_id == snapshot.run_id)
+    )
+    run_session = session_result.scalar_one_or_none()
+    if run_session is None:
+        raise HTTPException(404, f"Source run session '{snapshot.run_id}' not found.")
+
+    run_item = None
+    if snapshot.run_item_id:
+        item_result = await db.execute(
+            select(RunItemORM).where(
+                RunItemORM.run_item_id == snapshot.run_item_id,
+                RunItemORM.run_id == snapshot.run_id,
+            )
+        )
+        run_item = item_result.scalar_one_or_none()
+        if run_item is None:
+            raise HTTPException(404, f"Source run item '{snapshot.run_item_id}' not found.")
+
+    attempt = None
+    if snapshot.attempt_id and snapshot.run_item_id:
+        attempt_result = await db.execute(
+            select(AttemptORM).where(
+                AttemptORM.attempt_id == snapshot.attempt_id,
+                AttemptORM.run_item_id == snapshot.run_item_id,
+            )
+        )
+        attempt = attempt_result.scalar_one_or_none()
+        if attempt is None:
+            raise HTTPException(404, f"Source attempt '{snapshot.attempt_id}' not found.")
+
+    return {
+        "snapshot": _result_snapshot_to_schema(snapshot).model_dump(mode="json"),
+        "run_session": _run_session_to_dict(run_session),
+        "run_item": _run_item_to_dict(run_item) if run_item else None,
+        "attempt": _attempt_to_dict(attempt) if attempt else None,
+    }
+
+
+@app.patch("/api/result-snapshots/{snapshot_id}")
+async def update_result_snapshot(
+    snapshot_id: str,
+    payload: UpdateResultSnapshotPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    row = await _get_result_snapshot_or_404(snapshot_id, db)
+    fields = payload.model_fields_set
+    if "name" in fields:
+        row.name = payload.name or ""
+    if "description" in fields:
+        row.description = payload.description or ""
+    if "tags" in fields:
+        row.tags = payload.tags or []
+    if "notes" in fields:
+        row.notes = payload.notes or ""
+    if "starred" in fields:
+        row.starred = bool(payload.starred)
+    if "accepted" in fields:
+        row.accepted = payload.accepted
+    if "rating" in fields:
+        row.rating = payload.rating
+    row.updated_at = datetime.utcnow().isoformat()
+    await db.commit()
+    await db.refresh(row)
+    return _result_snapshot_to_schema(row).model_dump(mode="json")
+
+
+@app.delete("/api/result-snapshots/{snapshot_id}")
+async def delete_result_snapshot(snapshot_id: str, db: AsyncSession = Depends(get_db)):
+    row = await _get_result_snapshot_or_404(snapshot_id, db)
+    await db.delete(row)
+    await db.commit()
+    return {"deleted": True}
+
 
 @app.get("/api/runs")
 async def list_runs(limit: int = 50, db: AsyncSession = Depends(get_db)):
@@ -692,41 +1110,113 @@ async def list_sample_sets(db: AsyncSession = Depends(get_db)):
 # Prompts
 # ---------------------------------------------------------------------------
 
+_VERSION_LABEL_RE = re.compile(r"^v(\d+)$")
+
+
+def _prompt_version_to_dict(version: PromptVersionORM) -> dict[str, Any]:
+    return {
+        "prompt_version_id": version.prompt_version_id,
+        "prompt_id": version.prompt_id,
+        "version_label": version.version_label,
+        "parent_version_id": version.parent_version_id,
+        "system_prompt": version.system_prompt,
+        "user_template": version.user_template,
+        "format_instruction": version.format_instruction,
+        "notes": version.notes,
+        "image_slot_specs": version.image_slot_specs or [],
+        "few_shot_examples": version.few_shot_examples or [],
+        "created_at": version.created_at,
+        "updated_at": version.updated_at,
+    }
+
+
+def _prompt_to_dict(prompt: PromptORM, versions: list[PromptVersionORM]) -> dict[str, Any]:
+    latest_version = None
+    if prompt.current_version_id:
+        latest_version = next(
+            (v for v in versions if v.prompt_version_id == prompt.current_version_id), None
+        )
+    if latest_version is None and versions:
+        latest_version = versions[-1]
+
+    return {
+        "prompt_id": prompt.prompt_id,
+        "name": prompt.name,
+        "description": prompt.description,
+        "current_version_id": prompt.current_version_id,
+        "tags": prompt.tags,
+        "latest_version": _prompt_version_to_dict(latest_version) if latest_version else None,
+        "created_at": prompt.created_at,
+        "updated_at": prompt.updated_at,
+    }
+
+
+def _version_sort_key(version: PromptVersionORM) -> tuple[int, int, str]:
+    match = _VERSION_LABEL_RE.match(version.version_label or "")
+    if match:
+        return (0, int(match.group(1)), version.created_at)
+    return (1, 0, version.created_at)
+
+
+def _next_version_label(versions: list[PromptVersionORM]) -> str:
+    max_version = 0
+    for version in versions:
+        match = _VERSION_LABEL_RE.match(version.version_label or "")
+        if match:
+            max_version = max(max_version, int(match.group(1)))
+    return f"v{max_version + 1}" if max_version else "v1"
+
+
 @app.get("/api/prompts")
 async def list_prompts(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PromptORM).order_by(PromptORM.created_at.desc()))
     prompts = []
     for r in result.scalars().all():
-        # Get latest version
         vstmt = (
             select(PromptVersionORM)
             .where(PromptVersionORM.prompt_id == r.prompt_id)
-            .order_by(PromptVersionORM.created_at.desc())
-            .limit(1)
+            .order_by(PromptVersionORM.created_at.asc())
         )
         vresult = await db.execute(vstmt)
-        version = vresult.scalar_one_or_none()
-        prompts.append(
-            {
-                "prompt_id": r.prompt_id,
-                "name": r.name,
-                "description": r.description,
-                "current_version_id": r.current_version_id,
-                "tags": r.tags,
-                "latest_version": {
-                    "prompt_version_id": version.prompt_version_id,
-                    "version_label": version.version_label,
-                    "system_prompt": version.system_prompt,
-                    "user_template": version.user_template,
-                    "format_instruction": version.format_instruction,
-                    "notes": version.notes,
-                }
-                if version
-                else None,
-                "created_at": r.created_at,
-            }
-        )
+        versions = sorted(vresult.scalars().all(), key=_version_sort_key)
+        prompts.append(_prompt_to_dict(r, versions))
     return prompts
+
+
+@app.get("/api/prompts/{prompt_id}")
+async def get_prompt(prompt_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(PromptORM).where(PromptORM.prompt_id == prompt_id))
+    prompt = result.scalar_one_or_none()
+    if prompt is None:
+        raise HTTPException(404, f"Prompt '{prompt_id}' not found.")
+
+    vresult = await db.execute(
+        select(PromptVersionORM)
+        .where(PromptVersionORM.prompt_id == prompt_id)
+        .order_by(PromptVersionORM.created_at.asc())
+    )
+    versions = sorted(vresult.scalars().all(), key=_version_sort_key)
+    data = _prompt_to_dict(prompt, versions)
+    data["versions"] = [_prompt_version_to_dict(version) for version in versions]
+    return data
+
+
+@app.get("/api/prompts/{prompt_id}/versions/{version_id}")
+async def get_prompt_version(
+    prompt_id: str, version_id: str, db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(PromptVersionORM).where(
+            PromptVersionORM.prompt_id == prompt_id,
+            PromptVersionORM.prompt_version_id == version_id,
+        )
+    )
+    version = result.scalar_one_or_none()
+    if version is None:
+        raise HTTPException(
+            404, f"Prompt version '{version_id}' not found for prompt '{prompt_id}'."
+        )
+    return _prompt_version_to_dict(version)
 
 
 @app.post("/api/prompts")
@@ -738,6 +1228,11 @@ async def save_prompt(payload: SavePromptPayload, db: AsyncSession = Depends(get
     stmt = select(PromptORM).where(PromptORM.prompt_id == prompt_id)
     result = await db.execute(stmt)
     prompt = result.scalar_one_or_none()
+
+    versions_result = await db.execute(
+        select(PromptVersionORM).where(PromptVersionORM.prompt_id == prompt_id)
+    )
+    existing_versions = versions_result.scalars().all()
 
     if prompt is None:
         prompt = PromptORM(
@@ -753,11 +1248,17 @@ async def save_prompt(payload: SavePromptPayload, db: AsyncSession = Depends(get
     version = PromptVersionORM(
         prompt_version_id=version_id,
         prompt_id=prompt_id,
-        version_label=f"v{uuid4().hex[:4]}",
+        version_label=_next_version_label(existing_versions),
+        parent_version_id=prompt.current_version_id if prompt else None,
         system_prompt=payload.system_prompt,
         user_template=payload.user_template,
         format_instruction=payload.format_instruction,
         notes=payload.notes,
+        image_slot_specs=[spec.model_dump(mode="json") for spec in payload.image_slot_specs],
+        few_shot_examples=[
+            _persist_few_shot_example(example, prompt_id, version_id)
+            for example in payload.few_shot_examples
+        ],
     )
     db.add(version)
     prompt.current_version_id = version_id
@@ -768,6 +1269,71 @@ async def save_prompt(payload: SavePromptPayload, db: AsyncSession = Depends(get
         "prompt_version_id": version_id,
         "created": True,
     }
+
+
+@app.delete("/api/prompts/{prompt_id}")
+async def delete_prompt(prompt_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a prompt and all of its versions."""
+    result = await db.execute(select(PromptORM).where(PromptORM.prompt_id == prompt_id))
+    prompt = result.scalar_one_or_none()
+    if prompt is None:
+        raise HTTPException(404, f"Prompt '{prompt_id}' not found.")
+
+    await db.execute(
+        delete(PromptVersionORM).where(PromptVersionORM.prompt_id == prompt_id)
+    )
+    await db.delete(prompt)
+    await db.commit()
+
+    # Clean up persisted few-shot images for this prompt.
+    settings = get_settings()
+    prompt_dir = settings.prompts_dir / prompt_id
+    if prompt_dir.exists():
+        shutil.rmtree(prompt_dir, ignore_errors=True)
+
+    return {"deleted": True}
+
+
+@app.get("/api/prompts/{prompt_id}/versions/{version_id}/images/{filename}")
+async def serve_prompt_version_image(
+    prompt_id: str, version_id: str, filename: str
+):
+    """Serve a persisted few-shot image for a prompt version."""
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+
+    safe_name = Path(filename).name
+    settings = get_settings()
+    file_path = settings.prompts_dir / prompt_id / version_id / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(404, "File not found")
+    return FileResponse(file_path)
+
+
+def _persist_few_shot_example(
+    example: FewShotExample,
+    prompt_id: str,
+    version_id: str,
+) -> dict[str, Any]:
+    """Persist images inside a few-shot example and convert to ImageRefs.
+
+    The frontend may send RequestImage dicts (from a run result) in
+    example.images.  We copy any local files into the prompt version's own
+    directory and store lightweight ImageRefs instead.
+    """
+    settings = get_settings()
+    version_dir = settings.prompts_dir / prompt_id / version_id
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_images = example.images or []
+    request_images = [img.model_dump(mode="json") if isinstance(img, BaseModel) else img for img in raw_images]
+    persisted = persist_request_images(request_images, version_dir)
+    served = rewrite_image_uris(persisted, f"/api/prompts/{prompt_id}/versions/{version_id}/images")
+    image_refs = [request_image_to_image_ref(img) for img in served]
+
+    data = example.model_dump(mode="json")
+    data["images"] = image_refs
+    return data
 
 
 # ---------------------------------------------------------------------------

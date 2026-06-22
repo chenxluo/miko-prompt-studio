@@ -14,9 +14,38 @@ mutates an existing one.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from app.schemas.common import TimestampedModel
+from app.schemas.sample_record import ImageRef
+
+
+class ImageSlotSpec(BaseModel):
+    slot_id: str = ""
+    label: str = ""
+    description: str = ""
+    role_hint: str | None = None
+    required: bool = True
+    min_count: int = 1
+    max_count: int | None = 1
+
+
+class FewShotExample(BaseModel):
+    example_id: str
+    title: str = ""
+    enabled: bool = True
+    input_text: str = ""
+    output_text: str = ""
+    parsed_output: Any = None
+    reasoning_text: str | None = None
+    images: list[ImageRef] = Field(default_factory=list)
+    source_run_id: str | None = None
+    source_run_item_id: str | None = None
+    source_attempt_id: str | None = None
+    notes: str = ""
+    created_from: str = "manual"
 
 
 class PromptVersionData(BaseModel):
@@ -31,6 +60,8 @@ class PromptVersionData(BaseModel):
     user_template: str = ""
     format_instruction: str = ""
     notes: str = ""
+    image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
+    few_shot_examples: list[FewShotExample] = Field(default_factory=list)
 
 
 class PromptVersion(PromptVersionData, TimestampedModel):
@@ -65,4 +96,7 @@ class PromptSnapshot(BaseModel):
     system_prompt: str = ""
     user_template: str = ""
     format_instruction: str = ""
+    notes: str = ""
+    image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
+    few_shot_examples: list[FewShotExample] = Field(default_factory=list)
     version_label: str | None = None

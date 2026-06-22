@@ -55,6 +55,7 @@ async def init_db() -> None:
         pricing,
         prompt,
         provider_config,
+        result_snapshot,
         run,
         sample,
         settings as settings_model,
@@ -68,8 +69,45 @@ async def init_db() -> None:
         await _migrate_pricing_provider_config_column(conn)
         await _migrate_run_items_latency_ms(conn)
         await _migrate_task_image_resolution_columns(conn)
+        await _migrate_result_snapshot_full_snapshot_columns(conn)
+        await _migrate_prompt_version_library_columns(conn)
         await _migrate_pricing_profiles_to_per_million_tokens(conn)
 
+
+async def _migrate_prompt_version_library_columns(conn) -> None:
+    """Add prompt-library columns (image slots / few-shot) for existing DBs."""
+
+    result = await conn.execute(text("PRAGMA table_info(prompt_versions)"))
+    existing_columns = {row[1] for row in result.fetchall()}
+
+    if "image_slot_specs" not in existing_columns:
+        await conn.execute(
+            text("ALTER TABLE prompt_versions ADD COLUMN image_slot_specs JSON DEFAULT '[]'")
+        )
+    if "few_shot_examples" not in existing_columns:
+        await conn.execute(
+            text("ALTER TABLE prompt_versions ADD COLUMN few_shot_examples JSON DEFAULT '[]'")
+        )
+
+
+async def _migrate_result_snapshot_full_snapshot_columns(conn) -> None:
+    """Add full reproduction columns to result_snapshots for existing DBs."""
+
+    result = await conn.execute(text("PRAGMA table_info(result_snapshots)"))
+    existing_columns = {row[1] for row in result.fetchall()}
+
+    if "internal_request_snapshot" not in existing_columns:
+        await conn.execute(
+            text("ALTER TABLE result_snapshots ADD COLUMN internal_request_snapshot JSON")
+        )
+    if "config_snapshot" not in existing_columns:
+        await conn.execute(
+            text("ALTER TABLE result_snapshots ADD COLUMN config_snapshot JSON")
+        )
+    if "image_dir" not in existing_columns:
+        await conn.execute(
+            text("ALTER TABLE result_snapshots ADD COLUMN image_dir VARCHAR")
+        )
 
 async def _migrate_provider_config_cache_columns(conn) -> None:
     """Add model-cache columns for existing SQLite databases."""

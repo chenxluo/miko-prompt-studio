@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     def master_key_path(self) -> Path:
         return self.data_dir / "master.key"
 
+    @property
+    def snapshots_dir(self) -> Path:
+        return self.data_dir / "snapshots"
+
+    @property
+    def prompts_dir(self) -> Path:
+        return self.data_dir / "prompts"
+
     def ensure_dirs(self) -> None:
         """Create all required directories. Safe to call multiple times."""
         for d in (
@@ -85,6 +93,8 @@ class Settings(BaseSettings):
             self.cache_dir,
             self.image_cache_dir,
             self.uploads_dir,
+            self.snapshots_dir,
+            self.prompts_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)
 

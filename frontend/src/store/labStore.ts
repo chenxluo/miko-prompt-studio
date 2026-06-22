@@ -3,8 +3,11 @@ import { create } from 'zustand';
 import * as api from '../api/client';
 import type {
   ImageRef,
+  ImageSlotSpec,
   ModelParameters,
   OutputContract,
+  PromptListItem,
+  RunItemSummary,
   RunSession,
   SampleRecord,
   Task,
@@ -107,7 +110,7 @@ function streamUsageToRunUsage(usage: Record<string, unknown>): Record<string, u
   };
 }
 
-function createStreamingRunItem(sampleId: string): api.RunItemSummary {
+function createStreamingRunItem(sampleId: string): RunItemSummary {
   const now = new Date().toISOString();
   return {
     run_item_id: `stream_${sampleId}`,
@@ -189,6 +192,7 @@ interface LabState {
   // Images
   images: ImageRef[];
   imageSlots: ImageSlot[];
+  templateImageSlotSpecs: ImageSlotSpec[];
   imageResolutionEnabled: boolean;
   imageResolutionTarget: number;
 
@@ -207,7 +211,7 @@ interface LabState {
   // Run state
   isRunning: boolean;
   lastResult: RunSession | null;
-  lastRunItem: api.RunItemSummary | null;
+  lastRunItem: RunItemSummary | null;
   runHistory: RunSession[];
   error: string | null;
 }
@@ -222,6 +226,8 @@ interface LabActions {
   addImageSlot: (imageIndex: number, position: number) => void;
   removeImageSlot: (imageIndex: number) => void;
   setImageSlots: (slots: ImageSlot[]) => void;
+  setImages: (images: ImageRef[]) => void;
+  setTemplateImageSlotSpecs: (specs: ImageSlotSpec[]) => void;
   setImageResolutionEnabled: (enabled: boolean) => void;
   setImageResolutionTarget: (target: number) => void;
   setSelectedProviderConfigId: (id: string | null) => void;
@@ -231,6 +237,7 @@ interface LabActions {
   setOutputContract: (contract: OutputContract) => void;
   setOutputMode: (mode: OutputContract['mode']) => void;
   loadTask: (task: Task) => void;
+  loadPrompt: (prompt: PromptListItem) => void;
   loadProviderConfigs: () => Promise<void>;
   run: () => Promise<RunSession | null>;
   loadRunDetail: (runId: string) => Promise<api.RunDetail | null>;
@@ -246,6 +253,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
   formatInstruction: '',
   images: [],
   imageSlots: [],
+  templateImageSlotSpecs: [],
   imageResolutionEnabled: false,
   imageResolutionTarget: 1024,
   providerConfigs: [],
@@ -294,6 +302,8 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
     })),
 
   setImageSlots: (slots) => set({ imageSlots: slots }),
+  setImages: (images) => set({ images: images.map((img, i) => ({ ...img, order: i })) }),
+  setTemplateImageSlotSpecs: (specs) => set({ templateImageSlotSpecs: specs }),
   setImageResolutionEnabled: (enabled) => set({ imageResolutionEnabled: enabled }),
   setImageResolutionTarget: (target) => set({ imageResolutionTarget: target }),
 
@@ -345,11 +355,25 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         userPrompt: parsed.text,
         formatInstruction: task.format_instruction ?? '',
         imageSlots: parsed.slots,
+        templateImageSlotSpecs: [],
         imageResolutionEnabled: task.image_resolution_enabled ?? false,
         imageResolutionTarget: task.image_resolution_target ?? 1024,
         outputContract: task.output_contract ?? DEFAULT_OUTPUT_CONTRACT,
         activePricing: task.pricing_profile_id ? state.activePricing : null,
         availableModels: selectedConfig ? getExposedModels(selectedConfig) : state.availableModels,
+        error: null,
+      };
+    }),
+
+  loadPrompt: (prompt) =>
+    set(() => {
+      const version = prompt.latest_version;
+      const parsed = parseImageTokens(version?.user_template ?? '');
+      return {
+        systemPrompt: version?.system_prompt ?? '',
+        userPrompt: parsed.text,
+        imageSlots: parsed.slots,
+        templateImageSlotSpecs: version?.image_slot_specs ?? [],
         error: null,
       };
     }),

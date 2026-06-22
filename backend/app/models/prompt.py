@@ -35,6 +35,8 @@ class PromptVersionORM(Base):
     user_template: Mapped[str] = mapped_column(Text, default="")
     format_instruction: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
+    image_slot_specs: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    few_shot_examples: Mapped[list[dict]] = mapped_column(JSON, default=list)
 
     created_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())
     updated_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())
