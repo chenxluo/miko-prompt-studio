@@ -1062,6 +1062,7 @@ function extractSnapshotImages(
       const sha256 = typeof resolved.sha256 === 'string' ? resolved.sha256 : undefined;
       return {
         image_id: typeof img.request_image_id === 'string' ? img.request_image_id : `snap_img_${index}`,
+        slot_id: typeof img.slot_id === 'string' ? img.slot_id : undefined,
         role: typeof img.role === 'string' ? img.role : 'target',
         path,
         uri,
@@ -1124,15 +1125,20 @@ function SnapshotImagesPanel({ detail }: { detail: ResultSnapshotDetail }) {
                   : '',
             );
             const name =
+              typeof record.role === 'string'
+                ? record.role
+                : `${t('image.fallback', { n: index + 1 })}`;
+            const tooltip =
               typeof record.display_name === 'string'
                 ? record.display_name
-                : `${t('image.fallback', { n: index + 1 })}`;
+                : name;
             return (
               <button
                 key={`${src}-${index}`}
                 type="button"
                 onClick={() => setPreview({ src, name })}
                 className="w-full rounded-md border border-surface-800 bg-surface-950 p-2 text-left transition-colors hover:border-surface-600"
+                title={tooltip}
               >
                 <div className="aspect-square w-full overflow-hidden rounded bg-surface-900">
                   {src ? (
