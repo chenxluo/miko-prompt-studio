@@ -1,6 +1,8 @@
 # Miko Prompt Studio — 开发文档
 
-> 随开发进度持续更新的配套文档。最后更新：2026-06-22
+> 随开发进度持续更新的配套文档。最后更新：2026-06-23
+
+**版本：0.2.0**
 
 ## 1. 项目定位
 
@@ -68,13 +70,17 @@ miko_prompt_studio/
 │       │   └── registry.py           # adapter 注册 + 元数据
 │       │
 │       └── services/           # 核心业务逻辑
-│           ├── prompt_renderer.py    # {{vars.x}} 模板渲染
+│           ├── prompt_renderer.py    # {{vars.x}} / {{#vars.x}} 模板渲染 + 条件块
 │           ├── image_preprocess.py   # Pillow 图片预处理 + sha256 + 总像素限制
 │           ├── request_builder.py    # 组装 InternalRequest
 │           ├── parser_engine.py      # 5 种输出模式解析
 │           ├── cost_engine.py        # 成本计算（per-1M tokens）
 │           ├── run_executor.py       # 运行编排器（核心流程，含 SSE 流式分支）
-│           └── importer.py           # CSV 导入
+│           ├── batch_executor.py     # Batch 运行执行器（Task+SampleSet，多图槽位映射）
+│           ├── compare_executor.py   # Compare 矩阵运行执行器（samples × task_versions）
+│           ├── contract_validation.py # 输入契约校验（image slots + variables）
+│           ├── input_spec_generator.py # 生成 TaskVersion 输入说明文档
+│           └── importer.py           # CSV/JSONL 导入 + 智能列映射 + URL/本地路径识别
 │
 ├── frontend/                   # React + TypeScript 前端
 │   ├── package.json
@@ -91,16 +97,27 @@ miko_prompt_studio/
 │       ├── i18n/index.ts            # 中/英双语翻译字典 + useI18n hook
 │       ├── views/
 │       │   ├── LabView.tsx          # Lab 主界面（含三种视图模式切换）
-│       │   ├── TasksView.tsx        # 已保存 Task 列表 / 加载到 Lab
+│       │   ├── TasksView.tsx        # Task 列表 + 版本历史 + 输入说明文档弹窗
+│       │   ├── SamplesView.tsx      # 样本集列表 + 详情 + 导入对话框
+│       │   ├── RunsView.tsx         # 运行容器（Batch / Compare / History 标签页）
+│       │   ├── BatchView.tsx        # Batch 测试（Task+SampleSet 选择、估算、运行、结果）
+│       │   ├── CompareView.tsx      # Compare 矩阵运行（多 TaskVersion 横向对比）
+│       │   ├── RunHistoryView.tsx   # 运行历史（过滤、搜索、详情、导出）
 │       │   └── SettingsView.tsx     # 设置页（Provider Config 管理 + 定价）
 │       ├── components/
 │       │   ├── lab/
-│       │   │   ├── ModelBar.tsx     # Provider 选择 + 模型 + 参数 + thinking + stream
-│       │   │   ├── ImagePanel.tsx   # 图片拖拽上传 + 缩略图 + 预览 + 分辨率限制
-│       │   │   ├── PromptPanel.tsx  # System/User prompt + 输出模式 + 图文混排
+│       │   │   ├── ModelBar.tsx     # Provider 选择 + 模型下拉 + 参数 + thinking + stream
+│       │   │   ├── ImagePanel.tsx   # 统一槽位网格（槽位即角色）+ Focus Mode + 上传
+│       │   │   ├── PromptPanel.tsx  # System/User prompt + 变量编辑器 + 条件块 + 输出模式
 │       │   │   ├── ResultPanel.tsx  # 原始/解析/Markdown 结果 + 思维链 + usage + cost
 │       │   │   ├── RunHistory.tsx   # 运行历史列表
-│       │   │   └── SaveTaskDialog.tsx # 将当前 Lab 配置保存为 Task
+│       │   │   └── SaveTaskDialog.tsx # 将当前 Lab 配置保存为 Task/TaskVersion
+│       │   ├── prompts/
+│       │   │   ├── PromptEditor.tsx # Prompt Library 编辑器（变量槽位 + 图像槽位 + few-shot）
+│       │   │   ├── ImagePreviewGrid.tsx # 图像预览网格（role 显示）
+│       │   │   └── UseAsFewShotDialog.tsx
+│       │   ├── samples/
+│       │   │   └── ImportDialog.tsx # CSV/JSONL 导入（TaskVersion 校验 + 智能列映射）
 │       │   ├── NavButton.tsx
 │       │   ├── PlaceholderView.tsx
 │       │   └── LocaleSwitch.tsx     # 中/英语言切换
@@ -199,10 +216,21 @@ run_executor.execute_lab_run()
 | POST | `/api/provider-configs` | 创建/更新 Provider 配置 |
 | DELETE | `/api/provider-configs/{id}` | 删除 Provider 配置 |
 | GET | `/api/tasks` | 列出已保存的 Task |
-| POST | `/api/tasks` | 创建 Task |
-| GET | `/api/tasks/{id}` | 获取 Task 详情 |
-| PUT | `/api/tasks/{id}` | 更新 Task |
-| DELETE | `/api/tasks/{id}` | 删除 Task |
+| POST | `/api/tasks` | 创建 Task（含首个版本） |
+| GET | `/api/tasks/{id}` | 获取 Task 详情（含所有版本） |
+| PUT | `/api/tasks/{id}` | 更新 Task 元数据 |
+| DELETE | `/api/tasks/{id}` | 删除 Task 及所有版本 |
+| POST | `/api/tasks/{id}/versions` | 创建 Task 新版本 |
+| GET | `/api/tasks/{id}/versions/{vid}/input-spec` | 生成 TaskVersion 输入说明文档 |
+| POST | `/api/batch-runs` | 创建 Batch 运行（Task + SampleSet） |
+| POST | `/api/batch-runs/estimate` | 估算 Batch 成本 |
+| GET | `/api/batch-runs/{id}/status` | 查询 Batch 运行状态 |
+| POST | `/api/batch-runs/{id}/cancel` | 取消 Batch 运行 |
+| POST | `/api/batch-runs/{id}/retry-failed` | 重跑失败项 |
+| POST | `/api/compare-runs` | 创建 Compare 矩阵运行 |
+| POST | `/api/compare-runs/estimate` | 估算 Compare 成本 |
+| GET | `/api/compare-runs/{id}/status` | 查询 Compare 运行状态 |
+| POST | `/api/compare-runs/{id}/cancel` | 取消 Compare 运行 |
 | POST | `/api/upload/image` | 上传图片，返回 url |
 | GET | `/api/uploads/{filename}` | 服务上传的图片文件 |
 | GET | `/api/snapshots/{snapshot_id}/images/{filename}` | 服务快照持久化的图片文件 |
@@ -240,13 +268,21 @@ run_executor.execute_lab_run()
 - [x] **Result Snapshot Library**：结果快照（保存运行结果 + 输入图片，可载入 Lab 复现）
 - [x] Lab PromptPanel 快速切换已保存提示词
 - [x] Prompt / Snapshot 批量管理（搜索、多选、批量删除）
-- [ ] Sample Sets 页面（浏览、导入管理）
-- [ ] Run History 页面（详情查看、过滤、导出）
-- [ ] Batch Test（批量运行、进度、取消、失败重跑）
-- [ ] Compare Mode（矩阵运行、横向对比）
+- [x] Sample Sets 页面（浏览、导入管理）
+- [x] **Sample Sets Library**：样本集管理（CSV/JSONL 文件导入、浏览、详情、删除）
+- [x] **Run History 页面**：运行列表（过滤、搜索、分页）、详情抽屉、JSONL/CSV 导出、删除
+- [x] **Batch Test MVP**：选择样本集、估算成本、顺序批量运行、实时进度、取消、失败重跑、结果表格
+- [x] **Task 版本管理**：Task 拆分为 header + versions，支持多版本、版本历史、按版本加载到 Lab
+- [x] **Batch = Task + SampleSet**：Batch 运行基于 Task（含 PromptVersion 引用）+ 样本集，多图按 role_hint 自动匹配槽位
+- [x] **Compare Mode**：样本集 × 多 TaskVersion 矩阵运行、横向对比、标记最优、保存优胜配置
+- [x] **Variable Specs**：PromptVersion 声明变量槽位（var_id / label / required / default），支持 `{{vars.x}}`、`{{#vars.x}}...{{/vars.x}}` 条件块
+- [x] **导入校验**：CSV/JSONL 导入按 TaskVersion 契约校验 image slots + variables，返回 valid/invalid 报告
+- [x] **智能列映射**：CSV 导入自动推荐 `image_<role_hint>` / `var_<var_id>` 列名，支持 URL/本地路径自动识别
+- [x] **输入说明文档**：`GET /api/tasks/{id}/versions/{vid}/input-spec` 生成完整输入契约（prompt + slots + variables + CSV/JSONL 示例），前端一键复制
+- [x] **ImagePanel 统一槽位网格**：槽位与图像合并为统一网格，槽位即角色，上传自动分配、空槽位可编辑设置、Focus Mode 大图对比
+- [x] **变量编辑器合并**：声明与使用合为一体（var_id + 值输入 + 齿轮展开元数据），快捷插入变量 + 语法帮助
 - [ ] Review 标签系统 UI
 - [ ] 导出（JSONL / CSV / 文件夹）
-- [ ] JSONL Manifest 导入
 - [ ] Python Import Script
 - [ ] 更多原生 adapter（Google Vertex、阿里百炼）
 - [ ] 更丰富的图片预处理策略 UI（resize/crop/quality 可视化配置）
@@ -287,6 +323,7 @@ npm run dev    # 项目根目录，concurrently 启动后端+前端+Electron
 默认 `~/.miko_prompt_studio/`，可通过 `MIKO_DATA_DIR` 环境变量修改：
 - `miko.db` — SQLite 数据库
 - `uploads/` — 上传的图片
+- `temp/` — 临时上传文件（CSV/JSONL 导入等）
 - `cache/preprocessed/` — 预处理后的图片缓存
 - `snapshots/` — 结果快照持久化的图片（按 snapshot_id 分目录）
 - `prompts/{prompt_id}/{version_id}/` — few-shot 示例持久化的图片
@@ -340,3 +377,10 @@ npm run dev    # 项目根目录，concurrently 启动后端+前端+Electron
 | 快照图片持久化 | 复制到 `snapshots/{snapshot_id}/` | 避免原图被清理后快照无法查看；同时保留 run record 指针 |
 | Few-shot 图片持久化 | 复制到 `prompts/{prompt_id}/{version_id}/` | 提示词版本不可变，图片随版本独立存储 |
 | Prompt 版本管理 | 新建版本，自动递增 `vN` | 保留历史，便于对比与回滚 |
+| Task 版本管理 | Task header + TaskVersion | TaskVersion 引用 PromptVersion，不复制内容 |
+| 变量语法 | `{{vars.x}}` + `{{#vars.x}}...{{/vars.x}}` | 简单条件块，不引入模板引擎 |
+| 图像槽位模型 | 槽位即角色（ImageSlotSpec.role_hint = ImageRef.role） | 消除独立 role 手填，上传自动匹配 |
+| 输入契约位置 | PromptVersion 上声明 image_slot_specs + variable_specs | TaskVersion 引用 PromptVersion 即获得契约 |
+| CSV 导入校验 | 导入时按 TaskVersion 契约校验 | 提前发现不匹配，避免运行时失败 |
+| Compare 运行 | samples × task_versions 矩阵 | 复用 batch_executor 生命周期，run_type="compare" |
+| ImagePanel 设计 | 统一槽位网格（槽位=图像容器） | 槽位声明与图像管理一体化，role 自动分配 |
