@@ -301,12 +301,20 @@ def _make_prompt_snapshot(prompt: PromptVersion | PromptVersionData) -> PromptSn
             system_prompt=prompt.system_prompt,
             user_template=prompt.user_template,
             format_instruction=prompt.format_instruction,
+            notes=prompt.notes,
+            image_slot_specs=prompt.image_slot_specs,
+            variable_specs=prompt.variable_specs,
+            few_shot_examples=prompt.few_shot_examples,
             version_label=prompt.version_label,
         )
     return PromptSnapshot(
         system_prompt=prompt.system_prompt,
         user_template=prompt.user_template,
         format_instruction=prompt.format_instruction,
+        notes=prompt.notes,
+        image_slot_specs=prompt.image_slot_specs,
+        variable_specs=prompt.variable_specs,
+        few_shot_examples=prompt.few_shot_examples,
     )
 
 

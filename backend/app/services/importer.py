@@ -9,12 +9,14 @@ maps CSV columns to sample fields (sample_id, image roles, vars, metadata).
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from app.schemas.sample_record import ImageRef, SampleRecord
+from app.schemas.prompt import PromptVersion
 
 
 class ColumnMapping(BaseModel):
@@ -37,12 +39,36 @@ class ColumnMapping(BaseModel):
     # Default path prefix for relative image paths.
     base_dir: str | None = None
 
+    # Optional reference TaskVersion for contract-aware validation/suggestions.
+    task_version_id: str | None = None
+
+
+def _is_uri(value: str) -> bool:
+    return value.startswith(("http://", "https://", "data:"))
+
 
 def _resolve_path(base_dir: str | None, path: str) -> str:
     """Resolve a potentially relative image path."""
     if not base_dir:
         return path
     return str(Path(base_dir) / path)
+
+
+def _image_ref_from_value(value: str, role: str, order: int, base_dir: str | None = None) -> ImageRef:
+    """Create an ImageRef, preserving URL-like values as uri and resolving local paths."""
+    if _is_uri(value):
+        display_name = None
+        if not value.startswith("data:"):
+            display_name = Path(value.split("?", 1)[0].rstrip("/")).name or None
+        return ImageRef(role=role, uri=value, path=None, display_name=display_name, order=order)
+
+    return ImageRef(
+        role=role,
+        path=_resolve_path(base_dir, value),
+        uri=None,
+        display_name=Path(value).name,
+        order=order,
+    )
 
 
 def import_csv(
@@ -82,15 +108,7 @@ def import_csv(
                 img_path = row.get(col_name, "")
                 if not img_path:
                     continue
-                resolved = _resolve_path(mapping.base_dir, img_path)
-                images.append(
-                    ImageRef(
-                        role=role,
-                        path=resolved,
-                        display_name=Path(img_path).name,
-                        order=len(images),
-                    )
-                )
+                images.append(_image_ref_from_value(img_path, role, len(images), mapping.base_dir))
 
             # Build vars
             vars_: dict[str, Any] = {}
@@ -117,6 +135,81 @@ def import_csv(
             )
 
         return records
+
+
+def suggest_column_mapping(
+    columns: list[str],
+    prompt_version: PromptVersion | None = None,
+) -> ColumnMapping:
+    """Suggest a loose import mapping from column names and an optional prompt contract."""
+    id_column = next((col for col in columns if col.lower() in {"id", "sample_id", "image_id"}), "id")
+    used = {id_column} if id_column in columns else set()
+
+    image_columns: list[dict[str, str]] = []
+    if prompt_version is not None:
+        for slot in prompt_version.image_slot_specs:
+            role = slot.role_hint or slot.slot_id
+            if not role:
+                continue
+            for candidate in (f"image_{role}", role):
+                if candidate in columns and candidate not in used:
+                    image_columns.append({"column": candidate, "role": role})
+                    used.add(candidate)
+                    break
+    else:
+        for col in columns:
+            if col.startswith("image_") and col not in used:
+                role = col.removeprefix("image_") or "target"
+                image_columns.append({"column": col, "role": role})
+                used.add(col)
+
+    var_columns: list[str] = []
+    if prompt_version is not None:
+        for spec in prompt_version.variable_specs:
+            if not spec.var_id:
+                continue
+            for candidate in (f"var_{spec.var_id}", spec.var_id):
+                if candidate in columns and candidate not in used:
+                    var_columns.append(candidate)
+                    used.add(candidate)
+                    break
+
+    metadata_columns = [col for col in columns if col not in used]
+    return ColumnMapping(
+        id_column=id_column,
+        image_columns=image_columns,
+        var_columns=var_columns,
+        metadata_columns=metadata_columns,
+    )
+
+
+def import_jsonl(jsonl_path: str | Path) -> list[SampleRecord]:
+    """Import a JSONL file and return validated Sample Records."""
+
+    jsonl_path = Path(jsonl_path)
+    records: list[SampleRecord] = []
+
+    with jsonl_path.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                data = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON on line {line_number}: {exc.msg}") from exc
+            if not isinstance(data, dict):
+                raise ValueError(f"Line {line_number} must be a JSON object")
+            if not data.get("sample_id"):
+                from uuid import uuid4
+
+                data["sample_id"] = f"sr_{uuid4().hex[:12]}"
+            try:
+                records.append(SampleRecord.model_validate(data))
+            except Exception as exc:
+                raise ValueError(f"Invalid SampleRecord on line {line_number}: {exc}") from exc
+
+    return records
 
 
 def detect_columns(csv_path: str | Path, delimiter: str = ",") -> list[str]:
