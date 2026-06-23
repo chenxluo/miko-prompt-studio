@@ -6,20 +6,25 @@ Run with:  uvicorn app.main:app --reload
 from __future__ import annotations
 
 import asyncio
+import csv
+import hashlib
+import io
 import json
 import re
 import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.core.security import (
@@ -36,23 +41,56 @@ from app.models.prompt import PromptORM, PromptVersionORM
 from app.models.result_snapshot import ResultSnapshotORM
 from app.models.run import AttemptORM, RunItemORM, RunSessionORM
 from app.models.sample import SampleRecordORM, SampleSetORM
-from app.models.task import TaskORM
-from app.schemas.common import utc_now
+from app.models.task import TaskORM, TaskVersionORM
+from app.schemas.common import RunItemType, RunSessionStatus, RunType, utc_now
 from app.schemas.model_config import ModelConfig, ModelParameters
 from app.schemas.output_contract import OutputContract, OutputMode
-from app.schemas.pricing import PricingProfile
-from app.schemas.prompt import FewShotExample, ImageSlotSpec, PromptVersionData
+from app.schemas.pricing import PricingProfile, PricingSnapshot
+from app.schemas.prompt import (
+    FewShotExample,
+    ImageSlotSpec,
+    PromptVersion,
+    PromptVersionData,
+    VariableSpec,
+)
 from app.schemas.result_snapshot import ResultSnapshot as ResultSnapshotSchema
 from app.schemas.sample_record import ImageRef, SampleRecord
-from app.schemas.run_record import StreamEvent
-from app.schemas.task import Task
+from app.schemas.run_record import ConfigSnapshot, RunSource, StreamEvent, Usage
+from app.schemas.task import (
+    Task,
+    TaskInputSpec,
+    TaskVersion,
+    TaskVersionData as TaskVersionDataSchema,
+    TaskVersionSummary,
+)
+from app.services.cost_engine import calculate_cost
 from app.services.image_persist import (
     persist_request_images,
     request_image_to_image_ref,
     rewrite_image_uris,
 )
-from app.services.importer import ColumnMapping, import_csv, preview_csv, detect_columns
+from app.services.contract_validation import (
+    InvalidRow,
+    validate_records_against_contract,
+)
+from app.services.input_spec_generator import generate_input_spec_for_task_version
+from app.services.importer import (
+    ColumnMapping,
+    detect_columns,
+    import_csv,
+    import_jsonl,
+    preview_csv,
+    suggest_column_mapping,
+)
 from app.services.run_executor import LabRunRequest, execute_lab_run
+from app.services.batch_executor import BatchRunSpec, request_cancel, start_batch_run
+from app.services.compare_executor import (
+    CompareRunSpec,
+    VariantSpec,
+    request_compare_cancel,
+    start_compare_run,
+)
+from app.services.request_builder import _pricing_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +155,33 @@ class LabRunPayload(BaseModel):
     run_name: str = ""
 
 
+class BatchRunPayload(BaseModel):
+    """Payload for POST /api/batch-runs and /api/batch-runs/estimate."""
+
+    task_id: str
+    sample_set_id: str
+    task_version_id: str | None = None
+    limit: int | None = None
+
+
+class CompareTaskVersion(BaseModel):
+    task_id: str
+    task_version_id: str | None = None
+
+
+class CompareVariant(CompareTaskVersion):
+    label: str | None = None
+
+
+class CompareRunPayload(BaseModel):
+    """Payload for POST /api/compare-runs and /api/compare-runs/estimate."""
+
+    sample_set_id: str
+    variants: list[CompareVariant] = Field(min_length=1)
+    limit: int | None = None
+    name: str = ""
+
+
 class CreateModelConfigPayload(BaseModel):
     name: str
     provider_id: str
@@ -147,6 +212,7 @@ class SavePromptPayload(BaseModel):
     format_instruction: str = ""
     notes: str = ""
     image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
+    variable_specs: list[VariableSpec] = Field(default_factory=list)
     few_shot_examples: list[FewShotExample] = Field(default_factory=list)
     prompt_id: str | None = None  # if provided, creates a new version
 
@@ -188,22 +254,31 @@ class CsvImportPayload(BaseModel):
     mapping: ColumnMapping
     delimiter: str = ","
     sample_set_name: str = ""
+    task_version_id: str | None = None
+    validate_only: bool = False
 
 
-class SaveTaskPayload(BaseModel):
+class ImportValidationReport(BaseModel):
+    valid_count: int
+    invalid_rows: list[InvalidRow] = Field(default_factory=list)
+
+
+class CreateTaskPayload(BaseModel):
     name: str
-    provider_config_id: str | None = None
-    model_id: str
-    model_parameters: ModelParameters = Field(default_factory=ModelParameters)
-    system_prompt: str = ""
-    user_prompt: str = ""
-    format_instruction: str = ""
-    output_contract: OutputContract = Field(default_factory=OutputContract)
-    pricing_profile_id: str | None = None
-    image_resolution_enabled: bool = False
-    image_resolution_target: int = 1024
-    sample_set_id: str | None = None
-    notes: str = ""
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    version: TaskVersionDataSchema
+
+
+class CreateTaskVersionPayload(TaskVersionDataSchema):
+    """Flat payload for creating a task version (no wrapping)."""
+
+
+class UpdateTaskPayload(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    current_version_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -434,88 +509,755 @@ async def _stream_lab_run(db: AsyncSession, run_request: LabRunRequest):
 
 
 # ---------------------------------------------------------------------------
+# Batch runs
+# ---------------------------------------------------------------------------
+
+def _prompt_version_to_schema(row: PromptVersionORM) -> PromptVersion:
+    return PromptVersion(
+        prompt_version_id=row.prompt_version_id,
+        prompt_id=row.prompt_id,
+        version_label=row.version_label,
+        parent_version_id=row.parent_version_id,
+        system_prompt=row.system_prompt,
+        user_template=row.user_template,
+        format_instruction=row.format_instruction,
+        notes=row.notes,
+        image_slot_specs=row.image_slot_specs or [],
+        variable_specs=row.variable_specs or [],
+        few_shot_examples=row.few_shot_examples or [],
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def _resolve_task_version_for_payload(
+    payload: BatchRunPayload,
+    db: AsyncSession,
+) -> tuple[TaskORM, TaskVersion]:
+    task = await _get_task_or_404(payload.task_id, db)
+    version_id = payload.task_version_id or task.current_version_id
+    if not version_id:
+        raise HTTPException(400, f"Task '{payload.task_id}' has no current version.")
+    version_row = await _get_task_version_or_404(payload.task_id, version_id, db)
+    return task, _task_version_to_schema(version_row)
+
+
+async def _resolve_batch_template(payload: BatchRunPayload, db: AsyncSession) -> LabRunRequest:
+    from app.adapters.registry import get_adapter_metadata
+    from app.models.provider_config import ProviderConfigORM
+
+    task, task_version = await _resolve_task_version_for_payload(payload, db)
+
+    pc_result = await db.execute(
+        select(ProviderConfigORM).where(
+            ProviderConfigORM.provider_config_id == task_version.provider_config_id
+        )
+    )
+    pc = pc_result.scalar_one_or_none()
+    if pc is None:
+        raise HTTPException(
+            404,
+            f"Provider config '{task_version.provider_config_id}' not found.",
+        )
+    adapter_id = pc.adapter_id
+    api_base_url = pc.base_url
+    provider_id = pc.name
+
+    meta = get_adapter_metadata(adapter_id)
+    if meta and meta.get("requires_base_url") and not api_base_url:
+        raise HTTPException(400, f"Adapter '{adapter_id}' requires api_base_url.")
+
+    parameters = task_version.model_parameters.model_copy(update={"stream": False})
+    model_config = ModelConfig(
+        model_config_id=f"mc_{task_version.task_version_id}",
+        name=f"{task.name} {task_version.version_label}",
+        provider_id=provider_id,
+        model_id=task_version.model_id,
+        adapter_id=adapter_id,
+        parameters=parameters,
+        provider_options={},
+    )
+    prompt_result = await db.execute(
+        select(PromptVersionORM).where(
+            PromptVersionORM.prompt_version_id == task_version.prompt_version_id,
+            PromptVersionORM.prompt_id == task_version.prompt_id,
+        )
+    )
+    prompt_row = prompt_result.scalar_one_or_none()
+    if prompt_row is None:
+        raise HTTPException(404, f"Prompt version '{task_version.prompt_version_id}' not found.")
+    prompt_data = _prompt_version_to_schema(prompt_row)
+    pricing = await _get_pricing(
+        db,
+        provider_id,
+        task_version.model_id,
+        task_version.pricing_profile_id,
+        task_version.provider_config_id,
+    )
+    image_config = task_version.image_preprocess_config or {}
+    return LabRunRequest(
+        sample=SampleRecord(sample_id="batch_template"),
+        prompt=prompt_data,
+        model_config=model_config,
+        output_contract=task_version.output_contract,
+        pricing=pricing,
+        api_base_url=api_base_url,
+        run_name=f"Batch: {task.name}",
+        provider_config_id=task_version.provider_config_id,
+        image_resolution_enabled=bool(image_config.get("enabled", False)),
+        image_resolution_target=int(image_config.get("target", 1024)),
+    )
+
+
+async def _load_batch_samples(
+    payload: BatchRunPayload,
+    db: AsyncSession,
+    sample_ids: list[str] | None = None,
+) -> list[SampleRecord]:
+    set_result = await db.execute(
+        select(SampleSetORM).where(SampleSetORM.sample_set_id == payload.sample_set_id)
+    )
+    sample_set = set_result.scalar_one_or_none()
+    if sample_set is None:
+        raise HTTPException(404, f"Sample set '{payload.sample_set_id}' not found.")
+
+    stmt = select(SampleRecordORM).where(SampleRecordORM.sample_set_id == payload.sample_set_id)
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    rows_by_id = {row.sample_id: row for row in rows}
+    ordered_ids = sample_ids or sample_set.record_ids or [row.sample_id for row in rows]
+    if sample_ids:
+        missing = [sample_id for sample_id in sample_ids if sample_id not in rows_by_id]
+        if missing:
+            raise HTTPException(404, f"Samples not found in set: {', '.join(missing)}")
+    if payload.limit is not None:
+        ordered_ids = ordered_ids[: max(0, payload.limit)]
+    samples = [
+        SampleRecord.model_validate(rows_by_id[sample_id].data)
+        for sample_id in ordered_ids
+        if sample_id in rows_by_id
+    ]
+    for sample in samples:
+        sample.sample_set_id = payload.sample_set_id
+    return samples
+
+
+@app.post("/api/batch-runs")
+async def create_batch_run(payload: BatchRunPayload, db: AsyncSession = Depends(get_db)):
+    samples = await _load_batch_samples(payload, db)
+    template = await _resolve_batch_template(payload, db)
+    run_id = f"run_{uuid4().hex[:16]}"
+    source = RunSource(
+        mode="batch",
+        sample_set_id=payload.sample_set_id,
+        sample_ids=[sample.sample_id for sample in samples],
+        provider_config_id=template.provider_config_id,
+        api_base_url=template.api_base_url,
+    ).model_dump(mode="json")
+    source["task_id"] = payload.task_id
+    source["task_version_id"] = (
+        payload.task_version_id or (await _get_task_or_404(payload.task_id, db)).current_version_id
+    )
+    spec = BatchRunSpec(
+        run_id=run_id,
+        name=template.run_name,
+        source=source,
+        samples=samples,
+        request_template=template,
+    )
+    await start_batch_run(spec)
+    return await _batch_status_response(run_id, db)
+
+
+@app.get("/api/batch-runs/{run_id}/status")
+async def get_batch_run_status(run_id: str, db: AsyncSession = Depends(get_db)):
+    return await _batch_status_response(run_id, db)
+
+
+@app.post("/api/batch-runs/{run_id}/cancel")
+async def cancel_batch_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    session = await _get_batch_session_or_404(run_id, db)
+    found = request_cancel(run_id)
+    if not found and session.status == RunSessionStatus.RUNNING.value:
+        session.status = RunSessionStatus.CANCELLED.value
+        session.completed_at = utc_now().isoformat()
+        await db.commit()
+    return {"cancel_requested": True, "run_id": run_id}
+
+
+@app.post("/api/batch-runs/{run_id}/retry-failed")
+async def retry_failed_batch_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    session = await _get_batch_session_or_404(run_id, db)
+    items_result = await db.execute(
+        select(RunItemORM).where(
+            RunItemORM.run_id == run_id,
+            RunItemORM.status == RunItemType.FAILED.value,
+        )
+    )
+    failed_sample_ids = [item.sample_id for item in items_result.scalars().all()]
+    if not failed_sample_ids:
+        raise HTTPException(400, "Original run has no failed items to retry.")
+
+    source = session.source or {}
+    payload = _payload_from_session_snapshot(session)
+    samples = await _load_batch_samples(payload, db, failed_sample_ids)
+    template = await _resolve_batch_template(payload, db)
+    new_run_id = f"run_{uuid4().hex[:16]}"
+    retry_source = RunSource(
+        mode="batch",
+        sample_set_id=source.get("sample_set_id"),
+        sample_ids=failed_sample_ids,
+        rerun_of=run_id,
+        provider_config_id=source.get("provider_config_id"),
+        api_base_url=source.get("api_base_url"),
+    ).model_dump(mode="json")
+    retry_source["task_id"] = payload.task_id
+    retry_source["task_version_id"] = payload.task_version_id
+    await start_batch_run(
+        BatchRunSpec(
+            run_id=new_run_id,
+            name=f"Retry failed: {session.name or run_id}",
+            source=retry_source,
+            samples=samples,
+            request_template=template,
+        )
+    )
+    return await _batch_status_response(new_run_id, db)
+
+
+@app.post("/api/batch-runs/estimate")
+async def estimate_batch_run(payload: BatchRunPayload, db: AsyncSession = Depends(get_db)):
+    samples = await _load_batch_samples(payload, db)
+    template = await _resolve_batch_template(payload, db)
+    pricing_snapshot = _pricing_snapshot(template.pricing)
+    estimated_input_tokens = 0
+    estimated_output_tokens = 0
+    estimated_cost = 0.0
+    for sample in samples:
+        input_tokens = (
+            800
+            + len(json.dumps(sample.vars, ensure_ascii=False)) // 4
+            + len(sample.images) * 1000
+        )
+        output_tokens = 400
+        usage = Usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            image_count=len(sample.images),
+            provider_reported=False,
+            estimated=True,
+        )
+        cost = calculate_cost(usage, pricing_snapshot)
+        estimated_input_tokens += input_tokens
+        estimated_output_tokens += output_tokens
+        estimated_cost += cost.estimated_cost
+    return {
+        "estimated_cost": estimated_cost,
+        "currency": pricing_snapshot.currency,
+        "estimated_input_tokens": estimated_input_tokens,
+        "estimated_output_tokens": estimated_output_tokens,
+        "sample_count": len(samples),
+    }
+
+
+async def _get_batch_session_or_404(run_id: str, db: AsyncSession) -> RunSessionORM:
+    result = await db.execute(
+        select(RunSessionORM).where(
+            RunSessionORM.run_id == run_id,
+            RunSessionORM.run_type == RunType.BATCH.value,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(404, "Batch run not found")
+    return session
+
+
+async def _batch_status_response(run_id: str, db: AsyncSession) -> dict[str, Any]:
+    session = await _get_batch_session_or_404(run_id, db)
+    items_result = await db.execute(select(RunItemORM).where(RunItemORM.run_id == run_id))
+    items = items_result.scalars().all()
+    return {
+        "run_id": session.run_id,
+        "status": session.status,
+        "session": _run_session_to_dict(session),
+        "summary": session.summary,
+        "items": [_run_item_to_dict(item) for item in items],
+    }
+
+
+def _payload_from_session_snapshot(session: RunSessionORM) -> BatchRunPayload:
+    source = session.source or {}
+    task_id = source.get("task_id")
+    if not task_id:
+        raise HTTPException(400, "Original run has no task_id to retry.")
+    return BatchRunPayload(
+        task_id=task_id,
+        sample_set_id=source.get("sample_set_id") or "",
+        task_version_id=source.get("task_version_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Compare runs
+# ---------------------------------------------------------------------------
+
+async def _resolve_compare_variants(
+    payload: CompareRunPayload,
+    db: AsyncSession,
+) -> list[VariantSpec]:
+    variants: list[VariantSpec] = []
+    for index, variant in enumerate(payload.variants):
+        batch_payload = BatchRunPayload(
+            task_id=variant.task_id,
+            sample_set_id=payload.sample_set_id,
+            task_version_id=variant.task_version_id,
+            limit=payload.limit,
+        )
+        task, task_version = await _resolve_task_version_for_payload(batch_payload, db)
+        template = await _resolve_batch_template(batch_payload, db)
+        label = (
+            variant.label
+            or f"{task.name} {task_version.version_label}"
+            or f"Variant {index + 1}"
+        )
+        variants.append(
+            VariantSpec(
+                label=label,
+                request_template=template,
+                task_id=task.task_id,
+                task_version_id=task_version.task_version_id,
+                prompt_id=task_version.prompt_id,
+                prompt_version_id=task_version.prompt_version_id,
+            )
+        )
+    return variants
+
+
+async def _load_compare_samples(
+    payload: CompareRunPayload,
+    db: AsyncSession,
+) -> list[SampleRecord]:
+    batch_payload = BatchRunPayload(
+        task_id=payload.variants[0].task_id if payload.variants else "",
+        sample_set_id=payload.sample_set_id,
+        limit=payload.limit,
+    )
+    return await _load_batch_samples(batch_payload, db)
+
+
+@app.post("/api/compare-runs/estimate")
+async def estimate_compare_run(payload: CompareRunPayload, db: AsyncSession = Depends(get_db)):
+    samples = await _load_compare_samples(payload, db)
+    variants = await _resolve_compare_variants(payload, db)
+    estimated_input_tokens = 0
+    estimated_output_tokens = 0
+    estimated_cost = 0.0
+    currency = "USD"
+    for variant in variants:
+        pricing_snapshot = _pricing_snapshot(variant.request_template.pricing)
+        currency = pricing_snapshot.currency
+        for sample in samples:
+            input_tokens = (
+                800
+                + len(json.dumps(sample.vars, ensure_ascii=False)) // 4
+                + len(sample.images) * 1000
+            )
+            output_tokens = 400
+            usage = Usage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+                image_count=len(sample.images),
+                provider_reported=False,
+                estimated=True,
+            )
+            cost = calculate_cost(usage, pricing_snapshot)
+            estimated_input_tokens += input_tokens
+            estimated_output_tokens += output_tokens
+            estimated_cost += cost.estimated_cost
+    return {
+        "estimated_cost": estimated_cost,
+        "currency": currency,
+        "estimated_input_tokens": estimated_input_tokens,
+        "estimated_output_tokens": estimated_output_tokens,
+        "sample_count": len(samples),
+        "variant_count": len(variants),
+        "cell_count": len(samples) * len(variants),
+    }
+
+
+@app.post("/api/compare-runs")
+async def create_compare_run(payload: CompareRunPayload, db: AsyncSession = Depends(get_db)):
+    samples = await _load_compare_samples(payload, db)
+    variants = await _resolve_compare_variants(payload, db)
+    run_id = f"run_{uuid4().hex[:16]}"
+    provider_config_ids = [variant.request_template.provider_config_id for variant in variants]
+    source = RunSource(
+        mode="compare",
+        sample_set_id=payload.sample_set_id,
+        sample_ids=[sample.sample_id for sample in samples],
+        provider_config_id=provider_config_ids[0] if len(set(provider_config_ids)) == 1 else None,
+        api_base_url=variants[0].request_template.api_base_url if variants else None,
+    ).model_dump(mode="json")
+    source["variants"] = [
+        {
+            "label": variant.label,
+            "task_id": variant.task_id,
+            "task_version_id": variant.task_version_id,
+            "prompt_id": variant.prompt_id,
+            "prompt_version_id": variant.prompt_version_id,
+            "provider_config_id": variant.request_template.provider_config_id,
+            "model_id": variant.request_template.model_config.model_id,
+        }
+        for variant in variants
+    ]
+    spec = CompareRunSpec(
+        run_id=run_id,
+        name=payload.name,
+        source=source,
+        samples=samples,
+        variants=variants,
+    )
+    await start_compare_run(spec)
+    return await _compare_status_response(run_id, db)
+
+
+@app.get("/api/compare-runs/{run_id}/status")
+async def get_compare_run_status(run_id: str, db: AsyncSession = Depends(get_db)):
+    return await _compare_status_response(run_id, db)
+
+
+@app.post("/api/compare-runs/{run_id}/cancel")
+async def cancel_compare_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    session = await _get_compare_session_or_404(run_id, db)
+    found = request_compare_cancel(run_id)
+    if not found and session.status == RunSessionStatus.RUNNING.value:
+        session.status = RunSessionStatus.CANCELLED.value
+        session.completed_at = utc_now().isoformat()
+        await db.commit()
+    return {"cancel_requested": True, "run_id": run_id}
+
+
+async def _get_compare_session_or_404(run_id: str, db: AsyncSession) -> RunSessionORM:
+    result = await db.execute(
+        select(RunSessionORM).where(
+            RunSessionORM.run_id == run_id,
+            RunSessionORM.run_type == RunType.COMPARE.value,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(404, "Compare run not found")
+    return session
+
+
+async def _compare_status_response(run_id: str, db: AsyncSession) -> dict[str, Any]:
+    session = await _get_compare_session_or_404(run_id, db)
+    items_result = await db.execute(select(RunItemORM).where(RunItemORM.run_id == run_id))
+    items = [_run_item_to_dict(item) for item in items_result.scalars().all()]
+    matrix = _compare_matrix(items)
+    return {
+        "run_id": session.run_id,
+        "status": session.status,
+        "session": _run_session_to_dict(session),
+        "summary": session.summary,
+        "items": items,
+        "matrix": matrix,
+    }
+
+
+def _compare_matrix(items: list[dict[str, Any]]) -> dict[str, Any]:
+    sample_ids: list[str] = []
+    variant_labels: list[str] = []
+    items_by_sample: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in items:
+        axes = item.get("compare_axes") or {}
+        sample_id = axes.get("sample_id") or item.get("sample_id")
+        label = axes.get("config_label") or axes.get("task_version_id") or "variant"
+        if sample_id not in sample_ids:
+            sample_ids.append(sample_id)
+        if label not in variant_labels:
+            variant_labels.append(label)
+        items_by_sample.setdefault(sample_id, {})[label] = item
+    return {
+        "sample_ids": sample_ids,
+        "variant_labels": variant_labels,
+        "items_by_sample": items_by_sample,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
 
-def _task_to_schema(row: TaskORM) -> Task:
-    return Task(
+def _task_version_to_schema(row: TaskVersionORM) -> TaskVersion:
+    return TaskVersion(
+        task_version_id=row.task_version_id,
         task_id=row.task_id,
-        name=row.name,
+        version_label=row.version_label,
+        parent_version_id=row.parent_version_id,
+        prompt_id=row.prompt_id,
+        prompt_version_id=row.prompt_version_id,
         provider_config_id=row.provider_config_id,
         model_id=row.model_id,
         model_parameters=ModelParameters(**(row.model_parameters or {})),
-        system_prompt=row.system_prompt,
-        user_prompt=row.user_prompt,
-        format_instruction=row.format_instruction,
         output_contract=OutputContract(**(row.output_contract or {})),
+        image_preprocess_config=row.image_preprocess_config or {},
         pricing_profile_id=row.pricing_profile_id,
-        image_resolution_enabled=row.image_resolution_enabled,
-        image_resolution_target=row.image_resolution_target,
-        sample_set_id=row.sample_set_id,
         notes=row.notes,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
 
 
-def _apply_task_payload(row: TaskORM, payload: SaveTaskPayload) -> None:
-    row.name = payload.name
-    row.provider_config_id = payload.provider_config_id
-    row.model_id = payload.model_id
-    row.model_parameters = payload.model_parameters.model_dump(mode="json", exclude_none=True)
-    row.system_prompt = payload.system_prompt
-    row.user_prompt = payload.user_prompt
-    row.format_instruction = payload.format_instruction
-    row.output_contract = payload.output_contract.model_dump(mode="json", exclude_none=True)
-    row.pricing_profile_id = payload.pricing_profile_id
-    row.image_resolution_enabled = payload.image_resolution_enabled
-    row.image_resolution_target = payload.image_resolution_target
-    row.sample_set_id = payload.sample_set_id
-    row.notes = payload.notes
-    row.updated_at = utc_now().isoformat()
+def _task_version_summary(row: TaskVersionORM | None) -> TaskVersionSummary | None:
+    if row is None:
+        return None
+    return TaskVersionSummary(
+        task_version_id=row.task_version_id,
+        version_label=row.version_label,
+        prompt_id=row.prompt_id,
+        prompt_version_id=row.prompt_version_id,
+        provider_config_id=row.provider_config_id,
+        model_id=row.model_id,
+        notes=row.notes,
+        created_at=row.created_at,
+    )
+
+
+def _task_to_schema(
+    row: TaskORM,
+    *,
+    current_version: TaskVersionORM | None = None,
+    versions: list[TaskVersionORM] | None = None,
+) -> Task:
+    return Task(
+        task_id=row.task_id,
+        name=row.name,
+        description=row.description or "",
+        current_version_id=row.current_version_id,
+        tags=row.tags or [],
+        current_version=_task_version_summary(current_version),
+        versions=[_task_version_summary(version) for version in versions] if versions is not None else None,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _apply_version_data(row: TaskVersionORM, data: TaskVersionDataSchema) -> None:
+    row.prompt_id = data.prompt_id
+    row.prompt_version_id = data.prompt_version_id
+    row.provider_config_id = data.provider_config_id
+    row.model_id = data.model_id
+    row.model_parameters = data.model_parameters.model_dump(mode="json", exclude_none=True)
+    row.output_contract = data.output_contract.model_dump(mode="json", exclude_none=True)
+    row.image_preprocess_config = data.image_preprocess_config
+    row.pricing_profile_id = data.pricing_profile_id
+    row.notes = data.notes
+
+
+async def _next_task_version_label(task_id: str, db: AsyncSession) -> str:
+    result = await db.execute(select(TaskVersionORM).where(TaskVersionORM.task_id == task_id))
+    max_number = 0
+    for version in result.scalars().all():
+        if version.version_label.startswith("v") and version.version_label[1:].isdigit():
+            max_number = max(max_number, int(version.version_label[1:]))
+    return f"v{max_number + 1}"
+
+
+async def _get_task_or_404(task_id: str, db: AsyncSession) -> TaskORM:
+    result = await db.execute(select(TaskORM).where(TaskORM.task_id == task_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Task not found")
+    return row
+
+
+async def _get_task_version_or_404(
+    task_id: str,
+    task_version_id: str,
+    db: AsyncSession,
+) -> TaskVersionORM:
+    result = await db.execute(
+        select(TaskVersionORM).where(
+            TaskVersionORM.task_id == task_id,
+            TaskVersionORM.task_version_id == task_version_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Task version not found")
+    return row
+
+
+async def _get_task_version_by_id_or_404(
+    task_version_id: str,
+    db: AsyncSession,
+) -> TaskVersionORM:
+    result = await db.execute(
+        select(TaskVersionORM).where(TaskVersionORM.task_version_id == task_version_id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Task version not found")
+    return row
+
+
+async def _prompt_version_for_task_version(
+    task_version_id: str,
+    db: AsyncSession,
+) -> PromptVersion:
+    task_version = await _get_task_version_by_id_or_404(task_version_id, db)
+    result = await db.execute(
+        select(PromptVersionORM).where(
+            PromptVersionORM.prompt_id == task_version.prompt_id,
+            PromptVersionORM.prompt_version_id == task_version.prompt_version_id,
+        )
+    )
+    prompt_row = result.scalar_one_or_none()
+    if prompt_row is None:
+        raise HTTPException(404, f"Prompt version '{task_version.prompt_version_id}' not found.")
+    return _prompt_version_to_schema(prompt_row)
+
+
+async def _current_task_version(row: TaskORM, db: AsyncSession) -> TaskVersionORM | None:
+    if not row.current_version_id:
+        return None
+    result = await db.execute(
+        select(TaskVersionORM).where(
+            TaskVersionORM.task_id == row.task_id,
+            TaskVersionORM.task_version_id == row.current_version_id,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 @app.get("/api/tasks")
 async def list_tasks(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(TaskORM).order_by(TaskORM.updated_at.desc()))
-    return [_task_to_schema(row).model_dump(mode="json") for row in result.scalars().all()]
+    rows = result.scalars().all()
+    current_ids = [row.current_version_id for row in rows if row.current_version_id]
+    versions: dict[str, TaskVersionORM] = {}
+    if current_ids:
+        version_result = await db.execute(
+            select(TaskVersionORM).where(TaskVersionORM.task_version_id.in_(current_ids))
+        )
+        versions = {row.task_version_id: row for row in version_result.scalars().all()}
+    return [
+        _task_to_schema(row, current_version=versions.get(row.current_version_id or "")).model_dump(
+            mode="json", exclude_none=True
+        )
+        for row in rows
+    ]
 
 
 @app.post("/api/tasks")
-async def create_task(payload: SaveTaskPayload, db: AsyncSession = Depends(get_db)):
-    row = TaskORM(task_id=f"task_{uuid4().hex[:12]}", name=payload.name, model_id=payload.model_id)
-    _apply_task_payload(row, payload)
+async def create_task(payload: CreateTaskPayload, db: AsyncSession = Depends(get_db)):
+    row = TaskORM(
+        task_id=f"task_{uuid4().hex[:12]}",
+        name=payload.name,
+        description=payload.description,
+        tags=payload.tags,
+    )
     db.add(row)
+    await db.flush()
+    version = TaskVersionORM(
+        task_version_id=f"tv_{uuid4().hex[:12]}",
+        task_id=row.task_id,
+        version_label="v1",
+    )
+    _apply_version_data(version, payload.version)
+    db.add(version)
+    row.current_version_id = version.task_version_id
     await db.commit()
-    return _task_to_schema(row).model_dump(mode="json")
+    return _task_to_schema(row, current_version=version).model_dump(mode="json", exclude_none=True)
+
+
+@app.post("/api/tasks/{task_id}/versions")
+async def create_task_version(
+    task_id: str,
+    payload: CreateTaskVersionPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _get_task_or_404(task_id, db)
+    version = TaskVersionORM(
+        task_version_id=f"tv_{uuid4().hex[:12]}",
+        task_id=task_id,
+        version_label=await _next_task_version_label(task_id, db),
+        parent_version_id=task.current_version_id,
+    )
+    _apply_version_data(version, payload)
+    db.add(version)
+    task.current_version_id = version.task_version_id
+    task.updated_at = utc_now().isoformat()
+    await db.commit()
+    return _task_version_to_schema(version).model_dump(mode="json")
 
 
 @app.get("/api/tasks/{task_id}")
 async def get_task(task_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(TaskORM).where(TaskORM.task_id == task_id))
-    row = result.scalar_one_or_none()
-    if row is None:
-        raise HTTPException(404, "Task not found")
-    return _task_to_schema(row).model_dump(mode="json")
+    row = await _get_task_or_404(task_id, db)
+    version_result = await db.execute(
+        select(TaskVersionORM)
+        .where(TaskVersionORM.task_id == task_id)
+        .order_by(TaskVersionORM.id.asc())
+    )
+    versions = version_result.scalars().all()
+    current = next(
+        (version for version in versions if version.task_version_id == row.current_version_id),
+        None,
+    )
+    return _task_to_schema(row, current_version=current, versions=versions).model_dump(
+        mode="json", exclude_none=True
+    )
+
+
+@app.get("/api/tasks/{task_id}/versions/{task_version_id}/input-spec", response_model=TaskInputSpec)
+async def get_task_input_spec(
+    task_id: str,
+    task_version_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _get_task_or_404(task_id, db)
+    task_version = await _get_task_version_or_404(task_id, task_version_id, db)
+    prompt_result = await db.execute(
+        select(PromptVersionORM).where(
+            PromptVersionORM.prompt_id == task_version.prompt_id,
+            PromptVersionORM.prompt_version_id == task_version.prompt_version_id,
+        )
+    )
+    prompt_version = prompt_result.scalar_one_or_none()
+    if prompt_version is None:
+        raise HTTPException(404, f"Prompt version '{task_version.prompt_version_id}' not found.")
+    return generate_input_spec_for_task_version(task, task_version, prompt_version).model_dump(
+        mode="json"
+    )
 
 
 @app.put("/api/tasks/{task_id}")
-async def update_task(task_id: str, payload: SaveTaskPayload, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(TaskORM).where(TaskORM.task_id == task_id))
-    row = result.scalar_one_or_none()
-    if row is None:
-        raise HTTPException(404, "Task not found")
-    _apply_task_payload(row, payload)
+async def update_task(task_id: str, payload: UpdateTaskPayload, db: AsyncSession = Depends(get_db)):
+    row = await _get_task_or_404(task_id, db)
+    if payload.current_version_id is not None:
+        await _get_task_version_or_404(task_id, payload.current_version_id, db)
+        row.current_version_id = payload.current_version_id
+    if payload.name is not None:
+        row.name = payload.name
+    if payload.description is not None:
+        row.description = payload.description
+    if payload.tags is not None:
+        row.tags = payload.tags
+    row.updated_at = utc_now().isoformat()
     await db.commit()
-    return _task_to_schema(row).model_dump(mode="json")
+    current = await _current_task_version(row, db)
+    return _task_to_schema(row, current_version=current).model_dump(mode="json", exclude_none=True)
 
 
 @app.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(TaskORM).where(TaskORM.task_id == task_id))
-    row = result.scalar_one_or_none()
-    if row is None:
-        raise HTTPException(404, "Task not found")
+    row = await _get_task_or_404(task_id, db)
+    await db.execute(delete(TaskVersionORM).where(TaskVersionORM.task_id == task_id))
     await db.delete(row)
     await db.commit()
     return {"deleted": True}
@@ -911,31 +1653,65 @@ async def delete_result_snapshot(snapshot_id: str, db: AsyncSession = Depends(ge
 
 
 @app.get("/api/runs")
-async def list_runs(limit: int = 50, db: AsyncSession = Depends(get_db)):
+async def list_runs(
+    run_type: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+):
+    filters = []
+    if run_type:
+        filters.append(RunSessionORM.run_type == run_type)
+    if status:
+        filters.append(RunSessionORM.status == status)
+    if search:
+        needle = f"%{search.lower()}%"
+        filters.append(
+            or_(
+                func.lower(RunSessionORM.run_id).like(needle),
+                func.lower(RunSessionORM.name).like(needle),
+            )
+        )
+
+    total_stmt = select(func.count()).select_from(RunSessionORM)
     stmt = (
         select(RunSessionORM)
         .order_by(RunSessionORM.created_at.desc())
         .limit(limit)
+        .offset(offset)
     )
+    if filters:
+        total_stmt = total_stmt.where(*filters)
+        stmt = stmt.where(*filters)
+
+    total_result = await db.execute(total_stmt)
+    total = int(total_result.scalar_one())
     result = await db.execute(stmt)
     rows = result.scalars().all()
-    return [
-        {
-            "run_id": r.run_id,
-            "run_type": r.run_type,
-            "name": r.name,
-            "status": r.status,
-            "started_at": r.started_at,
-            "completed_at": r.completed_at,
-            "summary": r.summary,
-            "created_at": r.created_at,
-        }
-        for r in rows
-    ]
+    runs = []
+    for row in rows:
+        data = _run_session_to_dict(row)
+        runs.append(
+            {
+                "run_id": data["run_id"],
+                "run_type": data["run_type"],
+                "name": data["name"],
+                "status": data["status"],
+                "started_at": data["started_at"],
+                "completed_at": data["completed_at"],
+                "summary": data["summary"],
+                "created_at": data["created_at"],
+            }
+        )
+    return {"total": total, "runs": runs}
 
 
-@app.get("/api/runs/{run_id}")
-async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
+async def _get_run_session_and_items_or_404(
+    run_id: str,
+    db: AsyncSession,
+) -> tuple[RunSessionORM, list[RunItemORM]]:
     stmt = select(RunSessionORM).where(RunSessionORM.run_id == run_id)
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
@@ -944,7 +1720,12 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
 
     items_stmt = select(RunItemORM).where(RunItemORM.run_id == run_id)
     items_result = await db.execute(items_stmt)
-    items = items_result.scalars().all()
+    return session, list(items_result.scalars().all())
+
+
+@app.get("/api/runs/{run_id}")
+async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    session, items = await _get_run_session_and_items_or_404(run_id, db)
 
     return {
         "session": {
@@ -987,6 +1768,130 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
             for i in items
         ],
     }
+
+
+@app.delete("/api/runs/{run_id}")
+async def delete_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    session, items = await _get_run_session_and_items_or_404(run_id, db)
+    run_item_ids = [item.run_item_id for item in items]
+    if run_item_ids:
+        await db.execute(delete(AttemptORM).where(AttemptORM.run_item_id.in_(run_item_ids)))
+    await db.execute(delete(RunItemORM).where(RunItemORM.run_id == run_id))
+    await db.delete(session)
+    await db.commit()
+    return {"deleted": True}
+
+
+@app.get("/api/runs/{run_id}/export/jsonl")
+async def export_run_jsonl(run_id: str, db: AsyncSession = Depends(get_db)):
+    session, items = await _get_run_session_and_items_or_404(run_id, db)
+    session_data = _run_session_to_dict(session)
+    lines = []
+    for item in items:
+        item_data = _run_item_to_dict(item)
+        lines.append(
+            json.dumps(
+                {
+                    "run_id": session_data["run_id"],
+                    "run_item_id": item_data["run_item_id"],
+                    "sample_id": item_data["sample_id"],
+                    "status": item_data["status"],
+                    "model_id": item_data["model_id"],
+                    "provider_id": item_data["provider_id"],
+                    "response": item_data["response"] or {},
+                    "usage": item_data["usage"] or {},
+                    "cost": item_data["cost"] or {},
+                    "review": item_data["review"] or {},
+                    "error": item_data["error"],
+                    "latency_ms": item_data["latency_ms"],
+                    "created_at": item_data["created_at"],
+                },
+                ensure_ascii=False,
+            )
+        )
+    content = "\n".join(lines)
+    if content:
+        content += "\n"
+    return Response(
+        content=content,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="run_{run_id}.jsonl"'},
+    )
+
+
+def _csv_value(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+@app.get("/api/runs/{run_id}/export/csv")
+async def export_run_csv(run_id: str, db: AsyncSession = Depends(get_db)):
+    session, items = await _get_run_session_and_items_or_404(run_id, db)
+    session_data = _run_session_to_dict(session)
+    session_summary = session_data["summary"] or {}
+    fieldnames = [
+        "run_id",
+        "run_item_id",
+        "sample_id",
+        "status",
+        "model_id",
+        "provider_id",
+        "latency_ms",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "estimated_cost",
+        "currency",
+        "raw_text",
+        "parsed_text",
+        "error_message",
+        "accepted",
+        "rating",
+        "labels",
+        "created_at",
+    ]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for item in items:
+        item_data = _run_item_to_dict(item)
+        response_data = item_data["response"] or {}
+        usage = item_data["usage"] or {}
+        cost = item_data["cost"] or {}
+        review = item_data["review"] or {}
+        error = item_data["error"] or {}
+        labels = review.get("labels", [])
+        if not isinstance(labels, list):
+            labels = [labels]
+        writer.writerow(
+            {
+                "run_id": session_data["run_id"],
+                "run_item_id": item_data["run_item_id"],
+                "sample_id": item_data["sample_id"],
+                "status": item_data["status"],
+                "model_id": item_data["model_id"],
+                "provider_id": item_data["provider_id"],
+                "latency_ms": item_data["latency_ms"],
+                "input_tokens": usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+                "estimated_cost": item_data["estimated_cost"],
+                "currency": cost.get("currency") or session_summary.get("currency") or "USD",
+                "raw_text": response_data.get("raw_text"),
+                "parsed_text": _csv_value(response_data.get("parsed")),
+                "error_message": error.get("message"),
+                "accepted": review.get("accepted"),
+                "rating": review.get("rating"),
+                "labels": ",".join(str(label) for label in labels),
+                "created_at": item_data["created_at"],
+            }
+        )
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="run_{run_id}.csv"'},
+    )
 
 
 @app.get("/api/runs/{run_id}/items/{run_item_id}")
@@ -1053,6 +1958,86 @@ async def update_review(
 # Samples
 # ---------------------------------------------------------------------------
 
+def _sample_set_to_dict(row: SampleSetORM) -> dict[str, Any]:
+    return {
+        "sample_set_id": row.sample_set_id,
+        "name": row.name,
+        "description": row.description,
+        "record_ids": row.record_ids,
+        "metadata": row.metadata_,
+        "created_at": row.created_at,
+    }
+
+
+def _dedupe_record_ids(records: list[SampleRecord]) -> None:
+    seen: set[str] = set()
+    for index, record in enumerate(records):
+        sample_id = record.sample_id
+        if sample_id not in seen:
+            seen.add(sample_id)
+            continue
+
+        digest_source = f"{sample_id}:{index}:{record.model_dump_json()}".encode("utf-8")
+        suffix = hashlib.sha1(digest_source).hexdigest()[:6]
+        candidate = f"{sample_id}_{suffix}"
+        counter = 1
+        while candidate in seen:
+            candidate = f"{sample_id}_{suffix}{counter}"
+            counter += 1
+        record.sample_id = candidate
+        seen.add(candidate)
+
+
+def _copy_upload_file(upload: UploadFile, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    upload.file.seek(0)
+    with destination.open("wb") as out_file:
+        shutil.copyfileobj(upload.file, out_file)
+
+
+def _remove_file(path: Path) -> None:
+    path.unlink(missing_ok=True)
+
+
+async def _save_upload_to_temp(upload: UploadFile) -> Path:
+    suffix = Path(upload.filename or "upload").suffix
+    temp_path = settings.data_dir / "temp" / f"upload_{uuid4().hex[:12]}{suffix}"
+    await run_in_threadpool(_copy_upload_file, upload, temp_path)
+    return temp_path
+
+
+async def _persist_sample_records(
+    db: AsyncSession,
+    records: list[SampleRecord],
+    *,
+    name: str,
+    import_source: dict[str, Any],
+) -> str:
+    sample_set_id = f"ss_{uuid4().hex[:12]}"
+    set_orm = SampleSetORM(
+        sample_set_id=sample_set_id,
+        name=name,
+        import_source=import_source,
+        record_ids=[r.sample_id for r in records],
+    )
+    db.add(set_orm)
+
+    for record in records:
+        record.sample_set_id = sample_set_id
+        orm = SampleRecordORM(
+            sample_id=record.sample_id,
+            sample_set_id=sample_set_id,
+            sample_type=record.sample_type,
+            data=record.model_dump(mode="json"),
+            tags=record.tags,
+            notes=record.notes,
+        )
+        db.add(orm)
+
+    await db.commit()
+    return sample_set_id
+
+
 @app.get("/api/samples")
 async def list_samples(
     sample_set_id: str | None = None, limit: int = 100, db: AsyncSession = Depends(get_db)
@@ -1093,17 +2078,28 @@ async def create_sample(sample: SampleRecord, db: AsyncSession = Depends(get_db)
 @app.get("/api/sample-sets")
 async def list_sample_sets(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(SampleSetORM).order_by(SampleSetORM.created_at.desc()))
-    return [
-        {
-            "sample_set_id": r.sample_set_id,
-            "name": r.name,
-            "description": r.description,
-            "record_ids": r.record_ids,
-            "metadata": r.metadata_,
-            "created_at": r.created_at,
-        }
-        for r in result.scalars().all()
-    ]
+    return [_sample_set_to_dict(r) for r in result.scalars().all()]
+
+
+@app.get("/api/sample-sets/{sample_set_id}")
+async def get_sample_set(sample_set_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(SampleSetORM).where(SampleSetORM.sample_set_id == sample_set_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Sample set not found")
+    return _sample_set_to_dict(row)
+
+
+@app.delete("/api/sample-sets/{sample_set_id}")
+async def delete_sample_set(sample_set_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(SampleSetORM).where(SampleSetORM.sample_set_id == sample_set_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Sample set not found")
+    await db.execute(delete(SampleRecordORM).where(SampleRecordORM.sample_set_id == sample_set_id))
+    await db.delete(row)
+    await db.commit()
+    return {"deleted": True}
 
 
 # ---------------------------------------------------------------------------
@@ -1124,6 +2120,7 @@ def _prompt_version_to_dict(version: PromptVersionORM) -> dict[str, Any]:
         "format_instruction": version.format_instruction,
         "notes": version.notes,
         "image_slot_specs": version.image_slot_specs or [],
+        "variable_specs": version.variable_specs or [],
         "few_shot_examples": version.few_shot_examples or [],
         "created_at": version.created_at,
         "updated_at": version.updated_at,
@@ -1255,6 +2252,7 @@ async def save_prompt(payload: SavePromptPayload, db: AsyncSession = Depends(get
         format_instruction=payload.format_instruction,
         notes=payload.notes,
         image_slot_specs=[spec.model_dump(mode="json") for spec in payload.image_slot_specs],
+        variable_specs=[spec.model_dump(mode="json") for spec in payload.variable_specs],
         few_shot_examples=[
             _persist_few_shot_example(example, prompt_id, version_id)
             for example in payload.few_shot_examples
@@ -1655,36 +2653,134 @@ async def csv_preview(payload: dict):
     return {"columns": columns, "rows": rows}
 
 
+@app.post("/api/import/csv/suggest-mapping")
+async def csv_suggest_mapping(payload: dict, db: AsyncSession = Depends(get_db)):
+    columns = payload.get("columns")
+    if columns is None:
+        csv_path = payload.get("csv_path", "")
+        delimiter = payload.get("delimiter", ",")
+        columns = detect_columns(csv_path, delimiter=delimiter)
+    prompt_version = None
+    task_version_id = payload.get("task_version_id")
+    if task_version_id:
+        prompt_version = await _prompt_version_for_task_version(task_version_id, db)
+    mapping = suggest_column_mapping(list(columns or []), prompt_version)
+    if task_version_id:
+        mapping.task_version_id = task_version_id
+    return mapping.model_dump(mode="json")
+
+
+async def _validation_report_for_records(
+    records: list[SampleRecord],
+    task_version_id: str | None,
+    db: AsyncSession,
+) -> ImportValidationReport | None:
+    if not task_version_id:
+        return None
+    prompt_version = await _prompt_version_for_task_version(task_version_id, db)
+    valid_records, invalid_rows = validate_records_against_contract(records, prompt_version)
+    return ImportValidationReport(valid_count=len(valid_records), invalid_rows=invalid_rows)
+
+
+@app.post("/api/import/csv/preview/file")
+async def csv_preview_file(
+    file: UploadFile = File(...),
+    delimiter: str = Form(","),
+):
+    temp_path = await _save_upload_to_temp(file)
+    try:
+        columns, rows = await run_in_threadpool(preview_csv, temp_path, 5, delimiter)
+        return {"columns": columns, "rows": rows}
+    finally:
+        await run_in_threadpool(_remove_file, temp_path)
+
+
 @app.post("/api/import/csv")
 async def csv_import(payload: CsvImportPayload, db: AsyncSession = Depends(get_db)):
     records = import_csv(payload.csv_path, payload.mapping, payload.delimiter)
+    task_version_id = payload.task_version_id or payload.mapping.task_version_id
+    report = await _validation_report_for_records(records, task_version_id, db)
+    if payload.validate_only:
+        return (report or ImportValidationReport(valid_count=len(records))).model_dump(mode="json")
 
-    sample_set_id = f"ss_{uuid4().hex[:12]}"
-    set_orm = SampleSetORM(
-        sample_set_id=sample_set_id,
+    sample_set_id = await _persist_sample_records(
+        db,
+        records,
         name=payload.sample_set_name or f"Import {datetime.utcnow().isoformat()}",
         import_source={"type": "csv", "path": payload.csv_path},
-        record_ids=[r.sample_id for r in records],
     )
-    db.add(set_orm)
-
-    for record in records:
-        record.sample_set_id = sample_set_id
-        orm = SampleRecordORM(
-            sample_id=record.sample_id,
-            sample_set_id=sample_set_id,
-            sample_type=record.sample_type,
-            data=record.model_dump(mode="json"),
-            tags=record.tags,
-            notes=record.notes,
-        )
-        db.add(orm)
-
-    await db.commit()
     return {
         "sample_set_id": sample_set_id,
         "imported_count": len(records),
+        **({"validation": report.model_dump(mode="json")} if report is not None else {}),
     }
+
+
+@app.post("/api/import/csv/file")
+async def csv_import_file(
+    file: UploadFile = File(...),
+    delimiter: str = Form(","),
+    mapping: str = Form(...),
+    task_version_id: str | None = Form(None),
+    validate_only: bool = Form(False),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        mapping_data = json.loads(mapping)
+        parsed_mapping = ColumnMapping.model_validate(mapping_data)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid mapping: {exc}") from exc
+
+    temp_path = await _save_upload_to_temp(file)
+    try:
+        records = await run_in_threadpool(import_csv, temp_path, parsed_mapping, delimiter)
+        effective_task_version_id = task_version_id or parsed_mapping.task_version_id
+        report = await _validation_report_for_records(records, effective_task_version_id, db)
+        if validate_only:
+            return (report or ImportValidationReport(valid_count=len(records))).model_dump(mode="json")
+        sample_set_id = await _persist_sample_records(
+            db,
+            records,
+            name=f"Import {datetime.utcnow().isoformat()}",
+            import_source={"type": "csv", "filename": file.filename or ""},
+        )
+        response = {"sample_set_id": sample_set_id, "imported_count": len(records)}
+        if report is not None:
+            response["validation"] = report.model_dump(mode="json")
+        return response
+    finally:
+        await run_in_threadpool(_remove_file, temp_path)
+
+
+@app.post("/api/import/jsonl/file")
+async def jsonl_import_file(
+    file: UploadFile = File(...),
+    task_version_id: str | None = Form(None),
+    validate_only: bool = Form(False),
+    db: AsyncSession = Depends(get_db),
+):
+    temp_path = await _save_upload_to_temp(file)
+    try:
+        try:
+            records = await run_in_threadpool(import_jsonl, temp_path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        _dedupe_record_ids(records)
+        report = await _validation_report_for_records(records, task_version_id, db)
+        if validate_only:
+            return (report or ImportValidationReport(valid_count=len(records))).model_dump(mode="json")
+        sample_set_id = await _persist_sample_records(
+            db,
+            records,
+            name=f"Import {datetime.utcnow().isoformat()}",
+            import_source={"type": "jsonl", "filename": file.filename or ""},
+        )
+        response = {"sample_set_id": sample_set_id, "imported_count": len(records)}
+        if report is not None:
+            response["validation"] = report.model_dump(mode="json")
+        return response
+    finally:
+        await run_in_threadpool(_remove_file, temp_path)
 
 
 # ---------------------------------------------------------------------------

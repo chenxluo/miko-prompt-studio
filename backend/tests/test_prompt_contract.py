@@ -1,0 +1,138 @@
+import asyncio
+import importlib
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.schemas.prompt import PromptVersion, VariableSpec
+from app.schemas.sample_record import SampleRecord
+from app.services.prompt_renderer import (
+    extract_variable_specs,
+    render_prompt,
+    render_template_with_conditionals,
+)
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("MIKO_DATA_DIR", str(tmp_path))
+
+    import app.config as config
+    import app.database as database
+
+    config._settings = None
+    database._engine = None
+    database._session_factory = None
+
+    import app.main as main
+
+    main = importlib.reload(main)
+    with TestClient(main.app) as test_client:
+        yield test_client
+
+    engine = database.get_engine()
+    asyncio.run(engine.dispose())
+    database._engine = None
+    database._session_factory = None
+    config._settings = None
+
+
+def test_extract_variable_specs_finds_user_system_and_conditional_vars() -> None:
+    specs = extract_variable_specs(
+        "Describe {{vars.title}} {{sample.sample_id}} {{metadata.source}} "
+        "{{#vars.caption}}Caption: {{vars.caption}}{{/vars.caption}}",
+        "System {{vars.tone}}",
+    )
+
+    by_id = {spec.var_id: spec for spec in specs}
+    assert list(by_id) == ["tone", "title", "caption"]
+    assert by_id["tone"].required is True
+    assert by_id["title"].label == "title"
+    assert by_id["caption"].type == "string"
+
+
+def test_extract_variable_specs_marks_only_conditional_vars_optional() -> None:
+    specs = extract_variable_specs(
+        "{{#vars.optional_hint}}Hint {{vars.optional_hint}}{{/vars.optional_hint}} "
+        "{{^vars.empty_case}}Fallback{{/vars.empty_case}} "
+        "Always {{vars.required_name}} {{#vars.required_name}}again{{/vars.required_name}}"
+    )
+
+    by_id = {spec.var_id: spec for spec in specs}
+    assert by_id["optional_hint"].required is False
+    assert by_id["empty_case"].required is False
+    assert by_id["required_name"].required is True
+
+
+def test_render_template_with_conditionals_handles_truthy_and_falsy_blocks() -> None:
+    rendered = render_template_with_conditionals(
+        "A{{#vars.name}} {{vars.name}}{{/vars.name}}"
+        "{{^vars.missing}} fallback{{/vars.missing}}"
+        "{{^vars.count}} zero{{/vars.count}}",
+        {"vars": {"name": "Miko", "count": 0}},
+    )
+
+    assert rendered == "A Miko fallback zero"
+
+
+def test_missing_vars_still_resolve_to_empty_string() -> None:
+    sample = SampleRecord(sample_id="sample_1", vars={"name": "Miko"})
+
+    prompt = render_prompt(
+        "Hello {{vars.name}} {{vars.missing}} {{#vars.missing}}nope{{/vars.missing}}",
+        "System {{vars.absent}}",
+        sample,
+    )
+
+    assert prompt.user_prompt == "Hello Miko  "
+    assert prompt.system_prompt == "System "
+
+
+def test_prompt_version_round_trip_includes_variable_specs(client: TestClient) -> None:
+    response = client.post(
+        "/api/prompts",
+        json={
+            "name": "Prompt Contract",
+            "system_prompt": "Use {{vars.tone}}",
+            "user_template": "Describe {{vars.title}}",
+            "variable_specs": [
+                {
+                    "var_id": "title",
+                    "label": "Title",
+                    "description": "Image title",
+                    "type": "string",
+                    "required": True,
+                    "default_value": "",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    created = response.json()
+
+    fetched = client.get(
+        f"/api/prompts/{created['prompt_id']}/versions/{created['prompt_version_id']}"
+    )
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["variable_specs"] == [
+        {
+            "var_id": "title",
+            "label": "Title",
+            "description": "Image title",
+            "type": "string",
+            "required": True,
+            "default_value": "",
+        }
+    ]
+
+    version = PromptVersion(**fetched.json())
+    assert version.variable_specs == [
+        VariableSpec(
+            var_id="title",
+            label="Title",
+            description="Image title",
+            type="string",
+            required=True,
+            default_value="",
+        )
+    ]
