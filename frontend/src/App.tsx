@@ -18,6 +18,8 @@ import { SettingsView } from './views/SettingsView';
 import { TasksView } from './views/TasksView';
 import { PromptsView } from './views/PromptsView';
 import { SnapshotsView } from './views/SnapshotsView';
+import { SamplesView } from './views/SamplesView';
+import { RunsView } from './views/RunsView';
 import { PlaceholderView } from './components/PlaceholderView';
 import { useI18n } from './i18n';
 
@@ -41,12 +43,9 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 const PLACEHOLDER_KEYS: Record<
-  Exclude<View, 'lab' | 'tasks' | 'snapshots' | 'settings'>,
+  Exclude<View, 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'snapshots' | 'settings'>,
   { titleKey: string; descKey: string }
 > = {
-  prompts: { titleKey: 'nav.prompts', descKey: 'nav.prompts' },
-  samples: { titleKey: 'nav.samples', descKey: 'nav.samples' },
-  runs: { titleKey: 'nav.runs', descKey: 'nav.runs' },
   pricing: { titleKey: 'nav.pricing', descKey: 'nav.pricing' },
 };
 
@@ -102,9 +101,11 @@ export default function App() {
         {activeView === 'lab' && <LabView />}
         {activeView === 'tasks' && <TasksView />}
         {activeView === 'prompts' && <PromptsView />}
+        {activeView === 'samples' && <SamplesView />}
+        {activeView === 'runs' && <RunsView />}
         {activeView === 'snapshots' && <SnapshotsView />}
         {activeView === 'settings' && <SettingsView />}
-        {activeView !== 'lab' && activeView !== 'tasks' && activeView !== 'prompts' && activeView !== 'snapshots' && activeView !== 'settings' && (
+        {activeView !== 'lab' && activeView !== 'tasks' && activeView !== 'prompts' && activeView !== 'samples' && activeView !== 'runs' && activeView !== 'snapshots' && activeView !== 'settings' && (
           <>
             <header className="flex items-center justify-between border-b border-surface-800 bg-surface-900/50 px-6 py-3 backdrop-blur">
               <h1 className="text-sm font-semibold uppercase tracking-wider text-ink-muted">
