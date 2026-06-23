@@ -22,21 +22,17 @@ from pydantic import BaseModel, Field
 
 from app.schemas.common import (
     AttemptStatus,
-    ErrorType,
     NormalizedError,
     ParseStatus,
     RunItemType,
     RunSessionStatus,
     RunType,
     TimestampedModel,
-    utc_now,
 )
-from app.schemas.internal_request import InternalRequest
 from app.schemas.model_config import ModelConfigSnapshot
 from app.schemas.output_contract import OutputContract
 from app.schemas.pricing import CostEstimate, PricingSnapshot
 from app.schemas.prompt import PromptSnapshot
-
 
 # ---------------------------------------------------------------------------
 # Run Session
@@ -48,6 +44,9 @@ class RunSource(BaseModel):
     mode: str = "lab"  # lab | batch | compare
     sample_set_id: str | None = None
     sample_ids: list[str] = Field(default_factory=list)
+    rerun_of: str | None = None
+    provider_config_id: str | None = None
+    api_base_url: str | None = None
 
 
 class ConfigSnapshot(BaseModel):
@@ -227,7 +226,14 @@ class RunItemExportInfo(BaseModel):
 class CompareAxes(BaseModel):
     """Extra dimensions recorded in compare mode for matrix display."""
 
+    sample_id: str | None = None
+    task_id: str | None = None
+    task_version_id: str | None = None
+    prompt_id: str | None = None
     prompt_version_id: str | None = None
+    provider_config_id: str | None = None
+    model_id: str | None = None
+    config_label: str | None = None
     model_config_id: str | None = None
 
 

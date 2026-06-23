@@ -1,12 +1,12 @@
 """Schema package – re-exports all Pydantic models for convenience."""
 
 from app.schemas.common import (
+    RETRYABLE_ERROR_TYPES,
     AttemptStatus,
     ErrorType,
     NormalizedError,
     OutputMode,
     ParseStatus,
-    RETRYABLE_ERROR_TYPES,
     RunItemType,
     RunSessionStatus,
     RunType,
@@ -46,12 +46,13 @@ from app.schemas.prompt import (
     PromptSnapshot,
     PromptVersion,
     PromptVersionData,
+    VariableSpec,
 )
 from app.schemas.run_record import (
+    BUILTIN_REVIEW_LABELS,
     AdapterInfo,
     AdapterResult,
     Attempt,
-    BUILTIN_REVIEW_LABELS,
     CompareAxes,
     ConfigSnapshot,
     NormalizedResponse,
@@ -122,6 +123,7 @@ __all__ = [
     "PromptSnapshot",
     "PromptVersion",
     "PromptVersionData",
+    "VariableSpec",
     # run record
     "AdapterInfo",
     "AdapterResult",

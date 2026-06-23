@@ -1,28 +1,118 @@
-"""Task – saved Lab configuration templates."""
+"""Task schemas: task headers plus immutable configuration versions."""
 
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 from app.schemas.common import TimestampedModel
 from app.schemas.model_config import ModelParameters
 from app.schemas.output_contract import OutputContract
 
 
-class Task(TimestampedModel):
-    """A reusable Lab setup saved as a template."""
-
-    task_id: str
-    name: str
+class TaskVersionData(BaseModel):
+    prompt_id: str
+    prompt_version_id: str
     provider_config_id: str | None = None
     model_id: str
     model_parameters: ModelParameters = Field(default_factory=ModelParameters)
-    system_prompt: str = ""
-    user_prompt: str = ""
-    format_instruction: str = ""
     output_contract: OutputContract = Field(default_factory=OutputContract)
+    image_preprocess_config: dict[str, Any] = Field(default_factory=dict)
     pricing_profile_id: str | None = None
-    image_resolution_enabled: bool = False
-    image_resolution_target: int = 1024
-    sample_set_id: str | None = None
+    notes: str = ""
+
+
+class TaskVersion(TaskVersionData, TimestampedModel):
+    task_version_id: str
+    task_id: str
+    version_label: str = "v1"
+    parent_version_id: str | None = None
+
+
+class TaskVersionSummary(BaseModel):
+    task_version_id: str
+    version_label: str
+    prompt_id: str
+    prompt_version_id: str
+    provider_config_id: str | None = None
+    model_id: str
+    notes: str = ""
+    created_at: str | None = None
+
+
+class TaskInputImageSlot(BaseModel):
+    slot_id: str
+    role_hint: str | None = None
+    label: str = ""
+    required: bool = True
+    min_count: int = 1
+    max_count: int | None = 1
+    description: str = ""
+
+
+class TaskInputVariableSlot(BaseModel):
+    var_id: str
+    label: str = ""
+    description: str = ""
+    required: bool = True
+    default_value: Any = ""
+    type: str = "string"
+
+
+class TaskInputExpectedColumn(BaseModel):
+    column: str
+    kind: str
+    role_hint: str | None = None
+    var_id: str | None = None
+    required: bool = True
+
+
+class TaskInputPromptSummary(BaseModel):
+    system_prompt: str = ""
+    user_template: str = ""
+    format_instruction: str = ""
+
+
+class TaskInputSpec(BaseModel):
+    task_id: str
+    task_version_id: str
+    task_name: str
+    version_label: str
+    system_prompt: str = ""
+    user_template: str = ""
+    format_instruction: str = ""
+    image_slots: list[TaskInputImageSlot] = Field(default_factory=list)
+    variable_slots: list[TaskInputVariableSlot] = Field(default_factory=list)
+    expected_csv_columns: list[TaskInputExpectedColumn] = Field(default_factory=list)
+    csv_example_row: dict[str, str] = Field(default_factory=dict)
+    jsonl_example: dict[str, Any] = Field(default_factory=dict)
+    notes: str = ""
+
+
+class Task(TimestampedModel):
+    task_id: str
+    name: str
+    description: str = ""
+    current_version_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    current_version: TaskVersionSummary | None = None
+    versions: list[TaskVersionSummary] | None = None
+
+
+class TaskSnapshot(BaseModel):
+    task_id: str | None = None
+    task_version_id: str | None = None
+    name: str = ""
+    description: str = ""
+    version_label: str | None = None
+    prompt_id: str | None = None
+    prompt_version_id: str | None = None
+    provider_config_id: str | None = None
+    model_id: str | None = None
+    model_parameters: ModelParameters = Field(default_factory=ModelParameters)
+    output_contract: OutputContract = Field(default_factory=OutputContract)
+    image_preprocess_config: dict[str, Any] = Field(default_factory=dict)
+    pricing_profile_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
     notes: str = ""

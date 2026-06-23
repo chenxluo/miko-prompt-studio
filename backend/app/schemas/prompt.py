@@ -32,6 +32,15 @@ class ImageSlotSpec(BaseModel):
     max_count: int | None = 1
 
 
+class VariableSpec(BaseModel):
+    var_id: str = ""
+    label: str = ""
+    description: str = ""
+    type: str = "string"
+    required: bool = True
+    default_value: str | None = ""
+
+
 class FewShotExample(BaseModel):
     example_id: str
     title: str = ""
@@ -61,6 +70,7 @@ class PromptVersionData(BaseModel):
     format_instruction: str = ""
     notes: str = ""
     image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
+    variable_specs: list[VariableSpec] = Field(default_factory=list)
     few_shot_examples: list[FewShotExample] = Field(default_factory=list)
 
 
@@ -98,5 +108,6 @@ class PromptSnapshot(BaseModel):
     format_instruction: str = ""
     notes: str = ""
     image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
+    variable_specs: list[VariableSpec] = Field(default_factory=list)
     few_shot_examples: list[FewShotExample] = Field(default_factory=list)
     version_label: str | None = None
