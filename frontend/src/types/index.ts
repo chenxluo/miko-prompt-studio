@@ -103,6 +103,7 @@ export interface ImageMetadata {
 export interface ImageRef {
   [key: string]: unknown;
   image_id?: string | null;
+  slot_id?: string;
   role?: string;
   path?: string | null;
   uri?: string | null;
@@ -208,11 +209,34 @@ export interface ModelConfigSnapshot {
   provider_options?: Record<string, unknown>;
 }
 
+export interface TaskVersion extends Timestamps {
+  task_version_id: string;
+  task_id: string;
+  version_label?: string;
+  prompt_id: string;
+  prompt_version_id: string;
+  provider_config_id?: string | null;
+  model_id: string;
+  model_parameters?: ModelParameters;
+  output_contract?: OutputContract;
+  image_preprocess_config?: ImagePreprocessConfig | null;
+  pricing_profile_id?: string | null;
+  notes?: string;
+}
+
 export interface Task extends Timestamps {
   task_id: string;
   name: string;
+  description?: string;
+  current_version_id?: string | null;
+  tags?: string[];
+  current_version?: TaskVersion | null;
+
+  // Backward-compatible fields from the previous flat Task design.
+  // New API responses use current_version instead, but cached data or
+  // older responses may still include these fields.
   provider_config_id?: string | null;
-  model_id: string;
+  model_id?: string;
   model_parameters?: ModelParameters;
   system_prompt?: string;
   user_prompt?: string;
@@ -245,13 +269,22 @@ export interface ProviderCapability {
 // ---------------------------------------------------------------------------
 
 export interface ImageSlotSpec {
-  slot_id?: string;
+  slot_id: string;
   label?: string;
   description?: string;
   role_hint?: string | null;
   required?: boolean;
   min_count?: number;
   max_count?: number | null;
+}
+
+export interface VariableSpec {
+  var_id: string;
+  label?: string;
+  description?: string;
+  required?: boolean;
+  default_value?: string | null;
+  type?: string;
 }
 
 export interface FewShotExample {
@@ -276,6 +309,7 @@ export interface PromptVersionData {
   format_instruction?: string;
   notes?: string;
   image_slot_specs?: ImageSlotSpec[];
+  variable_specs?: VariableSpec[];
   few_shot_examples?: FewShotExample[];
 }
 
@@ -308,6 +342,7 @@ export interface PromptListItem extends Timestamps {
     format_instruction?: string;
     notes?: string;
     image_slot_specs?: ImageSlotSpec[];
+    variable_specs?: VariableSpec[];
     few_shot_examples?: FewShotExample[];
     created_at?: string;
     updated_at?: string;
@@ -322,6 +357,7 @@ export interface PromptSnapshot {
   format_instruction?: string;
   notes?: string;
   image_slot_specs?: ImageSlotSpec[];
+  variable_specs?: VariableSpec[];
   few_shot_examples?: FewShotExample[];
   version_label?: string | null;
 }
@@ -592,6 +628,7 @@ export interface RunItemExportInfo {
 }
 
 export interface CompareAxes {
+  task_version_id?: string | null;
   prompt_version_id?: string | null;
   model_config_id?: string | null;
 }
@@ -648,6 +685,7 @@ export interface RunItemSummary extends Timestamps {
   provider_id: string | null;
   model_id: string | null;
   estimated_cost: number;
+  compare_axes?: CompareAxes | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -740,4 +778,83 @@ export interface UploadImageResponse {
 export interface ApiErrorBody {
   detail?: string | Record<string, unknown>;
   [key: string]: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Compare runs
+// ---------------------------------------------------------------------------
+
+export interface CompareTaskVersionPayload {
+  task_id: string;
+  task_version_id?: string | null;
+  label?: string | null;
+}
+
+export interface CreateCompareRunPayload {
+  sample_set_id: string;
+  task_versions: CompareTaskVersionPayload[];
+  limit?: number | null;
+}
+
+export type CompareRunEstimatePayload = CreateCompareRunPayload;
+
+export interface CompareRunCreationResponse {
+  run_id: string;
+  status: string;
+  summary: Record<string, unknown>;
+}
+
+export interface CompareRunEstimateResponse {
+  estimated_cost: number;
+  currency: string;
+  estimated_input_tokens: number;
+  estimated_output_tokens: number;
+  sample_count: number;
+}
+
+// ---------------------------------------------------------------------------
+// Task input spec
+// ---------------------------------------------------------------------------
+
+export interface ExpectedCsvColumn {
+  column: string;
+  kind: string;
+  role_hint?: string | null;
+  var_id?: string | null;
+  required: boolean;
+}
+
+export interface TaskInputSpecImageSlot {
+  slot_id: string;
+  role_hint: string | null;
+  label: string;
+  required: boolean;
+  min_count: number;
+  max_count: number | null;
+  description: string | null;
+}
+
+export interface TaskInputSpecVariableSlot {
+  var_id: string;
+  label: string;
+  description: string | null;
+  required: boolean;
+  default_value: string | null;
+  type: string;
+}
+
+export interface TaskInputSpec {
+  task_id: string;
+  task_version_id: string;
+  task_name: string;
+  version_label: string;
+  system_prompt: string;
+  user_template: string;
+  format_instruction: string;
+  image_slots: TaskInputSpecImageSlot[];
+  variable_slots: TaskInputSpecVariableSlot[];
+  expected_csv_columns: ExpectedCsvColumn[];
+  csv_example_row: Record<string, string>;
+  jsonl_example: Record<string, unknown>;
+  notes: string;
 }

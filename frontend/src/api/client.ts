@@ -2,6 +2,10 @@
 
 import type {
   ApiErrorBody,
+  CompareRunCreationResponse,
+  CompareRunEstimatePayload,
+  CompareRunEstimateResponse,
+  CreateCompareRunPayload,
   FewShotExample,
   ImageSlotSpec,
   ModelConfig,
@@ -13,17 +17,29 @@ import type {
   RunSession,
   SampleRecord,
   Task,
+  TaskInputSpec,
+  TaskVersion,
   UploadImageResponse,
+  VariableSpec,
 } from '../types';
 import type {
   CreateModelConfigPayload,
   CreatePricingPayload,
   CreateResultSnapshotPayload,
+  CreateTaskPayload,
+  CreateTaskVersionPayload,
   SavePromptPayload,
-  SaveTaskPayload,
   UpdateResultSnapshotPayload,
   UpdateReviewPayload,
+  UpdateTaskPayload,
 } from './payloads';
+
+export type {
+  CompareRunCreationResponse,
+  CompareRunEstimatePayload,
+  CompareRunEstimateResponse,
+  CreateCompareRunPayload,
+} from '../types';
 
 export const DEFAULT_API_BASE_URL = 'http://127.0.0.1:21317';
 
@@ -326,23 +342,49 @@ export async function runLabStream(
 // Tasks
 // ---------------------------------------------------------------------------
 
-export type { Task };
+export type { Task, TaskVersion };
 
 export async function listTasks(): Promise<Task[]> {
   return request<Task[]>('GET', '/api/tasks');
 }
 
-export async function getTask(taskId: string): Promise<Task> {
-  return request<Task>('GET', `/api/tasks/${encodeURIComponent(taskId)}`);
+export async function getTask(
+  taskId: string,
+): Promise<Task & { versions: TaskVersion[] }> {
+  return request<Task & { versions: TaskVersion[] }>(
+    'GET',
+    `/api/tasks/${encodeURIComponent(taskId)}`,
+  );
 }
 
-export async function createTask(payload: SaveTaskPayload): Promise<Task> {
+export async function getTaskInputSpec(
+  taskId: string,
+  taskVersionId: string,
+): Promise<TaskInputSpec> {
+  return request<TaskInputSpec>(
+    'GET',
+    `/api/tasks/${encodeURIComponent(taskId)}/versions/${encodeURIComponent(taskVersionId)}/input-spec`,
+  );
+}
+
+export async function createTask(payload: CreateTaskPayload): Promise<Task> {
   return request<Task>('POST', '/api/tasks', payload);
+}
+
+export async function createTaskVersion(
+  taskId: string,
+  payload: CreateTaskVersionPayload,
+): Promise<TaskVersion> {
+  return request<TaskVersion>(
+    'POST',
+    `/api/tasks/${encodeURIComponent(taskId)}/versions`,
+    payload,
+  );
 }
 
 export async function updateTask(
   taskId: string,
-  payload: SaveTaskPayload,
+  payload: UpdateTaskPayload,
 ): Promise<Task> {
   return request<Task>('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, payload);
 }
@@ -369,8 +411,79 @@ export interface RunListItem {
   created_at: string;
 }
 
-export async function listRuns(limit = 50): Promise<RunListItem[]> {
-  return request<RunListItem[]>('GET', `/api/runs?limit=${limit}`);
+export interface ListRunsFilters {
+  run_type?: string;
+  status?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ListRunsResponse {
+  total: number;
+  runs: RunListItem[];
+}
+
+export async function listRuns(filters: ListRunsFilters = {}): Promise<ListRunsResponse> {
+  const params = new URLSearchParams();
+  if (filters.run_type) params.set('run_type', filters.run_type);
+  if (filters.status) params.set('status', filters.status);
+  if (filters.search) params.set('search', filters.search);
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  if (filters.offset !== undefined) params.set('offset', String(filters.offset));
+  const query = params.toString();
+  return request<ListRunsResponse>('GET', `/api/runs${query ? `?${query}` : ''}`);
+}
+
+export async function deleteRun(runId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(
+    'DELETE',
+    `/api/runs/${encodeURIComponent(runId)}`,
+  );
+}
+
+function triggerDownload(blob: Blob, filename: string, mimeType: string): void {
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.type = mimeType;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(url);
+}
+
+export async function exportRunJsonl(runId: string): Promise<Blob> {
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+  const response = await fetch(`${baseUrl}/api/runs/${encodeURIComponent(runId)}/export/jsonl`);
+  if (!response.ok) {
+    const errorBody = await parseErrorBody(response);
+    const message =
+      typeof errorBody?.detail === 'string'
+        ? errorBody.detail
+        : `GET /api/runs/${runId}/export/jsonl failed with status ${response.status}`;
+    throw new ApiError(message, response.status, errorBody);
+  }
+  const blob = await response.blob();
+  triggerDownload(blob, `${runId}.jsonl`, 'application/jsonlines');
+  return blob;
+}
+
+export async function exportRunCsv(runId: string): Promise<Blob> {
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+  const response = await fetch(`${baseUrl}/api/runs/${encodeURIComponent(runId)}/export/csv`);
+  if (!response.ok) {
+    const errorBody = await parseErrorBody(response);
+    const message =
+      typeof errorBody?.detail === 'string'
+        ? errorBody.detail
+        : `GET /api/runs/${runId}/export/csv failed with status ${response.status}`;
+    throw new ApiError(message, response.status, errorBody);
+  }
+  const blob = await response.blob();
+  triggerDownload(blob, `${runId}.csv`, 'text/csv');
+  return blob;
 }
 
 export interface RunDetail {
@@ -406,6 +519,112 @@ export async function updateReview(
     `/api/runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(runItemId)}/review`,
     payload,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Batch runs
+// ---------------------------------------------------------------------------
+
+export interface CreateBatchRunPayload {
+  task_id: string;
+  sample_set_id: string;
+  task_version_id?: string | null;
+  limit?: number | null;
+}
+
+export type BatchRunEstimatePayload = CreateBatchRunPayload;
+
+export interface BatchRunCreationResponse {
+  run_id: string;
+  status: string;
+  summary: Record<string, unknown>;
+}
+
+export interface BatchRunStatusResponse {
+  session: RunListItem;
+  items: RunItemSummary[];
+}
+
+export interface BatchRunEstimateResponse {
+  estimated_cost: number;
+  currency: string;
+  estimated_input_tokens: number;
+  estimated_output_tokens: number;
+  sample_count: number;
+}
+
+export async function createBatchRun(
+  payload: CreateBatchRunPayload,
+): Promise<BatchRunCreationResponse> {
+  return request<BatchRunCreationResponse>('POST', '/api/batch-runs', payload);
+}
+
+export async function getBatchRunStatus(
+  runId: string,
+): Promise<BatchRunStatusResponse> {
+  return request<BatchRunStatusResponse>(
+    'GET',
+    `/api/batch-runs/${encodeURIComponent(runId)}/status`,
+  );
+}
+
+export async function cancelBatchRun(runId: string): Promise<{ cancelled: boolean }> {
+  return request<{ cancelled: boolean }>(
+    'POST',
+    `/api/batch-runs/${encodeURIComponent(runId)}/cancel`,
+  );
+}
+
+export async function retryFailedBatchRun(
+  runId: string,
+): Promise<BatchRunCreationResponse> {
+  return request<BatchRunCreationResponse>(
+    'POST',
+    `/api/batch-runs/${encodeURIComponent(runId)}/retry-failed`,
+  );
+}
+
+export async function estimateBatchRun(
+  payload: CreateBatchRunPayload,
+): Promise<BatchRunEstimateResponse> {
+  return request<BatchRunEstimateResponse>('POST', '/api/batch-runs/estimate', payload);
+}
+
+// ---------------------------------------------------------------------------
+// Compare runs
+// ---------------------------------------------------------------------------
+
+export interface CompareRunStatusResponse {
+  session: RunListItem;
+  items: RunItemSummary[];
+}
+
+export async function createCompareRun(
+  payload: CreateCompareRunPayload,
+): Promise<CompareRunCreationResponse> {
+  return request<CompareRunCreationResponse>('POST', '/api/compare-runs', payload);
+}
+
+export async function getCompareRunStatus(
+  runId: string,
+): Promise<CompareRunStatusResponse> {
+  return request<CompareRunStatusResponse>(
+    'GET',
+    `/api/compare-runs/${encodeURIComponent(runId)}/status`,
+  );
+}
+
+export async function cancelCompareRun(runId: string): Promise<{ cancelled: boolean }> {
+  return request<{ cancelled: boolean }>(
+    'POST',
+    `/api/compare-runs/${encodeURIComponent(runId)}/cancel`,
+  );
+}
+
+export async function estimateCompareRun(
+  payload: CompareRunEstimatePayload,
+): Promise<CompareRunEstimateResponse> {
+  return request<CompareRunEstimateResponse>('POST', '/api/compare-runs/estimate', payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +672,20 @@ export async function listSampleSets(): Promise<SampleSetListItem[]> {
   return request<SampleSetListItem[]>('GET', '/api/sample-sets');
 }
 
+export async function getSampleSet(sampleSetId: string): Promise<SampleSetListItem> {
+  return request<SampleSetListItem>(
+    'GET',
+    `/api/sample-sets/${encodeURIComponent(sampleSetId)}`,
+  );
+}
+
+export async function deleteSampleSet(sampleSetId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(
+    'DELETE',
+    `/api/sample-sets/${encodeURIComponent(sampleSetId)}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Prompts
 // ---------------------------------------------------------------------------
@@ -471,6 +704,7 @@ export interface PromptListItem {
     format_instruction: string;
     notes: string;
     image_slot_specs: ImageSlotSpec[];
+    variable_specs: VariableSpec[];
     few_shot_examples: FewShotExample[];
   } | null;
   created_at: string;
@@ -504,6 +738,7 @@ export async function getPromptVersion(
   format_instruction: string;
   notes: string;
   image_slot_specs: ImageSlotSpec[];
+  variable_specs: VariableSpec[];
   few_shot_examples: FewShotExample[];
   created_at: string;
 }> {
@@ -517,6 +752,7 @@ export async function getPromptVersion(
       format_instruction: string;
       notes: string;
       image_slot_specs: ImageSlotSpec[];
+      variable_specs: VariableSpec[];
       few_shot_examples: FewShotExample[];
       created_at: string;
     }
@@ -644,6 +880,109 @@ export async function importCsv(
     'POST',
     '/api/import/csv',
     payload,
+  );
+}
+
+export interface CsvImportFileMapping {
+  id_column: string;
+  image_columns: { column: string; role: string }[];
+  var_columns: string[];
+  metadata_columns: string[];
+  base_dir?: string;
+  task_version_id?: string | null;
+  validate_only?: boolean;
+}
+
+export interface CsvImportFileResponse {
+  sample_set_id: string;
+  imported_count: number;
+}
+
+export interface CsvValidationRowError {
+  row_index: number;
+  row_id?: string | null;
+  errors: string[];
+}
+
+export interface CsvValidationResponse {
+  valid_count: number;
+  invalid_rows: CsvValidationRowError[];
+}
+
+export async function previewCsvFile(
+  file: File,
+  delimiter = ',',
+): Promise<CsvPreviewResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('delimiter', delimiter);
+  return request<CsvPreviewResponse>(
+    'POST',
+    '/api/import/csv/preview/file',
+    formData,
+    true,
+  );
+}
+
+export async function importCsvFile(
+  file: File,
+  mapping: CsvImportFileMapping,
+  delimiter?: string,
+  options?: { taskVersionId?: string | null; validateOnly?: false },
+): Promise<CsvImportFileResponse>;
+export async function importCsvFile(
+  file: File,
+  mapping: CsvImportFileMapping,
+  delimiter?: string,
+  options?: { taskVersionId?: string | null; validateOnly: true },
+): Promise<CsvValidationResponse>;
+export async function importCsvFile(
+  file: File,
+  mapping: CsvImportFileMapping,
+  delimiter = ',',
+  options?: { taskVersionId?: string | null; validateOnly?: boolean },
+): Promise<CsvImportFileResponse | CsvValidationResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('delimiter', delimiter);
+
+  const { task_version_id, validate_only, ...mappingBody } = mapping;
+  const taskVersionId = options?.taskVersionId ?? task_version_id;
+  const validateOnly = options?.validateOnly ?? validate_only;
+
+  formData.append('mapping', JSON.stringify(mappingBody));
+  if (taskVersionId) {
+    formData.append('task_version_id', taskVersionId);
+  }
+  if (validateOnly) {
+    formData.append('validate_only', 'true');
+  }
+
+  return request<CsvImportFileResponse | CsvValidationResponse>(
+    'POST',
+    '/api/import/csv/file',
+    formData,
+    true,
+  );
+}
+
+export async function importJsonlFile(
+  file: File,
+  options?: { taskVersionId?: string | null; validateOnly?: boolean },
+): Promise<CsvImportFileResponse | CsvValidationResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (options?.taskVersionId) {
+    formData.append('task_version_id', options.taskVersionId);
+  }
+  if (options?.validateOnly) {
+    formData.append('validate_only', 'true');
+  }
+  return request<CsvImportFileResponse | CsvValidationResponse>(
+    'POST',
+    '/api/import/jsonl/file',
+    formData,
+    true,
   );
 }
 

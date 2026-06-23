@@ -2,6 +2,7 @@ import { create } from 'zustand';
 
 import * as api from '../api/client';
 import type {
+  ImagePreprocessConfig,
   ImageRef,
   ImageSlotSpec,
   ModelParameters,
@@ -11,6 +12,8 @@ import type {
   RunSession,
   SampleRecord,
   Task,
+  TaskVersion,
+  VariableSpec,
 } from '../types';
 
 export const DEFAULT_OUTPUT_CONTRACT: OutputContract = {
@@ -38,6 +41,16 @@ export interface ImageSlot {
 }
 
 const IMAGE_TOKEN_RE = /{{\s*image\s*:\s*(\d+)\s*}}/gi;
+
+export function buildDefaultVariables(specs: VariableSpec[]): Record<string, string> {
+  const vars: Record<string, string> = {};
+  for (const spec of specs) {
+    const value =
+      typeof spec.default_value === 'string' ? spec.default_value : '';
+    vars[spec.var_id] = value;
+  }
+  return vars;
+}
 
 export function parseImageTokens(raw: string): { text: string; slots: ImageSlot[] } {
   const slots: ImageSlot[] = [];
@@ -178,6 +191,115 @@ function reindexImageSlots(
     );
 }
 
+function parseImagePreprocessConfig(
+  config?: ImagePreprocessConfig | null,
+): { enabled: boolean; target: number } {
+  if (!config || !config.mode) {
+    return { enabled: false, target: 1024 };
+  }
+  return {
+    enabled: true,
+    target: config.long_edge ?? config.short_edge ?? 1024,
+  };
+}
+
+function createDefaultSlot(existingSpecs: ImageSlotSpec[]): ImageSlotSpec {
+  const n = existingSpecs.length + 1;
+  const baseRoleHint = `slot_${n}`;
+  const existingHints = new Set(
+    existingSpecs.map((s) => s.role_hint).filter((hint): hint is string => Boolean(hint)),
+  );
+  let roleHint = baseRoleHint;
+  let suffix = 1;
+  while (existingHints.has(roleHint)) {
+    roleHint = `${baseRoleHint}_${suffix}`;
+    suffix++;
+  }
+  return {
+    slot_id: `slot_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    label: '',
+    description: '',
+    role_hint: roleHint,
+    required: true,
+    min_count: 1,
+    max_count: 1,
+  };
+}
+
+function hasSlotCapacity(spec: ImageSlotSpec, images: ImageRef[]): boolean {
+  const count = images.filter((img) => img.slot_id === spec.slot_id).length;
+  const max = spec.max_count;
+  if (max == null) return true;
+  return count < max;
+}
+
+function findSlotWithCapacity(
+  specs: ImageSlotSpec[],
+  images: ImageRef[],
+): ImageSlotSpec | undefined {
+  return specs.find((spec) => hasSlotCapacity(spec, images));
+}
+
+function migrateImagesToSlots(
+  images: ImageRef[],
+  specs: ImageSlotSpec[],
+): { specs: ImageSlotSpec[]; migratedImages: ImageRef[] } {
+  let nextSpecs = [...specs];
+  const migrated: ImageRef[] = [];
+  for (const img of images) {
+    if (img.slot_id && nextSpecs.some((s) => s.slot_id === img.slot_id)) {
+      migrated.push(img);
+      continue;
+    }
+    let targetSpec: ImageSlotSpec | undefined;
+    if (img.role) {
+      targetSpec = nextSpecs.find(
+        (s) => s.role_hint === img.role && hasSlotCapacity(s, migrated),
+      );
+    }
+    if (!targetSpec) {
+      targetSpec = nextSpecs.find((s) => hasSlotCapacity(s, migrated));
+    }
+    if (!targetSpec) {
+      targetSpec = createDefaultSlot(nextSpecs);
+      nextSpecs = [...nextSpecs, targetSpec];
+    }
+    migrated.push({
+      ...img,
+      slot_id: targetSpec.slot_id,
+      role: targetSpec.role_hint ?? img.role ?? '',
+    });
+  }
+  return { specs: nextSpecs, migratedImages: migrated };
+}
+
+function removeImagesByIndices(
+  images: ImageRef[],
+  slots: ImageSlot[],
+  indices: number[],
+): { images: ImageRef[]; imageSlots: ImageSlot[] } {
+  const sorted = [...indices].sort((a, b) => b - a);
+  let nextImages = images;
+  let nextSlots = slots;
+  for (const index of sorted) {
+    if (index < 0 || index >= nextImages.length) continue;
+    nextImages = nextImages.filter((_, i) => i !== index);
+    nextSlots = reindexImageSlots(nextSlots, index);
+  }
+  return {
+    images: nextImages.map((img, i) => ({ ...img, order: i })),
+    imageSlots: nextSlots,
+  };
+}
+
+export function buildImagePreprocessConfig(
+  enabled: boolean,
+  target: number,
+): ImagePreprocessConfig | null {
+  if (!enabled) return null;
+  return { mode: 'long_edge', long_edge: target };
+}
+
 export type LabViewMode = 'edit' | 'prompt-result' | 'image-result';
 
 interface LabState {
@@ -193,6 +315,8 @@ interface LabState {
   images: ImageRef[];
   imageSlots: ImageSlot[];
   templateImageSlotSpecs: ImageSlotSpec[];
+  templateVariableSpecs: VariableSpec[];
+  variables: Record<string, string>;
   imageResolutionEnabled: boolean;
   imageResolutionTarget: number;
 
@@ -207,6 +331,12 @@ interface LabState {
   availableModels: string[];
   modelParameters: ModelParameters;
   outputContract: OutputContract;
+
+  // Active task / prompt references (used by SaveTaskDialog and BatchView)
+  activeTaskId: string | null;
+  activeTaskVersionId: string | null;
+  activePromptId: string | null;
+  activePromptVersionId: string | null;
 
   // Run state
   isRunning: boolean;
@@ -223,11 +353,20 @@ interface LabActions {
   setFormatInstruction: (value: string) => void;
   addImage: (image: ImageRef) => void;
   removeImage: (index: number) => void;
+  updateImageRole: (index: number, role: string) => void;
   addImageSlot: (imageIndex: number, position: number) => void;
   removeImageSlot: (imageIndex: number) => void;
   setImageSlots: (slots: ImageSlot[]) => void;
   setImages: (images: ImageRef[]) => void;
+  addSlot: () => void;
+  removeSlot: (slotId: string) => void;
+  updateSlot: (slotId: string, patch: Partial<ImageSlotSpec>) => void;
+  addImageToSlot: (image: ImageRef, slotId: string) => void;
+  moveImageToSlot: (imageIndex: number, slotId: string) => void;
   setTemplateImageSlotSpecs: (specs: ImageSlotSpec[]) => void;
+  setTemplateVariableSpecs: (specs: VariableSpec[]) => void;
+  setVariable: (varId: string, value: string) => void;
+  setVariables: (vars: Record<string, string>) => void;
   setImageResolutionEnabled: (enabled: boolean) => void;
   setImageResolutionTarget: (target: number) => void;
   setSelectedProviderConfigId: (id: string | null) => void;
@@ -236,7 +375,7 @@ interface LabActions {
   setModelParameters: (parameters: ModelParameters) => void;
   setOutputContract: (contract: OutputContract) => void;
   setOutputMode: (mode: OutputContract['mode']) => void;
-  loadTask: (task: Task) => void;
+  loadTask: (task: Task, version?: TaskVersion) => Promise<void>;
   loadPrompt: (prompt: PromptListItem) => void;
   loadProviderConfigs: () => Promise<void>;
   run: () => Promise<RunSession | null>;
@@ -254,6 +393,8 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
   images: [],
   imageSlots: [],
   templateImageSlotSpecs: [],
+  templateVariableSpecs: [],
+  variables: {},
   imageResolutionEnabled: false,
   imageResolutionTarget: 1024,
   providerConfigs: [],
@@ -264,6 +405,10 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
   availableModels: [],
   modelParameters: DEFAULT_MODEL_PARAMETERS,
   outputContract: DEFAULT_OUTPUT_CONTRACT,
+  activeTaskId: null,
+  activeTaskVersionId: null,
+  activePromptId: null,
+  activePromptVersionId: null,
   isRunning: false,
   lastResult: null,
   lastRunItem: null,
@@ -302,15 +447,166 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
     })),
 
   setImageSlots: (slots) => set({ imageSlots: slots }),
-  setImages: (images) => set({ images: images.map((img, i) => ({ ...img, order: i })) }),
+  setImages: (images) =>
+    set((state) => {
+      const { specs, migratedImages } = migrateImagesToSlots(
+        images,
+        state.templateImageSlotSpecs,
+      );
+      return {
+        templateImageSlotSpecs: specs,
+        images: migratedImages.map((img, i) => ({ ...img, order: i })),
+      };
+    }),
   setTemplateImageSlotSpecs: (specs) => set({ templateImageSlotSpecs: specs }),
+  setTemplateVariableSpecs: (specs) => set({ templateVariableSpecs: specs }),
+  setVariable: (varId, value) =>
+    set((state) => ({
+      variables: { ...state.variables, [varId]: value },
+    })),
+  setVariables: (vars) => set({ variables: vars }),
   setImageResolutionEnabled: (enabled) => set({ imageResolutionEnabled: enabled }),
   setImageResolutionTarget: (target) => set({ imageResolutionTarget: target }),
 
   addImage: (image) =>
+    set((state) => {
+      let spec = image.slot_id
+        ? state.templateImageSlotSpecs.find((s) => s.slot_id === image.slot_id)
+        : undefined;
+      let nextSpecs = state.templateImageSlotSpecs;
+      if (!spec) {
+        spec = findSlotWithCapacity(nextSpecs, state.images);
+      }
+      if (!spec) {
+        spec = createDefaultSlot(nextSpecs);
+        nextSpecs = [...nextSpecs, spec];
+      }
+      return {
+        templateImageSlotSpecs: nextSpecs,
+        images: [
+          ...state.images,
+          {
+            ...image,
+            slot_id: spec.slot_id,
+            role: spec.role_hint ?? image.role ?? '',
+            order: state.images.length,
+          },
+        ],
+      };
+    }),
+
+  addImageToSlot: (image, slotId) =>
+    set((state) => {
+      const spec = state.templateImageSlotSpecs.find((s) => s.slot_id === slotId);
+      if (!spec) return state;
+      if (!hasSlotCapacity(spec, state.images)) return state;
+      return {
+        images: [
+          ...state.images,
+          {
+            ...image,
+            slot_id: spec.slot_id,
+            role: spec.role_hint ?? image.role ?? '',
+            order: state.images.length,
+          },
+        ],
+      };
+    }),
+
+  moveImageToSlot: (imageIndex, slotId) =>
+    set((state) => {
+      if (imageIndex < 0 || imageIndex >= state.images.length) return state;
+      const spec = state.templateImageSlotSpecs.find((s) => s.slot_id === slotId);
+      if (!spec) return state;
+      const image = state.images[imageIndex];
+      if (!image || image.slot_id === slotId) return state;
+      if (!hasSlotCapacity(spec, state.images)) return state;
+      const next = [...state.images];
+      next[imageIndex] = {
+        ...image,
+        slot_id: spec.slot_id,
+        role: spec.role_hint ?? '',
+      };
+      return { images: next };
+    }),
+
+  addSlot: () =>
     set((state) => ({
-      images: [...state.images, { ...image, order: state.images.length }],
+      templateImageSlotSpecs: [
+        ...state.templateImageSlotSpecs,
+        createDefaultSlot(state.templateImageSlotSpecs),
+      ],
     })),
+
+  removeSlot: (slotId) =>
+    set((state) => {
+      const indices = state.images
+        .map((img, i) => (img.slot_id === slotId ? i : -1))
+        .filter((i): i is number => i >= 0)
+        .sort((a, b) => b - a);
+      const { images, imageSlots } = removeImagesByIndices(
+        state.images,
+        state.imageSlots,
+        indices,
+      );
+      return {
+        templateImageSlotSpecs: state.templateImageSlotSpecs.filter(
+          (s) => s.slot_id !== slotId,
+        ),
+        images,
+        imageSlots,
+      };
+    }),
+
+  updateSlot: (slotId, patch) =>
+    set((state) => {
+      const specIndex = state.templateImageSlotSpecs.findIndex(
+        (s) => s.slot_id === slotId,
+      );
+      if (specIndex < 0) return state;
+      const nextSpecs = [...state.templateImageSlotSpecs];
+      nextSpecs[specIndex] = { ...nextSpecs[specIndex], ...patch };
+      let nextImages = state.images;
+      if (
+        patch.role_hint !== undefined &&
+        patch.role_hint !== state.templateImageSlotSpecs[specIndex]?.role_hint
+      ) {
+        nextImages = state.images.map((img) =>
+          img.slot_id === slotId
+            ? { ...img, role: patch.role_hint ?? '' }
+            : img,
+        );
+      }
+      return {
+        templateImageSlotSpecs: nextSpecs,
+        images: nextImages,
+      };
+    }),
+
+  updateImageRole: (index, role) =>
+    set((state) => {
+      const trimmed = role.trim();
+      const next = [...state.images];
+      const image = next[index];
+      if (!image) return state;
+      if (!trimmed) {
+        next[index] = { ...image, role: trimmed };
+        return { images: next };
+      }
+      const existingRoles = new Set(
+        state.images.map((img, i) => (i === index ? null : img.role)).filter(Boolean),
+      );
+      let uniqueRole = trimmed;
+      if (existingRoles.has(uniqueRole)) {
+        let suffix = 1;
+        do {
+          uniqueRole = `${trimmed}_${suffix}`;
+          suffix++;
+        } while (existingRoles.has(uniqueRole));
+      }
+      next[index] = { ...image, role: uniqueRole };
+      return { images: next };
+    }),
 
   removeImage: (index) =>
     set((state) => ({
@@ -341,39 +637,95 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
       outputContract: { ...state.outputContract, mode: mode ?? 'free_text' },
     })),
 
-  loadTask: (task) =>
-    set((state) => {
+  loadTask: async (task, version) => {
+    const state = get();
+    const resolvedVersion = version ?? task.current_version;
+
+    if (resolvedVersion) {
       const selectedConfig = state.providerConfigs.find(
-        (config) => config.provider_config_id === task.provider_config_id,
+        (config) => config.provider_config_id === resolvedVersion.provider_config_id,
       );
-      const parsed = parseImageTokens(task.user_prompt ?? '');
-      return {
-        selectedProviderConfigId: task.provider_config_id ?? null,
-        modelId: task.model_id,
-        modelParameters: task.model_parameters ?? DEFAULT_MODEL_PARAMETERS,
-        systemPrompt: task.system_prompt ?? '',
-        userPrompt: parsed.text,
-        formatInstruction: task.format_instruction ?? '',
-        imageSlots: parsed.slots,
-        templateImageSlotSpecs: [],
-        imageResolutionEnabled: task.image_resolution_enabled ?? false,
-        imageResolutionTarget: task.image_resolution_target ?? 1024,
-        outputContract: task.output_contract ?? DEFAULT_OUTPUT_CONTRACT,
-        activePricing: task.pricing_profile_id ? state.activePricing : null,
+      const preprocess = parseImagePreprocessConfig(resolvedVersion.image_preprocess_config);
+      set({
+        selectedProviderConfigId: resolvedVersion.provider_config_id ?? null,
+        modelId: resolvedVersion.model_id,
+        modelParameters: resolvedVersion.model_parameters ?? DEFAULT_MODEL_PARAMETERS,
+        outputContract: resolvedVersion.output_contract ?? DEFAULT_OUTPUT_CONTRACT,
+        imageResolutionEnabled: preprocess.enabled,
+        imageResolutionTarget: preprocess.target,
+        activeTaskId: task.task_id,
+        activeTaskVersionId: resolvedVersion.task_version_id,
+        activePromptId: resolvedVersion.prompt_id,
+        activePromptVersionId: resolvedVersion.prompt_version_id,
         availableModels: selectedConfig ? getExposedModels(selectedConfig) : state.availableModels,
         error: null,
-      };
-    }),
+      });
+
+      try {
+        const promptVersion = await api.getPromptVersion(
+          resolvedVersion.prompt_id,
+          resolvedVersion.prompt_version_id,
+        );
+        const parsed = parseImageTokens(promptVersion.user_template ?? '');
+        const variableSpecs = promptVersion.variable_specs ?? [];
+        set({
+          systemPrompt: promptVersion.system_prompt ?? '',
+          userPrompt: parsed.text,
+          formatInstruction: promptVersion.format_instruction ?? '',
+          imageSlots: parsed.slots,
+          templateImageSlotSpecs: promptVersion.image_slot_specs ?? [],
+          templateVariableSpecs: variableSpecs,
+          variables: buildDefaultVariables(variableSpecs),
+        });
+      } catch {
+        // Prompt detail is non-fatal; header state is already loaded.
+      }
+      return;
+    }
+
+    // Backward compatibility for legacy flat Task records.
+    const selectedConfig = state.providerConfigs.find(
+      (config) => config.provider_config_id === task.provider_config_id,
+    );
+    const parsed = parseImageTokens(task.user_prompt ?? '');
+    set({
+      selectedProviderConfigId: task.provider_config_id ?? null,
+      modelId: task.model_id ?? '',
+      modelParameters: task.model_parameters ?? DEFAULT_MODEL_PARAMETERS,
+      systemPrompt: task.system_prompt ?? '',
+      userPrompt: parsed.text,
+      formatInstruction: task.format_instruction ?? '',
+      imageSlots: parsed.slots,
+      templateImageSlotSpecs: [],
+      imageResolutionEnabled: task.image_resolution_enabled ?? false,
+      imageResolutionTarget: task.image_resolution_target ?? 1024,
+      outputContract: task.output_contract ?? DEFAULT_OUTPUT_CONTRACT,
+      activeTaskId: task.task_id,
+      activeTaskVersionId: null,
+      activePromptId: null,
+      activePromptVersionId: null,
+      availableModels: selectedConfig ? getExposedModels(selectedConfig) : state.availableModels,
+      error: null,
+    });
+  },
 
   loadPrompt: (prompt) =>
     set(() => {
       const version = prompt.latest_version;
       const parsed = parseImageTokens(version?.user_template ?? '');
+      const variableSpecs = version?.variable_specs ?? [];
       return {
         systemPrompt: version?.system_prompt ?? '',
         userPrompt: parsed.text,
         imageSlots: parsed.slots,
         templateImageSlotSpecs: version?.image_slot_specs ?? [],
+        templateVariableSpecs: variableSpecs,
+        variables: buildDefaultVariables(variableSpecs),
+        activePromptId: prompt.prompt_id,
+        activePromptVersionId:
+          version?.prompt_version_id ?? prompt.current_version_id ?? null,
+        activeTaskId: null,
+        activeTaskVersionId: null,
         error: null,
       };
     }),
@@ -431,7 +783,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
       sample_id: sampleId,
       sample_type: state.images.length > 1 ? 'multi_image' : 'single_image',
       images: state.images,
-      vars: {},
+      vars: state.variables,
       metadata: { source: 'lab_manual' },
     };
 
@@ -452,6 +804,8 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         user_prompt: effectiveUserPrompt,
         format_instruction: state.formatInstruction,
         provider_config_id: state.selectedProviderConfigId,
+        prompt_id: state.activePromptId,
+        prompt_version_id: state.activePromptVersionId,
         model_id: state.modelId,
         parameters: state.modelParameters as unknown as Record<string, unknown>,
         output_contract: state.outputContract as unknown as Record<string, unknown>,
