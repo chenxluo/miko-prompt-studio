@@ -180,6 +180,7 @@ export function UseAsFewShotDialog({ runItem, onClose, onSaved }: UseAsFewShotDi
           format_instruction: version.format_instruction ?? '',
           notes: version.notes ?? '',
           image_slot_specs: version.image_slot_specs ?? [],
+          variable_specs: version.variable_specs ?? [],
           few_shot_examples: nextExamples,
           prompt_id: selectedPrompt.prompt_id,
         });

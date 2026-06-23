@@ -1,9 +1,15 @@
 import {
+  Braces,
   ChevronDown,
+  ChevronUp,
   FileText,
+  HelpCircle,
   ImageIcon,
-  Info,
+  Plus,
+  ScanLine,
+  Settings,
   Terminal,
+  Trash2,
 } from 'lucide-react';
 import {
   useCallback,
@@ -19,8 +25,10 @@ import * as api from '../../api/client';
 import { useI18n } from '../../i18n';
 import { type ImageSlot } from '../../store/labStore';
 import { useLabStore } from '../../store/labStore';
-import type { ImageRef, ImageSlotSpec, OutputContract, OutputMode } from '../../types';
+import type { ImageRef, ImageSlotSpec, OutputContract, OutputMode, VariableSpec } from '../../types';
 import { resolveImageSrc } from './ImagePanel';
+
+const VARIABLE_RE = /\{\{\s*#?\s*vars\.([A-Za-z0-9_]+)\s*\}\}/g;
 
 export function PromptPanel() {
   const { t } = useI18n();
@@ -36,6 +44,8 @@ export function PromptPanel() {
   const images = useLabStore((state) => state.images);
   const imageSlots = useLabStore((state) => state.imageSlots);
   const templateImageSlotSpecs = useLabStore((state) => state.templateImageSlotSpecs);
+  const templateVariableSpecs = useLabStore((state) => state.templateVariableSpecs);
+  const variables = useLabStore((state) => state.variables);
 
   const setSystemPrompt = useLabStore((state) => state.setSystemPrompt);
   const setUserPrompt = useLabStore((state) => state.setUserPrompt);
@@ -44,8 +54,13 @@ export function PromptPanel() {
   const addImageSlot = useLabStore((state) => state.addImageSlot);
   const removeImageSlot = useLabStore((state) => state.removeImageSlot);
   const setImageSlots = useLabStore((state) => state.setImageSlots);
+  const setVariable = useLabStore((state) => state.setVariable);
+  const setTemplateVariableSpecs = useLabStore((state) => state.setTemplateVariableSpecs);
 
   const [jsonError, setJsonError] = useState<string | null>(null);
+  const [conditionalName, setConditionalName] = useState('');
+  const [varPickerOpen, setVarPickerOpen] = useState(false);
+  const [syntaxHelpOpen, setSyntaxHelpOpen] = useState(false);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -394,6 +409,174 @@ export function PromptPanel() {
     [prompts, loadPrompt],
   );
 
+  function scanVariableIds(text: string): string[] {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const match of text.matchAll(VARIABLE_RE)) {
+      const id = match[1];
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+    return ids;
+  }
+
+  function mergeVariableSpecs(ids: string[], current: VariableSpec[]): VariableSpec[] {
+    const map = new Map(current.map((spec) => [spec.var_id, spec]));
+    const merged: VariableSpec[] = [];
+    for (const id of ids) {
+      const existing = map.get(id);
+      if (existing) {
+        merged.push(existing);
+      } else {
+        merged.push({
+          var_id: id,
+          label: '',
+          description: '',
+          required: false,
+          default_value: null,
+          type: 'string',
+        });
+      }
+    }
+    return merged;
+  }
+
+  function handleScanVariables() {
+    const ids = scanVariableIds(`${systemPrompt}\n${userPrompt}`);
+    setTemplateVariableSpecs(mergeVariableSpecs(ids, templateVariableSpecs));
+  }
+
+  function handleAddVariable() {
+    setTemplateVariableSpecs([
+      ...templateVariableSpecs,
+      {
+        var_id: `var_${Date.now()}`,
+        label: '',
+        description: '',
+        required: false,
+        default_value: null,
+        type: 'string',
+      },
+    ]);
+  }
+
+  function handleUpdateVariable(index: number, patch: Partial<VariableSpec>) {
+    const oldSpec = templateVariableSpecs[index];
+    setTemplateVariableSpecs(
+      templateVariableSpecs.map((spec, i) => (i === index ? { ...spec, ...patch } : spec)),
+    );
+    // If var_id changed, migrate the variable value to the new key
+    if (patch.var_id && patch.var_id !== oldSpec?.var_id) {
+      const oldKey = oldSpec.var_id;
+      const newKey = patch.var_id;
+      const currentValues = useLabStore.getState().variables;
+      if (oldKey in currentValues) {
+        const { [oldKey]: _old, ...rest } = currentValues;
+        void _old;
+        useLabStore.getState().setVariables({ ...rest, [newKey]: currentValues[oldKey] });
+      }
+    }
+  }
+
+  function handleDeleteVariable(index: number) {
+    setTemplateVariableSpecs(templateVariableSpecs.filter((_, i) => i !== index));
+  }
+
+  function handleMoveVariable(index: number, direction: -1 | 1) {
+    const next = [...templateVariableSpecs];
+    const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    setTemplateVariableSpecs(next);
+  }
+
+  function handleInsertConditional() {
+    const name = conditionalName.trim();
+    if (!name) {
+      editorRef.current?.focus();
+      return;
+    }
+
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    editor.focus();
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) return;
+
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) {
+      const endRange = document.createRange();
+      endRange.selectNodeContents(editor);
+      endRange.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(endRange);
+    }
+
+    const activeRange = selection.getRangeAt(0);
+    const selectedText = activeRange.toString();
+    activeRange.deleteContents();
+
+    const open = `{{#vars.${name}}}`;
+    const close = `{{/vars.${name}}}`;
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(document.createTextNode(open));
+    if (selectedText) {
+      fragment.appendChild(document.createTextNode(selectedText));
+    }
+    fragment.appendChild(document.createTextNode(close));
+
+    activeRange.insertNode(fragment);
+
+    const lastInserted = fragment.lastChild;
+    if (lastInserted) {
+      const newRange = document.createRange();
+      newRange.setStartAfter(lastInserted);
+      newRange.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(newRange);
+    }
+
+    skipNextSyncRef.current = true;
+    serialize();
+  }
+
+  function handleInsertVariable(varId: string) {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    editor.focus();
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) return;
+
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) {
+      const endRange = document.createRange();
+      endRange.selectNodeContents(editor);
+      endRange.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(endRange);
+    }
+
+    const activeRange = selection.getRangeAt(0);
+    const text = `{{vars.${varId}}}`;
+    const textNode = document.createTextNode(text);
+    activeRange.deleteContents();
+    activeRange.insertNode(textNode);
+
+    const newRange = document.createRange();
+    newRange.setStartAfter(textNode);
+    newRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(newRange);
+
+    skipNextSyncRef.current = true;
+    serialize();
+    setVarPickerOpen(false);
+  }
+
   return (
     <section className="panel flex flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-surface-800 px-4 py-3">
@@ -445,58 +628,134 @@ export function PromptPanel() {
               <Terminal size={12} />
               {t('prompt.userPrompt')}
             </label>
-            <div ref={imagePickerRef} className="relative">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={conditionalName}
+                onChange={(event) => setConditionalName(event.target.value)}
+                placeholder={t('prompt.conditionalVarName')}
+                className="w-28 rounded-md border border-surface-700 bg-surface-950 px-2 py-1.5 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+              />
               <button
                 type="button"
-                onClick={() => images.length > 0 && setImagePickerOpen((v) => !v)}
-                disabled={images.length === 0}
-                aria-expanded={imagePickerOpen}
-                className={[
-                  'inline-flex h-7 items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
-                  images.length === 0
-                    ? 'cursor-not-allowed border-surface-800 bg-surface-900 text-ink-dim'
-                    : imagePickerOpen
-                      ? 'border-accent/50 bg-accent/10 text-accent'
-                      : 'border-surface-700 bg-surface-950 text-ink hover:border-surface-600 hover:text-ink',
-                ].join(' ')}
-                title={t('prompt.insertImage')}
+                onClick={handleInsertConditional}
+                className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-2 py-1.5 text-xs text-ink-muted hover:bg-surface-800"
+                title={t('prompt.insertConditional')}
               >
-                <ImageIcon size={12} />
-                <span className="max-w-[8rem] truncate sm:max-w-[12rem]">
-                  {images.length === 0
-                    ? `${t('prompt.insertImage')} — ${t('prompt.noImages')}`
-                    : t('prompt.insertImage')}
-                </span>
+                <Braces size={12} />
+                {t('prompt.insertConditional')}
               </button>
-              {images.length > 0 && imagePickerOpen && (
-                <div className="absolute right-0 top-full z-10 mt-2 w-64 rounded-md border border-surface-700 bg-surface-900 p-2 shadow-panel animate-fade-in">
-                  <div className="grid grid-cols-3 gap-2">
-                    {images.map((image, index) => (
+              {/* Variable quick-insert dropdown */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setVarPickerOpen((v) => !v)}
+                  disabled={templateVariableSpecs.length === 0}
+                  className={[
+                    'inline-flex h-7 items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
+                    templateVariableSpecs.length === 0
+                      ? 'cursor-not-allowed border-surface-800 bg-surface-900 text-ink-dim'
+                      : varPickerOpen
+                        ? 'border-accent/50 bg-accent/10 text-accent'
+                        : 'border-surface-700 bg-surface-950 text-ink hover:border-surface-600 hover:text-ink',
+                  ].join(' ')}
+                  title={t('prompt.insertVariable')}
+                >
+                  <Braces size={12} />
+                  {t('prompt.insertVariable')}
+                </button>
+                {varPickerOpen && templateVariableSpecs.length > 0 && (
+                  <div className="absolute right-0 top-full z-10 mt-2 max-h-64 w-56 overflow-auto rounded-md border border-surface-700 bg-surface-900 p-1 shadow-panel animate-fade-in">
+                    {templateVariableSpecs.map((spec) => (
                       <button
-                        key={index}
+                        key={spec.var_id}
                         type="button"
                         onClick={() => {
-                          handleInsertImage(index);
-                          setImagePickerOpen(false);
+                          handleInsertVariable(spec.var_id);
+                          setVarPickerOpen(false);
                         }}
-                        className="flex flex-col items-center gap-1 rounded-md p-1.5 transition-colors hover:bg-surface-800"
-                        title={image.display_name ?? t('image.fallback', { n: index + 1 })}
+                        className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs text-ink hover:bg-surface-800"
                       >
-                        <span className="flex aspect-video w-full items-center justify-center overflow-hidden rounded bg-surface-950">
-                          <img
-                            src={resolveImageSrc(image)}
-                            alt=""
-                            className="h-full w-full object-cover"
-                          />
-                        </span>
-                        <span className="w-full truncate text-center text-[10px] text-ink-dim">
-                          {image.display_name ?? t('image.fallback', { n: index + 1 })}
-                        </span>
+                        <span className="font-mono text-ink-muted">{`{{vars.${spec.var_id}}}`}</span>
+                        <span className="truncate text-ink-dim">{spec.label || spec.var_id}</span>
                       </button>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
+              {/* Syntax help */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setSyntaxHelpOpen((v) => !v)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-surface-700 bg-surface-950 text-ink-dim hover:text-ink"
+                  title={t('prompt.syntaxHelp')}
+                >
+                  <HelpCircle size={14} />
+                </button>
+                {syntaxHelpOpen && (
+                  <div className="absolute right-0 top-full z-10 mt-2 w-72 rounded-md border border-surface-700 bg-surface-900 p-3 shadow-panel animate-fade-in">
+                    <div className="space-y-2 text-xs text-ink-muted">
+                      <div>
+                        <code className="text-accent">{`{{vars.x}}`}</code>
+                        <p className="mt-0.5 text-ink-dim">{t('prompt.syntaxVar')}</p>
+                      </div>
+                      <div>
+                        <code className="text-accent">{`{{#vars.x}}...{{/vars.x}}`}</code>
+                        <p className="mt-0.5 text-ink-dim">{t('prompt.syntaxConditionalIf')}</p>
+                      </div>
+                      <div>
+                        <code className="text-accent">{`{{^vars.x}}...{{/vars.x}}`}</code>
+                        <p className="mt-0.5 text-ink-dim">{t('prompt.syntaxConditionalUnless')}</p>
+                      </div>
+                      <div>
+                        <code className="text-accent">{`{{sample.x}}`}</code>
+                        <p className="mt-0.5 text-ink-dim">{t('prompt.syntaxSample')}</p>
+                      </div>
+                      <div>
+                        <code className="text-accent">{`{{metadata.x}}`}</code>
+                        <p className="mt-0.5 text-ink-dim">{t('prompt.syntaxMetadata')}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div ref={imagePickerRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => images.length > 0 && setImagePickerOpen((v) => !v)}
+                  disabled={images.length === 0}
+                  aria-expanded={imagePickerOpen}
+                  className={[
+                    'inline-flex h-7 items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
+                    images.length === 0
+                      ? 'cursor-not-allowed border-surface-800 bg-surface-900 text-ink-dim'
+                      : imagePickerOpen
+                        ? 'border-accent/50 bg-accent/10 text-accent'
+                        : 'border-surface-700 bg-surface-950 text-ink hover:border-surface-600 hover:text-ink',
+                  ].join(' ')}
+                  title={t('prompt.insertImage')}
+                >
+                  <ImageIcon size={12} />
+                  <span className="max-w-[8rem] truncate sm:max-w-[12rem]">
+                    {images.length === 0
+                      ? `${t('prompt.insertImage')} — ${t('prompt.noImages')}`
+                      : t('prompt.insertImage')}
+                  </span>
+                </button>
+                {images.length > 0 && imagePickerOpen && (
+                  <div className="absolute right-0 top-full z-10 mt-2 max-h-80 w-64 overflow-auto rounded-md border border-surface-700 bg-surface-900 p-2 shadow-panel animate-fade-in">
+                    <ImagePickerBySlot
+                      images={images}
+                      specs={templateImageSlotSpecs}
+                      onSelect={(index) => {
+                        handleInsertImage(index);
+                        setImagePickerOpen(false);
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -519,11 +778,18 @@ export function PromptPanel() {
           />
 
           <p className="text-xs text-ink-dim">{t('prompt.imageRefHint')}</p>
-
-          {templateImageSlotSpecs.length > 0 && (
-            <ExpectedImageSlotGuidance specs={templateImageSlotSpecs} currentImages={images} />
-          )}
         </div>
+
+        <UnifiedVariableEditor
+          specs={templateVariableSpecs}
+          values={variables}
+          onScan={handleScanVariables}
+          onAdd={handleAddVariable}
+          onUpdate={handleUpdateVariable}
+          onDelete={handleDeleteVariable}
+          onMove={handleMoveVariable}
+          onValueChange={setVariable}
+        />
 
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-medium text-ink-muted">
@@ -579,6 +845,72 @@ export function PromptPanel() {
   );
 }
 
+function ImagePickerBySlot({
+  images,
+  specs,
+  onSelect,
+}: {
+  images: ImageRef[];
+  specs: ImageSlotSpec[];
+  onSelect: (imageIndex: number) => void;
+}) {
+  const { t } = useI18n();
+
+  const bySlot = useMemo(() => {
+    const groups = new Map<string | undefined, { spec?: ImageSlotSpec; images: { image: ImageRef; index: number }[] }>();
+    for (const spec of specs) {
+      groups.set(spec.slot_id, { spec, images: [] });
+    }
+    images.forEach((image, index) => {
+      const group = groups.get(image.slot_id);
+      if (group) {
+        group.images.push({ image, index });
+      } else {
+        groups.set(image.slot_id, { images: [{ image, index }] });
+      }
+    });
+    return groups;
+  }, [images, specs]);
+
+  function slotTitle(spec?: ImageSlotSpec): string {
+    if (!spec) return t('image.unslotted');
+    return spec.label?.trim() || spec.role_hint?.trim() || t('image.unnamedSlot');
+  }
+
+  return (
+    <div className="space-y-3">
+      {Array.from(bySlot.entries()).map(([slotId, group]) => (
+        <div key={slotId ?? 'unslotted'} className="space-y-1.5">
+          <div className="flex items-center justify-between px-1">
+            <span className="truncate text-[10px] font-medium text-accent">{slotTitle(group.spec)}</span>
+            <span className="text-[10px] text-ink-dim">{group.images.length}</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {group.images.map(({ image, index }) => (
+              <button
+                key={index}
+                type="button"
+                onClick={() => onSelect(index)}
+                className="flex flex-col items-center gap-1 rounded-md p-1.5 transition-colors hover:bg-surface-800"
+                title={image.display_name ?? image.role ?? t('image.fallback', { n: index + 1 })}
+              >
+                <span className="flex aspect-video w-full items-center justify-center overflow-hidden rounded bg-surface-950"
+                >
+                  <img
+                    src={resolveImageSrc(image)}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function buildEditorHtml(
   text: string,
   slots: ImageSlot[],
@@ -609,7 +941,7 @@ function renderChip(
   const image = images[slot.imageIndex];
   const src = image ? resolveImageSrc(image) : '';
   const role = image?.role?.trim();
-  const title = image?.display_name ?? t('image.fallback', { n: slot.imageIndex + 1 });
+  const title = role ?? image?.display_name ?? t('image.fallback', { n: slot.imageIndex + 1 });
 
   const imageIconSvg =
     '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>';
@@ -744,54 +1076,189 @@ function extractSectionNames(contract: OutputContract): string {
   return '';
 }
 
-interface ExpectedImageSlotGuidanceProps {
-  specs: ImageSlotSpec[];
-  currentImages: ImageRef[];
+interface UnifiedVariableEditorProps {
+  specs: VariableSpec[];
+  values: Record<string, string>;
+  onScan: () => void;
+  onAdd: () => void;
+  onUpdate: (index: number, patch: Partial<VariableSpec>) => void;
+  onDelete: (index: number) => void;
+  onMove: (index: number, direction: -1 | 1) => void;
+  onValueChange: (varId: string, value: string) => void;
 }
 
-function ExpectedImageSlotGuidance({ specs, currentImages }: ExpectedImageSlotGuidanceProps) {
+function UnifiedVariableEditor({
+  specs,
+  values,
+  onScan,
+  onAdd,
+  onUpdate,
+  onDelete,
+  onMove,
+  onValueChange,
+}: UnifiedVariableEditorProps) {
   const { t } = useI18n();
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
   return (
-    <div className="rounded-md border border-accent/20 bg-accent/5 p-3">
-      <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-accent">
-        <Info size={14} />
-        {t('prompt.expectedImageSlots')}
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between">
+        <label className="text-xs font-medium text-ink-muted">
+          {t('prompt.variableSpecs')}
+        </label>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onScan}
+            className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-2 py-1 text-xs text-ink-muted hover:bg-surface-800"
+          >
+            <ScanLine size={12} />
+            {t('prompt.scanVariables')}
+          </button>
+          <button
+            type="button"
+            onClick={onAdd}
+            className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-2 py-1 text-xs text-ink-muted hover:bg-surface-800"
+          >
+            <Plus size={12} />
+            {t('prompt.addVariable')}
+          </button>
+        </div>
       </div>
-      <ul className="space-y-2">
-        {specs.map((spec, index) => {
-          const min = spec.min_count ?? (spec.required ? 1 : 0);
-          const max = spec.max_count ?? Number.POSITIVE_INFINITY;
-          const matched = currentImages.length >= min && currentImages.length <= max;
-          return (
-            <li key={spec.slot_id ?? index} className="flex items-start gap-2 text-xs">
-              <span
-                className={[
-                  'mt-0.5 inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold',
-                  matched
-                    ? 'bg-emerald-500/20 text-emerald-400'
-                    : 'bg-amber-500/20 text-amber-400',
-                ].join(' ')}
+
+      {specs.length === 0 ? (
+        <div className="rounded-md border border-dashed border-surface-700 p-4 text-center text-xs text-ink-dim">
+          {t('prompt.noVariables')}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {specs.map((spec, index) => {
+            const isExpanded = expandedIndex === index;
+            const value = values[spec.var_id] ?? '';
+            return (
+              <div
+                key={index}
+                className="rounded-md border border-surface-700 bg-surface-950 p-3"
               >
-                {matched ? '✓' : '!'}
-              </span>
-              <div className="flex-1">
+                {/* Main row: var_id + value input + actions */}
                 <div className="flex items-center gap-2">
-                  <span className="font-medium text-ink">{spec.label || `${t('prompt.imageSlot')} ${index + 1}`}</span>
-                  {spec.required && (
-                    <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[10px] text-danger">
+                  <input
+                    type="text"
+                    value={spec.var_id}
+                    onChange={(event) => onUpdate(index, { var_id: event.target.value })}
+                    placeholder={t('prompt.variableId')}
+                    className="w-28 shrink-0 rounded-md border border-surface-700 bg-surface-900 px-2 py-1.5 font-mono text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                  />
+                  {spec.required ? (
+                    <span className="shrink-0 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] text-danger">
                       {t('prompt.required')}
                     </span>
+                  ) : (
+                    <span className="shrink-0 rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-ink-muted">
+                      {t('prompt.optional')}
+                    </span>
                   )}
+                  <input
+                    type="text"
+                    value={value}
+                    onChange={(event) => onValueChange(spec.var_id, event.target.value)}
+                    placeholder={spec.default_value ?? t('prompt.variableDefaultValueNone')}
+                    className="min-w-0 flex-1 rounded-md border border-surface-700 bg-surface-950 px-3 py-1.5 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setExpandedIndex(isExpanded ? null : index)}
+                    className={[
+                      'shrink-0 rounded p-1.5 transition-colors',
+                      isExpanded
+                        ? 'bg-accent/10 text-accent'
+                        : 'text-ink-dim hover:bg-surface-800 hover:text-ink',
+                    ].join(' ')}
+                    aria-label={t('prompt.variableSettings')}
+                  >
+                    <Settings size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDelete(index)}
+                    className="shrink-0 rounded p-1.5 text-ink-dim hover:bg-danger/10 hover:text-danger"
+                    aria-label={t('prompt.deleteVariable')}
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
-                {spec.description && (
-                  <p className="mt-0.5 text-ink-muted">{spec.description}</p>
+
+                {/* Expanded settings */}
+                {isExpanded && (
+                  <div className="mt-3 space-y-3 border-t border-surface-800 pt-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <input
+                        type="text"
+                        value={spec.label ?? ''}
+                        onChange={(event) => onUpdate(index, { label: event.target.value })}
+                        placeholder={t('prompt.variableLabel')}
+                        className="rounded-md border border-surface-700 bg-surface-900 px-3 py-2 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                      />
+                      <input
+                        type="text"
+                        value={spec.description ?? ''}
+                        onChange={(event) => onUpdate(index, { description: event.target.value })}
+                        placeholder={t('prompt.variableDescription')}
+                        className="rounded-md border border-surface-700 bg-surface-900 px-3 py-2 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-4">
+                      <label className="flex items-center gap-2 text-xs text-ink-muted">
+                        <input
+                          type="checkbox"
+                          checked={spec.required ?? false}
+                          onChange={(event) => onUpdate(index, { required: event.target.checked })}
+                          className="rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent"
+                        />
+                        {t('prompt.required')}
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-ink-muted">
+                        {t('prompt.variableDefaultValue')}
+                        <input
+                          type="text"
+                          value={spec.default_value ?? ''}
+                          onChange={(event) =>
+                            onUpdate(index, {
+                              default_value: event.target.value === '' ? null : event.target.value,
+                            })
+                          }
+                          placeholder={t('prompt.variableDefaultValueNone')}
+                          className="w-32 rounded-md border border-surface-700 bg-surface-900 px-2 py-1 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => onMove(index, -1)}
+                          disabled={index === 0}
+                          className="rounded p-1 text-ink-dim hover:bg-surface-800 disabled:opacity-30"
+                          aria-label={t('prompt.moveUp')}
+                        >
+                          <ChevronUp size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onMove(index, 1)}
+                          disabled={index === specs.length - 1}
+                          className="rounded p-1 text-ink-dim hover:bg-surface-800 disabled:opacity-30"
+                          aria-label={t('prompt.moveDown')}
+                        >
+                          <ChevronDown size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
-            </li>
-          );
-        })}
-      </ul>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

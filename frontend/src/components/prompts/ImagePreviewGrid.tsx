@@ -33,14 +33,15 @@ export function ImagePreviewGrid({
       <div className="flex flex-wrap gap-2">
         {visible.map((image, index) => {
           const src = resolveImageSrc(image);
-          const name = image.display_name || `Image ${index + 1}`;
+          const name = image.role || `Image ${index + 1}`;
+          const tooltip = image.display_name ?? name;
           return (
             <button
               key={`${src}-${index}`}
               type="button"
               onClick={() => setPreview({ src, name })}
               className={`${sizeClasses} overflow-hidden rounded-md border border-surface-700 bg-surface-950 transition-colors hover:border-surface-500`}
-              title={name}
+              title={tooltip}
             >
               {src ? (
                 <img

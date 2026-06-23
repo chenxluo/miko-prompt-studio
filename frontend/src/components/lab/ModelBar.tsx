@@ -126,20 +126,21 @@ export function ModelBar() {
             {t('model.modelId')}
           </label>
           <div className="flex gap-1.5">
-            <input
-              type="text"
-              list="model-list"
+            <select
               value={modelId}
               onChange={(e) => setModelId(e.target.value)}
-              placeholder={t('model.selectOrType')}
               disabled={!selectedProviderConfigId}
-              className="flex-1 rounded-md border border-surface-700 bg-surface-950 px-2.5 py-2 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none disabled:opacity-50"
-            />
-            <datalist id="model-list">
+              className="flex-1 rounded-md border border-surface-700 bg-surface-950 px-2.5 py-2 text-xs text-ink focus:border-accent focus:outline-none disabled:opacity-50"
+            >
+              {availableModels.length === 0 && <option value="">{t('model.selectOrType')}</option>}
               {availableModels.map((m) => (
-                <option key={m} value={m} />
+                <option key={m} value={m}>{m}</option>
               ))}
-            </datalist>
+              {/* Allow custom model not in the cached list */}
+              {modelId && !availableModels.includes(modelId) && (
+                <option value={modelId}>{modelId}</option>
+              )}
+            </select>
           </div>
           {selectedConfig && (
             <span className="text-[10px] text-ink-dim">

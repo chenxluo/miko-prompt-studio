@@ -1,27 +1,98 @@
-import { Loader2, X } from 'lucide-react';
-import { useState } from 'react';
+import { Loader2, Tag, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
-import { createTask } from '../../api/client';
+import { createTask, createTaskVersion, savePrompt } from '../../api/client';
 import { useI18n } from '../../i18n';
-import { buildPromptWithImageSlots, useLabStore } from '../../store/labStore';
+import {
+  buildImagePreprocessConfig,
+  buildPromptWithImageSlots,
+  useLabStore,
+} from '../../store/labStore';
+import type { FewShotExample, ImagePreprocessConfig, ImageSlotSpec, VariableSpec } from '../../types';
+
+export interface SaveTaskDialogPrefill {
+  prompt_id?: string | null;
+  prompt_version_id?: string | null;
+  system_prompt?: string;
+  user_template?: string;
+  format_instruction?: string;
+  image_slot_specs?: ImageSlotSpec[];
+  variable_specs?: VariableSpec[];
+  few_shot_examples?: FewShotExample[];
+  provider_config_id?: string | null;
+  model_id?: string;
+  model_parameters?: Record<string, unknown>;
+  output_contract?: Record<string, unknown>;
+  image_preprocess_config?: ImagePreprocessConfig | null;
+  pricing_profile_id?: string | null;
+  notes?: string;
+}
 
 interface SaveTaskDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  prefill?: SaveTaskDialogPrefill | null;
 }
 
-export function SaveTaskDialog({ isOpen, onClose }: SaveTaskDialogProps) {
+export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps) {
   const { t } = useI18n();
   const [name, setName] = useState('');
-  const [notes, setNotes] = useState('');
+  const [description, setDescription] = useState('');
+  const [tags, setTags] = useState('');
+  const [notes, setNotes] = useState(prefill?.notes ?? '');
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const isAddingVersion = Boolean(useLabStore.getState().activeTaskId);
+
+  useEffect(() => {
+    if (isOpen) {
+      setNotes(prefill?.notes ?? '');
+      setMessage(null);
+      setError(null);
+    }
+  }, [isOpen, prefill?.notes]);
+
+  const resetForm = () => {
+    setName('');
+    setDescription('');
+    setTags('');
+    setNotes(prefill?.notes ?? '');
+  };
+
+  async function resolvePromptIds(): Promise<
+    { promptId: string; promptVersionId: string } | { error: string }
+  > {
+    const state = useLabStore.getState();
+
+    if (prefill?.prompt_id && prefill?.prompt_version_id) {
+      return { promptId: prefill.prompt_id, promptVersionId: prefill.prompt_version_id };
+    }
+
+    if (state.activePromptId && state.activePromptVersionId) {
+      return { promptId: state.activePromptId, promptVersionId: state.activePromptVersionId };
+    }
+
+    const trimmedName = name.trim() || t('task.untitled');
+    const saved = await savePrompt({
+      name: trimmedName,
+      system_prompt: prefill?.system_prompt ?? state.systemPrompt,
+      user_template:
+        prefill?.user_template ?? buildPromptWithImageSlots(state.userPrompt, state.imageSlots),
+      format_instruction: prefill?.format_instruction ?? state.formatInstruction,
+      notes,
+      image_slot_specs: prefill?.image_slot_specs ?? state.templateImageSlotSpecs,
+      variable_specs: prefill?.variable_specs ?? state.templateVariableSpecs,
+      few_shot_examples: prefill?.few_shot_examples,
+    });
+    return { promptId: saved.prompt_id, promptVersionId: saved.prompt_version_id };
+  }
+
   const handleSave = async () => {
     const state = useLabStore.getState();
     const trimmedName = name.trim();
-    if (!trimmedName) {
+    if (!isAddingVersion && !trimmedName) {
       setError(t('task.nameRequired'));
       return;
     }
@@ -29,24 +100,54 @@ export function SaveTaskDialog({ isOpen, onClose }: SaveTaskDialogProps) {
     setIsSaving(true);
     setError(null);
     setMessage(null);
+
     try {
-      await createTask({
-        name: trimmedName,
-        provider_config_id: state.selectedProviderConfigId,
-        model_id: state.modelId,
-        model_parameters: state.modelParameters as Record<string, unknown>,
-        system_prompt: state.systemPrompt,
-        user_prompt: buildPromptWithImageSlots(state.userPrompt, state.imageSlots),
-        format_instruction: state.formatInstruction,
-        output_contract: state.outputContract as Record<string, unknown>,
-        pricing_profile_id: state.activePricing?.pricing_profile_id ?? null,
-        image_resolution_enabled: state.imageResolutionEnabled,
-        image_resolution_target: state.imageResolutionTarget,
+      const promptResult = await resolvePromptIds();
+      if ('error' in promptResult) {
+        setError(promptResult.error);
+        return;
+      }
+
+      const modelParameters =
+        prefill?.model_parameters ??
+        (state.modelParameters as Record<string, unknown>);
+      const outputContract =
+        prefill?.output_contract ??
+        (state.outputContract as Record<string, unknown>);
+      const imagePreprocessConfig =
+        prefill?.image_preprocess_config ??
+        buildImagePreprocessConfig(state.imageResolutionEnabled, state.imageResolutionTarget);
+
+      const versionPayload = {
+        prompt_id: promptResult.promptId,
+        prompt_version_id: promptResult.promptVersionId,
+        provider_config_id: prefill?.provider_config_id ?? state.selectedProviderConfigId,
+        model_id: prefill?.model_id ?? state.modelId,
+        model_parameters: modelParameters,
+        output_contract: outputContract,
+        image_preprocess_config: imagePreprocessConfig,
+        pricing_profile_id:
+          prefill?.pricing_profile_id ?? state.activePricing?.pricing_profile_id ?? null,
         notes,
-      });
-      setMessage(t('task.saved'));
-      setName('');
-      setNotes('');
+      };
+
+      if (state.activeTaskId) {
+        await createTaskVersion(state.activeTaskId, versionPayload);
+        setMessage(t('task.versionSaved'));
+      } else {
+        await createTask({
+          name: trimmedName,
+          description: description.trim() || undefined,
+          tags: tags
+            .split(',')
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+          version: versionPayload,
+        });
+        setMessage(t('task.saved'));
+      }
+
+      resetForm();
       window.setTimeout(onClose, 500);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('task.saveFailed'));
@@ -61,7 +162,9 @@ export function SaveTaskDialog({ isOpen, onClose }: SaveTaskDialogProps) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="w-full max-w-md rounded-xl border border-surface-700 bg-surface-900 p-4 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink">{t('task.saveAsTask')}</h2>
+          <h2 className="text-sm font-semibold text-ink">
+            {isAddingVersion ? t('task.saveNewVersion') : t('task.saveAsTask')}
+          </h2>
           <button
             type="button"
             onClick={onClose}
@@ -72,15 +175,39 @@ export function SaveTaskDialog({ isOpen, onClose }: SaveTaskDialogProps) {
         </div>
 
         <div className="space-y-3">
-          <label className="flex flex-col gap-1 text-xs text-ink-muted">
-            {t('task.name')}
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              className="rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
-              autoFocus
-            />
-          </label>
+          {!isAddingVersion && (
+            <>
+              <label className="flex flex-col gap-1 text-xs text-ink-muted">
+                {t('task.name')}
+                <input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  className="rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
+                  autoFocus
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-ink-muted">
+                {t('task.descriptionLabel')}
+                <input
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  className="rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-ink-muted">
+                <span className="inline-flex items-center gap-1">
+                  <Tag size={12} />
+                  {t('task.tags')}
+                </span>
+                <input
+                  value={tags}
+                  onChange={(event) => setTags(event.target.value)}
+                  placeholder={t('task.tagsHint')}
+                  className="rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                />
+              </label>
+            </>
+          )}
           <label className="flex flex-col gap-1 text-xs text-ink-muted">
             {t('task.notes')}
             <textarea
