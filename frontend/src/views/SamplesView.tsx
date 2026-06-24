@@ -5,6 +5,7 @@ import {
   Plus,
   Search,
   Trash2,
+  X,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
@@ -421,41 +422,80 @@ function SampleSetDetail({
 function ImageThumbnails({ data }: { data: Record<string, unknown> }) {
   const { t } = useI18n();
   const images = extractImages(data);
+  const [preview, setPreview] = useState<{ src: string; name: string } | null>(null);
+
   if (images.length === 0) return <span className="text-ink-dim">—</span>;
 
   return (
-    <div className="flex flex-wrap gap-2">
-      {images.map((image, index) => {
-        const src = resolveImageSrc(image);
-        const label = image.role ?? t('samples.imageFallback', { n: index + 1 });
-        return (
-          <div
-            key={`${image.image_id ?? image.path ?? image.uri ?? index}`}
-            className="h-12 w-12 overflow-hidden rounded border border-surface-700 bg-surface-900"
-            title={image.display_name ?? label}
+    <>
+      <div className="flex flex-wrap gap-2">
+        {images.map((image, index) => {
+          const src = resolveImageSrc(image);
+          const label = image.role ?? t('samples.imageFallback', { n: index + 1 });
+          return (
+            <button
+              key={`${image.image_id ?? image.path ?? image.uri ?? index}`}
+              type="button"
+              onClick={() => src && setPreview({ src, name: image.display_name ?? label })}
+              disabled={!src}
+              className="h-20 w-20 overflow-hidden rounded-md border border-surface-700 bg-surface-900 transition-colors hover:border-accent/50 disabled:cursor-default disabled:opacity-50"
+              title={image.display_name ?? label}
+            >
+              {src ? (
+                <img
+                  src={src}
+                  alt={label}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-ink-dim">
+                  <FileImage size={20} />
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {preview && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-950/90 p-6 backdrop-blur"
+          onClick={() => setPreview(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            type="button"
+            onClick={() => setPreview(null)}
+            className="absolute right-4 top-4 rounded-md bg-surface-800 p-2 text-ink hover:bg-surface-700"
           >
-            {src ? (
-              <img
-                src={src}
-                alt={label}
-                className="h-full w-full object-cover"
-                loading="lazy"
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center text-ink-dim">
-                <FileImage size={14} />
-              </div>
-            )}
+            <X size={18} />
+          </button>
+          <div className="flex max-h-full max-w-full flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+            <span className="text-xs text-ink-muted">{preview.name}</span>
+            <img
+              src={preview.src}
+              alt={preview.name}
+              className="max-h-[85vh] max-w-full rounded-lg object-contain shadow-panel"
+            />
           </div>
-        );
-      })}
-    </div>
+        </div>
+      )}
+    </>
   );
 }
 
 function resolveImageSrc(image: ImageRef): string | null {
-  if (image.path) return `file:///${image.path}`;
-  if (image.uri) return image.uri;
+  const baseUrl = api.getBaseUrl();
+  // If image has a URI that's already a URL (http/https/data), use it directly
+  if (image.uri) {
+    if (image.uri.startsWith('http') || image.uri.startsWith('data:')) return image.uri;
+    if (image.uri.startsWith('/')) return `${baseUrl}${image.uri}`;
+  }
+  // Use the backend proxy endpoint for filesystem paths
+  if (image.path) {
+    return `${baseUrl}/api/sample-images?path=${encodeURIComponent(image.path)}`;
+  }
   return null;
 }
 

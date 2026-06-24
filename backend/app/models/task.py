@@ -43,6 +43,8 @@ class TaskVersionORM(Base):
     model_parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     output_contract: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     image_preprocess_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    image_slot_specs: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    variable_specs: Mapped[list[dict]] = mapped_column(JSON, default=list)
     pricing_profile_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())

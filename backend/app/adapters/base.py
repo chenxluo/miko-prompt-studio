@@ -184,6 +184,7 @@ class BaseAdapter(ABC):
         content_parts: list[str] = []
         raw_usage: dict[str, Any] | None = None
         stream_error: NormalizedError | None = None
+        finish_reason: str | None = None
 
         async for event in events:
             if on_event is not None:
@@ -195,6 +196,8 @@ class BaseAdapter(ABC):
                 content_parts.append(event.delta)
             elif event.event == "usage" and event.usage:
                 raw_usage = event.usage
+            elif event.event == "done" and event.finish_reason:
+                finish_reason = event.finish_reason
             elif event.event == "error":
                 stream_error = self._stream_error_to_normalized(event.error)
                 break
@@ -202,6 +205,22 @@ class BaseAdapter(ABC):
         usage = self._usage_from_stream(raw_usage, request)
         text = "".join(content_parts)
         reasoning_text = "".join(reasoning_parts) or None
+
+        # Check finish_reason for truncation / content filter
+        if stream_error is None and finish_reason:
+            if finish_reason == "content_filter":
+                stream_error = NormalizedError(
+                    type=ErrorType.SAFETY_BLOCKED,
+                    message="Response was blocked by content filter.",
+                    retryable=False,
+                )
+            elif finish_reason == "length":
+                stream_error = NormalizedError(
+                    type=ErrorType.PROVIDER_ERROR,
+                    message="Response was truncated due to max token limit.",
+                    retryable=False,
+                )
+
         status = (
             AttemptStatus.SUCCEEDED
             if stream_error is None
@@ -212,6 +231,7 @@ class BaseAdapter(ABC):
             status=status,
             normalized_response=NormalizedResponse(
                 text=text,
+                finish_reason=finish_reason,
                 reasoning_text=reasoning_text,
                 safety=SafetyInfo(),
             )
@@ -221,7 +241,7 @@ class BaseAdapter(ABC):
             error=stream_error,
             latency_ms=self._elapsed_ms(started) if started is not None else None,
             provider_request_snapshot=provider_request_snapshot,
-            provider_response_raw={"stream": True, "usage": raw_usage},
+            provider_response_raw={"stream": True, "usage": raw_usage, "finish_reason": finish_reason},
         )
 
     def _usage_from_stream(

@@ -1,8 +1,6 @@
 import {
   BookOpen,
-  Copy,
   Edit3,
-  ImageIcon,
   Loader2,
   Plus,
   Search,
@@ -16,10 +14,9 @@ import { useEffect, useMemo, useState } from 'react';
 
 import * as api from '../api/client';
 import { PromptEditor } from '../components/prompts/PromptEditor';
-import { ImagePreviewGrid } from '../components/prompts/ImagePreviewGrid';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
-import type { ImageSlotSpec, PromptListItem } from '../types';
+import type { PromptListItem } from '../types';
 
 export function PromptsView() {
   const { t } = useI18n();
@@ -310,9 +307,6 @@ function PromptListCard({
   onDelete: () => void;
 }) {
   const { t } = useI18n();
-  const version = prompt.latest_version;
-  const slotCount = version?.image_slot_specs?.length ?? 0;
-  const exampleCount = version?.few_shot_examples?.length ?? 0;
 
   return (
     <article
@@ -349,26 +343,10 @@ function PromptListCard({
             <div className="flex items-center gap-2">
               <BookOpen size={14} className="text-accent" />
               <h2 className="truncate text-sm font-semibold text-ink">{prompt.name}</h2>
-              {version?.version_label && (
-                <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-ink-muted">
-                  {version.version_label}
-                </span>
-              )}
             </div>
-            <div className="mt-1 flex flex-wrap gap-2 text-xs text-ink-dim">
-              {slotCount > 0 && (
-                <span className="inline-flex items-center gap-1">
-                  <ImageIcon size={10} />
-                  {t('prompt.imageSlotCount', { count: slotCount })}
-                </span>
-              )}
-              {exampleCount > 0 && (
-                <span className="inline-flex items-center gap-1">
-                  <Copy size={10} />
-                  {t('prompt.fewShotCount', { count: exampleCount })}
-                </span>
-              )}
-            </div>
+            {prompt.description && (
+              <p className="mt-1 truncate text-xs text-ink-dim">{prompt.description}</p>
+            )}
           </button>
         </div>
 
@@ -434,8 +412,6 @@ function PromptDetailDrawer({
   const version = prompt.latest_version;
   const systemPrompt = version?.system_prompt ?? '';
   const userTemplate = version?.user_template ?? '';
-  const slots = version?.image_slot_specs ?? [];
-  const examples = version?.few_shot_examples ?? [];
 
   return (
     <div
@@ -482,61 +458,6 @@ function PromptDetailDrawer({
               {userTemplate || t('prompt.noUserTemplate')}
             </pre>
           </div>
-
-          {slots.length > 0 && (
-            <div className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
-                {t('prompt.imageSlotSpecs')}
-              </h3>
-              <ul className="space-y-2">
-                {slots.map((slot, index) => (
-                  <SlotSpecItem key={slot.slot_id ?? index} spec={slot} index={index} />
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {examples.length > 0 && (
-            <div className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
-                {t('prompt.fewShotExamples')}
-              </h3>
-              <ul className="space-y-2">
-                {examples.map((example) => (
-                  <li
-                    key={example.example_id}
-                    className="rounded-md border border-surface-800 bg-surface-950 p-3"
-                  >
-                    <div className="mb-2 flex items-center gap-2">
-                      <span className="text-xs font-medium text-ink">
-                        {example.title || t('prompt.fewShotExample')}
-                      </span>
-                      {example.enabled === false && (
-                        <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-ink-muted">
-                          {t('prompt.disabled')}
-                        </span>
-                      )}
-                    </div>
-                    <ImagePreviewGrid images={example.images ?? []} maxVisible={4} />
-                    {example.input_text && (
-                      <p className="mt-2 text-xs text-ink-dim">
-                        <span className="text-ink-muted">{t('prompt.fewShotInput')}:</span>{' '}
-                        {example.input_text.slice(0, 120)}
-                        {example.input_text.length > 120 ? '...' : ''}
-                      </p>
-                    )}
-                    {example.output_text && (
-                      <p className="mt-1 text-xs text-ink-dim">
-                        <span className="text-ink-muted">{t('prompt.fewShotOutput')}:</span>{' '}
-                        {example.output_text.slice(0, 120)}
-                        {example.output_text.length > 120 ? '...' : ''}
-                      </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
         </div>
 
         <div className="flex shrink-0 gap-2 border-t border-surface-800 px-4 py-3">
@@ -567,24 +488,5 @@ function PromptDetailDrawer({
         </div>
       </div>
     </div>
-  );
-}
-
-function SlotSpecItem({ spec, index }: { spec: ImageSlotSpec; index: number }) {
-  const { t } = useI18n();
-  return (
-    <li className="rounded-md border border-surface-800 bg-surface-950 p-3">
-      <div className="flex items-center gap-2">
-        <span className="text-xs font-medium text-ink">
-          {spec.label || `${t('prompt.imageSlot')} ${index + 1}`}
-        </span>
-        {spec.required && (
-          <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[10px] text-danger">
-            {t('prompt.required')}
-          </span>
-        )}
-      </div>
-      {spec.description && <p className="mt-1 text-xs text-ink-dim">{spec.description}</p>}
-    </li>
   );
 }

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from app.schemas.common import TimestampedModel
 from app.schemas.model_config import ModelParameters
 from app.schemas.output_contract import OutputContract
+from app.schemas.prompt import ImageSlotSpec, VariableSpec
 
 
 class TaskVersionData(BaseModel):
@@ -19,6 +20,8 @@ class TaskVersionData(BaseModel):
     model_parameters: ModelParameters = Field(default_factory=ModelParameters)
     output_contract: OutputContract = Field(default_factory=OutputContract)
     image_preprocess_config: dict[str, Any] = Field(default_factory=dict)
+    image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
+    variable_specs: list[VariableSpec] = Field(default_factory=list)
     pricing_profile_id: str | None = None
     notes: str = ""
 
@@ -96,8 +99,8 @@ class Task(TimestampedModel):
     description: str = ""
     current_version_id: str | None = None
     tags: list[str] = Field(default_factory=list)
-    current_version: TaskVersionSummary | None = None
-    versions: list[TaskVersionSummary] | None = None
+    current_version: TaskVersion | None = None
+    versions: list[TaskVersion] | None = None
 
 
 class TaskSnapshot(BaseModel):

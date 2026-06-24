@@ -1,15 +1,19 @@
 import {
   Braces,
+  Check,
   ChevronDown,
   ChevronUp,
   FileText,
   HelpCircle,
   ImageIcon,
+  Loader2,
   Plus,
+  Save,
   ScanLine,
   Settings,
   Terminal,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   useCallback,
@@ -23,7 +27,7 @@ import {
 
 import * as api from '../../api/client';
 import { useI18n } from '../../i18n';
-import { type ImageSlot } from '../../store/labStore';
+import { type ImageSlot, buildPromptWithImageSlots } from '../../store/labStore';
 import { useLabStore } from '../../store/labStore';
 import type { ImageRef, ImageSlotSpec, OutputContract, OutputMode, VariableSpec } from '../../types';
 import { resolveImageSrc } from './ImagePanel';
@@ -58,7 +62,7 @@ export function PromptPanel() {
   const setTemplateVariableSpecs = useLabStore((state) => state.setTemplateVariableSpecs);
 
   const [jsonError, setJsonError] = useState<string | null>(null);
-  const [conditionalName, setConditionalName] = useState('');
+  const [conditionalPickerOpen, setConditionalPickerOpen] = useState(false);
   const [varPickerOpen, setVarPickerOpen] = useState(false);
   const [syntaxHelpOpen, setSyntaxHelpOpen] = useState(false);
 
@@ -409,6 +413,40 @@ export function PromptPanel() {
     [prompts, loadPrompt],
   );
 
+  const activePromptId = useLabStore((state) => state.activePromptId);
+  const [isSavingPrompt, setIsSavingPrompt] = useState(false);
+  const [savePromptName, setSavePromptName] = useState('');
+  const [savePromptOpen, setSavePromptOpen] = useState(false);
+
+  const handleSavePrompt = useCallback(async () => {
+    const state = useLabStore.getState();
+    const name = savePromptName.trim() || t('prompt.untitled');
+    setIsSavingPrompt(true);
+    try {
+      const result = await api.savePrompt({
+        name,
+        system_prompt: state.systemPrompt,
+        user_template: buildPromptWithImageSlots(state.userPrompt, state.imageSlots),
+        format_instruction: state.formatInstruction,
+        prompt_id: state.activePromptId ?? undefined,
+      });
+      // Update active prompt tracking
+      useLabStore.setState({
+        activePromptId: result.prompt_id,
+        activePromptVersionId: result.prompt_version_id,
+      });
+      // Refresh prompt list
+      const items = await api.listPrompts();
+      setPrompts(items);
+      setSavePromptOpen(false);
+      setSavePromptName('');
+    } catch {
+      // Ignore — non-critical
+    } finally {
+      setIsSavingPrompt(false);
+    }
+  }, [savePromptName, t]);
+
   function scanVariableIds(text: string): string[] {
     const ids: string[] = [];
     const seen = new Set<string>();
@@ -492,9 +530,8 @@ export function PromptPanel() {
     setTemplateVariableSpecs(next);
   }
 
-  function handleInsertConditional() {
-    const name = conditionalName.trim();
-    if (!name) {
+  function handleInsertConditional(varId: string) {
+    if (!varId) {
       editorRef.current?.focus();
       return;
     }
@@ -519,8 +556,8 @@ export function PromptPanel() {
     const selectedText = activeRange.toString();
     activeRange.deleteContents();
 
-    const open = `{{#vars.${name}}}`;
-    const close = `{{/vars.${name}}}`;
+    const open = `{{#vars.${varId}}}`;
+    const close = `{{/vars.${varId}}}`;
     const fragment = document.createDocumentFragment();
     fragment.appendChild(document.createTextNode(open));
     if (selectedText) {
@@ -584,24 +621,69 @@ export function PromptPanel() {
           <FileText size={16} className="text-accent" />
           <span className="text-sm font-semibold text-ink">{t('prompt.title')}</span>
         </div>
-        <div className="relative">
-          <select
-            value=""
-            onChange={handleSelectPrompt}
-            disabled={promptsLoading}
-            className="appearance-none rounded-md border border-surface-700 bg-surface-950 py-1.5 pl-3 pr-8 text-xs text-ink focus:border-accent focus:outline-none disabled:opacity-50"
-          >
-            <option value="">{t('prompt.selectPrompt')}</option>
-            {prompts.map((prompt) => (
-              <option key={prompt.prompt_id} value={prompt.prompt_id}>
-                {prompt.name}
-              </option>
-            ))}
-          </select>
-          <ChevronDown
-            size={12}
-            className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-dim"
-          />
+        <div className="flex items-center gap-2">
+          {/* Save prompt */}
+          {savePromptOpen ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                value={savePromptName}
+                onChange={(e) => setSavePromptName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleSavePrompt();
+                  if (e.key === 'Escape') setSavePromptOpen(false);
+                }}
+                placeholder={t('prompt.name')}
+                autoFocus
+                className="w-32 rounded-md border border-surface-700 bg-surface-950 px-2 py-1.5 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => void handleSavePrompt()}
+                disabled={isSavingPrompt}
+                className="btn-primary px-2 py-1.5 text-xs disabled:opacity-50"
+              >
+                {isSavingPrompt ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSavePromptOpen(false)}
+                className="rounded-md border border-surface-700 px-2 py-1.5 text-xs text-ink-muted hover:text-ink"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setSavePromptOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-surface-700 bg-surface-800 px-2.5 py-1.5 text-xs text-ink-muted hover:border-surface-600 hover:text-ink"
+              title={activePromptId ? t('prompt.saveNewVersion') : t('prompt.saveAsNew')}
+            >
+              <Save size={12} />
+              {t('prompt.save')}
+            </button>
+          )}
+
+          {/* Select prompt */}
+          <div className="relative">
+            <select
+              value=""
+              onChange={handleSelectPrompt}
+              disabled={promptsLoading}
+              className="appearance-none rounded-md border border-surface-700 bg-surface-950 py-1.5 pl-3 pr-8 text-xs text-ink focus:border-accent focus:outline-none disabled:opacity-50"
+            >
+              <option value="">{t('prompt.selectPrompt')}</option>
+              {prompts.map((prompt) => (
+                <option key={prompt.prompt_id} value={prompt.prompt_id}>
+                  {prompt.name}
+                </option>
+              ))}
+            </select>
+            <ChevronDown
+              size={12}
+              className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-dim"
+            />
+          </div>
         </div>
       </div>
 
@@ -629,22 +711,44 @@ export function PromptPanel() {
               {t('prompt.userPrompt')}
             </label>
             <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={conditionalName}
-                onChange={(event) => setConditionalName(event.target.value)}
-                placeholder={t('prompt.conditionalVarName')}
-                className="w-28 rounded-md border border-surface-700 bg-surface-950 px-2 py-1.5 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
-              />
-              <button
-                type="button"
-                onClick={handleInsertConditional}
-                className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-2 py-1.5 text-xs text-ink-muted hover:bg-surface-800"
-                title={t('prompt.insertConditional')}
-              >
-                <Braces size={12} />
-                {t('prompt.insertConditional')}
-              </button>
+              {/* Conditional block quick-insert dropdown */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setConditionalPickerOpen((v) => !v)}
+                  disabled={templateVariableSpecs.length === 0}
+                  className={[
+                    'inline-flex h-7 items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
+                    templateVariableSpecs.length === 0
+                      ? 'cursor-not-allowed border-surface-800 bg-surface-900 text-ink-dim'
+                      : conditionalPickerOpen
+                        ? 'border-accent/50 bg-accent/10 text-accent'
+                        : 'border-surface-700 bg-surface-950 text-ink hover:border-surface-600 hover:text-ink',
+                  ].join(' ')}
+                  title={t('prompt.insertConditional')}
+                >
+                  <Braces size={12} />
+                  {t('prompt.insertConditional')}
+                </button>
+                {conditionalPickerOpen && templateVariableSpecs.length > 0 && (
+                  <div className="absolute left-0 top-full z-10 mt-2 max-h-64 w-56 overflow-auto rounded-md border border-surface-700 bg-surface-900 p-1 shadow-panel animate-fade-in">
+                    {templateVariableSpecs.map((spec) => (
+                      <button
+                        key={spec.var_id}
+                        type="button"
+                        onClick={() => {
+                          handleInsertConditional(spec.var_id);
+                          setConditionalPickerOpen(false);
+                        }}
+                        className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs text-ink hover:bg-surface-800"
+                      >
+                        <span className="font-mono text-ink-muted">{`{{#vars.${spec.var_id}}}`}</span>
+                        <span className="truncate text-ink-dim">{spec.label || spec.var_id}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               {/* Variable quick-insert dropdown */}
               <div className="relative">
                 <button

@@ -8,7 +8,7 @@ import {
   buildPromptWithImageSlots,
   useLabStore,
 } from '../../store/labStore';
-import type { FewShotExample, ImagePreprocessConfig, ImageSlotSpec, VariableSpec } from '../../types';
+import type { ImagePreprocessConfig, ImageSlotSpec, VariableSpec } from '../../types';
 
 export interface SaveTaskDialogPrefill {
   prompt_id?: string | null;
@@ -18,7 +18,6 @@ export interface SaveTaskDialogPrefill {
   format_instruction?: string;
   image_slot_specs?: ImageSlotSpec[];
   variable_specs?: VariableSpec[];
-  few_shot_examples?: FewShotExample[];
   provider_config_id?: string | null;
   model_id?: string;
   model_parameters?: Record<string, unknown>;
@@ -66,14 +65,15 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
   > {
     const state = useLabStore.getState();
 
+    // When prefill explicitly provides both IDs, trust them (e.g. loading
+    // from an external source that already persisted a prompt version).
     if (prefill?.prompt_id && prefill?.prompt_version_id) {
       return { promptId: prefill.prompt_id, promptVersionId: prefill.prompt_version_id };
     }
 
-    if (state.activePromptId && state.activePromptVersionId) {
-      return { promptId: state.activePromptId, promptVersionId: state.activePromptVersionId };
-    }
-
+    // Always create a NEW prompt version with the current (possibly edited)
+    // prompt text.  Reusing activePromptVersionId would silently ignore the
+    // user's edits because the old PromptVersion row still holds the old text.
     const trimmedName = name.trim() || t('task.untitled');
     const saved = await savePrompt({
       name: trimmedName,
@@ -82,9 +82,6 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
         prefill?.user_template ?? buildPromptWithImageSlots(state.userPrompt, state.imageSlots),
       format_instruction: prefill?.format_instruction ?? state.formatInstruction,
       notes,
-      image_slot_specs: prefill?.image_slot_specs ?? state.templateImageSlotSpecs,
-      variable_specs: prefill?.variable_specs ?? state.templateVariableSpecs,
-      few_shot_examples: prefill?.few_shot_examples,
     });
     return { promptId: saved.prompt_id, promptVersionId: saved.prompt_version_id };
   }
@@ -125,17 +122,23 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
         model_id: prefill?.model_id ?? state.modelId,
         model_parameters: modelParameters,
         output_contract: outputContract,
-        image_preprocess_config: imagePreprocessConfig,
+        image_preprocess_config: imagePreprocessConfig ?? {},
         pricing_profile_id:
           prefill?.pricing_profile_id ?? state.activePricing?.pricing_profile_id ?? null,
         notes,
+        image_slot_specs: prefill?.image_slot_specs ?? state.templateImageSlotSpecs,
+        variable_specs: prefill?.variable_specs ?? state.templateVariableSpecs,
       };
 
       if (state.activeTaskId) {
-        await createTaskVersion(state.activeTaskId, versionPayload);
+        const newVersion = await createTaskVersion(state.activeTaskId, versionPayload);
+        // Update active version so subsequent operations (e.g. save snapshot) link to the new version
+        useLabStore.setState({
+          activeTaskVersionId: newVersion.task_version_id,
+        });
         setMessage(t('task.versionSaved'));
       } else {
-        await createTask({
+        const newTask = await createTask({
           name: trimmedName,
           description: description.trim() || undefined,
           tags: tags
@@ -143,6 +146,10 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
             .map((tag) => tag.trim())
             .filter(Boolean),
           version: versionPayload,
+        });
+        useLabStore.setState({
+          activeTaskId: newTask.task_id,
+          activeTaskVersionId: newTask.current_version?.task_version_id ?? null,
         });
         setMessage(t('task.saved'));
       }

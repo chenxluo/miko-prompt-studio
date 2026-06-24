@@ -1220,9 +1220,6 @@ function buildPrefillFromItem(item: RunItemSummary): SaveTaskDialogPrefill {
     image_slot_specs: Array.isArray(promptSnapshot.image_slot_specs)
       ? promptSnapshot.image_slot_specs
       : undefined,
-    few_shot_examples: Array.isArray(promptSnapshot.few_shot_examples)
-      ? promptSnapshot.few_shot_examples
-      : undefined,
     provider_config_id:
       typeof modelSnapshot.provider_config_id === 'string'
         ? modelSnapshot.provider_config_id

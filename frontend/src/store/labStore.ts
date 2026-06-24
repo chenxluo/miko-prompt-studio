@@ -649,7 +649,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
       set({
         selectedProviderConfigId: resolvedVersion.provider_config_id ?? null,
         modelId: resolvedVersion.model_id,
-        modelParameters: resolvedVersion.model_parameters ?? DEFAULT_MODEL_PARAMETERS,
+        modelParameters: { ...DEFAULT_MODEL_PARAMETERS, ...(resolvedVersion.model_parameters ?? {}) },
         outputContract: resolvedVersion.output_contract ?? DEFAULT_OUTPUT_CONTRACT,
         imageResolutionEnabled: preprocess.enabled,
         imageResolutionTarget: preprocess.target,
@@ -667,13 +667,13 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
           resolvedVersion.prompt_version_id,
         );
         const parsed = parseImageTokens(promptVersion.user_template ?? '');
-        const variableSpecs = promptVersion.variable_specs ?? [];
+        const variableSpecs = resolvedVersion.variable_specs ?? [];
         set({
           systemPrompt: promptVersion.system_prompt ?? '',
           userPrompt: parsed.text,
           formatInstruction: promptVersion.format_instruction ?? '',
           imageSlots: parsed.slots,
-          templateImageSlotSpecs: promptVersion.image_slot_specs ?? [],
+          templateImageSlotSpecs: resolvedVersion.image_slot_specs ?? [],
           templateVariableSpecs: variableSpecs,
           variables: buildDefaultVariables(variableSpecs),
         });
@@ -691,12 +691,13 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
     set({
       selectedProviderConfigId: task.provider_config_id ?? null,
       modelId: task.model_id ?? '',
-      modelParameters: task.model_parameters ?? DEFAULT_MODEL_PARAMETERS,
+      modelParameters: { ...DEFAULT_MODEL_PARAMETERS, ...(task.model_parameters ?? {}) },
       systemPrompt: task.system_prompt ?? '',
       userPrompt: parsed.text,
       formatInstruction: task.format_instruction ?? '',
       imageSlots: parsed.slots,
       templateImageSlotSpecs: [],
+      templateVariableSpecs: [],
       imageResolutionEnabled: task.image_resolution_enabled ?? false,
       imageResolutionTarget: task.image_resolution_target ?? 1024,
       outputContract: task.output_contract ?? DEFAULT_OUTPUT_CONTRACT,
@@ -713,14 +714,11 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
     set(() => {
       const version = prompt.latest_version;
       const parsed = parseImageTokens(version?.user_template ?? '');
-      const variableSpecs = version?.variable_specs ?? [];
       return {
         systemPrompt: version?.system_prompt ?? '',
         userPrompt: parsed.text,
+        formatInstruction: version?.format_instruction ?? '',
         imageSlots: parsed.slots,
-        templateImageSlotSpecs: version?.image_slot_specs ?? [],
-        templateVariableSpecs: variableSpecs,
-        variables: buildDefaultVariables(variableSpecs),
         activePromptId: prompt.prompt_id,
         activePromptVersionId:
           version?.prompt_version_id ?? prompt.current_version_id ?? null,
@@ -812,6 +810,8 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         image_resolution_enabled: state.imageResolutionEnabled,
         image_resolution_target: state.imageResolutionTarget,
         run_name: `Lab: ${sampleId}`,
+        image_slot_specs: state.templateImageSlotSpecs,
+        variable_specs: state.templateVariableSpecs,
       };
 
       if (isStreaming) {
@@ -820,6 +820,28 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
           if (event.event === 'done') {
             if (typeof event.usage?.run_id === 'string') {
               persistedRunId = event.usage.run_id;
+            }
+            // Handle truncation / content filter from finish_reason
+            const fr = event.finish_reason;
+            if (fr === 'length' || fr === 'content_filter') {
+              const message =
+                fr === 'length'
+                  ? 'Response was truncated due to max token limit.'
+                  : 'Response was blocked by content filter.';
+              set((prev) => ({
+                error: message,
+                lastRunItem: prev.lastRunItem
+                  ? {
+                      ...prev.lastRunItem,
+                      status: fr === 'content_filter' ? 'blocked' : 'failed',
+                      error: {
+                        type: fr === 'content_filter' ? 'safety_blocked' : 'provider_error',
+                        message,
+                        retryable: false,
+                      },
+                    }
+                  : prev.lastRunItem,
+              }));
             }
             return;
           }
@@ -887,7 +909,13 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
       return runSession;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Run failed';
-      set({ isRunning: false, error: message });
+      set((prev) => ({
+        isRunning: false,
+        error: message,
+        lastRunItem: prev.lastRunItem
+          ? { ...prev.lastRunItem, status: 'failed', error: { type: 'unknown_error', message } }
+          : prev.lastRunItem,
+      }));
       return null;
     }
   },
@@ -896,10 +924,12 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
     try {
       const detail = await api.getRun(runId);
       const item = detail.items[0] ?? null;
-      set({ lastRunItem: item });
+      if (item) {
+        set({ lastRunItem: item });
+      }
       return detail;
     } catch {
-      // Non-fatal — the run still succeeded
+      // Non-fatal — preserve existing lastRunItem (may have streaming error state)
       return null;
     }
   },

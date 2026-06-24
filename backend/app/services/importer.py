@@ -15,8 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.prompt import ImageSlotSpec, VariableSpec
 from app.schemas.sample_record import ImageRef, SampleRecord
-from app.schemas.prompt import PromptVersion
 
 
 class ColumnMapping(BaseModel):
@@ -139,15 +139,16 @@ def import_csv(
 
 def suggest_column_mapping(
     columns: list[str],
-    prompt_version: PromptVersion | None = None,
+    image_slot_specs: list[ImageSlotSpec] | None = None,
+    variable_specs: list[VariableSpec] | None = None,
 ) -> ColumnMapping:
     """Suggest a loose import mapping from column names and an optional prompt contract."""
     id_column = next((col for col in columns if col.lower() in {"id", "sample_id", "image_id"}), "id")
     used = {id_column} if id_column in columns else set()
 
     image_columns: list[dict[str, str]] = []
-    if prompt_version is not None:
-        for slot in prompt_version.image_slot_specs:
+    if image_slot_specs is not None:
+        for slot in image_slot_specs:
             role = slot.role_hint or slot.slot_id
             if not role:
                 continue
@@ -164,8 +165,8 @@ def suggest_column_mapping(
                 used.add(col)
 
     var_columns: list[str] = []
-    if prompt_version is not None:
-        for spec in prompt_version.variable_specs:
+    if variable_specs is not None:
+        for spec in variable_specs:
             if not spec.var_id:
                 continue
             for candidate in (f"var_{spec.var_id}", spec.var_id):

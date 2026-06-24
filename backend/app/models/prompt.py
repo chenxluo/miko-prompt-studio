@@ -28,16 +28,11 @@ class PromptVersionORM(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     prompt_version_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     prompt_id: Mapped[str] = mapped_column(String, index=True)
-    version_label: Mapped[str] = mapped_column(String, default="v1")
-    parent_version_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     user_template: Mapped[str] = mapped_column(Text, default="")
     format_instruction: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
-    image_slot_specs: Mapped[list[dict]] = mapped_column(JSON, default=list)
-    variable_specs: Mapped[list[dict]] = mapped_column(JSON, default=list)
-    few_shot_examples: Mapped[list[dict]] = mapped_column(JSON, default=list)
 
     created_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())
     updated_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())

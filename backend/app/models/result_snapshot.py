@@ -31,6 +31,7 @@ class ResultSnapshotORM(Base):
     provider_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     model_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     prompt_version_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    linked_task_version_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     thumbnail_image_uri: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Full reproduction payload: internal request + session config snapshot.

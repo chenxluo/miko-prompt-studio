@@ -24,6 +24,7 @@ class ResultSnapshot(TimestampedModel):
     provider_id: str | None = None
     model_id: str | None = None
     prompt_version_id: str | None = None
+    linked_task_version_id: str | None = None
     thumbnail_image_uri: str | None = None
 
     # Full reproduction data.  These are optional in older snapshots; new

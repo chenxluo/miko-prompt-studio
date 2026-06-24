@@ -69,9 +69,6 @@ class PromptVersionData(BaseModel):
     user_template: str = ""
     format_instruction: str = ""
     notes: str = ""
-    image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
-    variable_specs: list[VariableSpec] = Field(default_factory=list)
-    few_shot_examples: list[FewShotExample] = Field(default_factory=list)
 
 
 class PromptVersion(PromptVersionData, TimestampedModel):
@@ -79,8 +76,6 @@ class PromptVersion(PromptVersionData, TimestampedModel):
 
     prompt_version_id: str
     prompt_id: str
-    version_label: str = "v1"
-    parent_version_id: str | None = None
 
 
 class Prompt(TimestampedModel):
@@ -109,5 +104,4 @@ class PromptSnapshot(BaseModel):
     notes: str = ""
     image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
     variable_specs: list[VariableSpec] = Field(default_factory=list)
-    few_shot_examples: list[FewShotExample] = Field(default_factory=list)
     version_label: str | None = None

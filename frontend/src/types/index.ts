@@ -222,6 +222,8 @@ export interface TaskVersion extends Timestamps {
   image_preprocess_config?: ImagePreprocessConfig | null;
   pricing_profile_id?: string | null;
   notes?: string;
+  image_slot_specs?: ImageSlotSpec[];
+  variable_specs?: VariableSpec[];
 }
 
 export interface Task extends Timestamps {
@@ -308,16 +310,11 @@ export interface PromptVersionData {
   user_template?: string;
   format_instruction?: string;
   notes?: string;
-  image_slot_specs?: ImageSlotSpec[];
-  variable_specs?: VariableSpec[];
-  few_shot_examples?: FewShotExample[];
 }
 
 export interface PromptVersion extends PromptVersionData, Timestamps {
   prompt_version_id: string;
   prompt_id: string;
-  version_label?: string;
-  parent_version_id?: string | null;
 }
 
 export interface Prompt extends Timestamps {
@@ -336,14 +333,10 @@ export interface PromptListItem extends Timestamps {
   tags?: string[];
   latest_version?: {
     prompt_version_id: string;
-    version_label?: string;
     system_prompt?: string;
     user_template?: string;
     format_instruction?: string;
     notes?: string;
-    image_slot_specs?: ImageSlotSpec[];
-    variable_specs?: VariableSpec[];
-    few_shot_examples?: FewShotExample[];
     created_at?: string;
     updated_at?: string;
   } | null;
@@ -358,7 +351,6 @@ export interface PromptSnapshot {
   notes?: string;
   image_slot_specs?: ImageSlotSpec[];
   variable_specs?: VariableSpec[];
-  few_shot_examples?: FewShotExample[];
   version_label?: string | null;
 }
 
@@ -589,6 +581,7 @@ export interface ParsedResponse {
   parsed?: unknown;
   parse_status?: ParseStatus;
   parse_errors?: Record<string, unknown>[];
+  reasoning_text?: string | null;
 }
 
 export interface AdapterInfo {
@@ -707,10 +700,20 @@ export interface ResultSnapshot extends Timestamps {
   provider_id?: string | null;
   model_id?: string | null;
   prompt_version_id?: string | null;
+  linked_task_version_id?: string | null;
   thumbnail_image_uri?: string | null;
   internal_request_snapshot?: Record<string, unknown> | null;
   config_snapshot?: Record<string, unknown> | null;
   image_dir?: string | null;
+}
+
+export interface TaskVersionSnapshot extends ResultSnapshot {
+  response_text?: string | null;
+  reasoning_text?: string | null;
+  parsed_output?: unknown;
+  usage?: Record<string, unknown> | null;
+  latency_ms?: number | null;
+  run_item_status?: string | null;
 }
 
 export interface ResultSnapshotDetail {

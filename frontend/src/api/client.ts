@@ -6,7 +6,6 @@ import type {
   CompareRunEstimatePayload,
   CompareRunEstimateResponse,
   CreateCompareRunPayload,
-  FewShotExample,
   ImageSlotSpec,
   ModelConfig,
   PricingProfile,
@@ -19,6 +18,7 @@ import type {
   Task,
   TaskInputSpec,
   TaskVersion,
+  TaskVersionSnapshot,
   UploadImageResponse,
   VariableSpec,
 } from '../types';
@@ -271,6 +271,8 @@ export interface LabRunPayload {
   image_resolution_enabled?: boolean;
   image_resolution_target?: number;
   run_name?: string;
+  image_slot_specs?: ImageSlotSpec[];
+  variable_specs?: VariableSpec[];
 }
 
 export async function runLab(payload: LabRunPayload): Promise<RunSession> {
@@ -282,6 +284,7 @@ export interface LabStreamEvent {
   delta?: string | null;
   usage?: Record<string, unknown> | null;
   error?: Record<string, unknown> | null;
+  finish_reason?: string | null;
 }
 
 export async function runLabStream(
@@ -364,6 +367,16 @@ export async function getTaskInputSpec(
   return request<TaskInputSpec>(
     'GET',
     `/api/tasks/${encodeURIComponent(taskId)}/versions/${encodeURIComponent(taskVersionId)}/input-spec`,
+  );
+}
+
+export async function listTaskVersionSnapshots(
+  taskId: string,
+  taskVersionId: string,
+): Promise<TaskVersionSnapshot[]> {
+  return request<TaskVersionSnapshot[]>(
+    'GET',
+    `/api/tasks/${encodeURIComponent(taskId)}/versions/${encodeURIComponent(taskVersionId)}/snapshots`,
   );
 }
 
@@ -698,14 +711,10 @@ export interface PromptListItem {
   tags: string[];
   latest_version: {
     prompt_version_id: string;
-    version_label: string;
     system_prompt: string;
     user_template: string;
     format_instruction: string;
     notes: string;
-    image_slot_specs: ImageSlotSpec[];
-    variable_specs: VariableSpec[];
-    few_shot_examples: FewShotExample[];
   } | null;
   created_at: string;
 }
@@ -732,28 +741,20 @@ export async function getPromptVersion(
 ): Promise<{
   prompt_version_id: string;
   prompt_id: string;
-  version_label: string;
   system_prompt: string;
   user_template: string;
   format_instruction: string;
   notes: string;
-  image_slot_specs: ImageSlotSpec[];
-  variable_specs: VariableSpec[];
-  few_shot_examples: FewShotExample[];
   created_at: string;
 }> {
   return request<
     {
       prompt_version_id: string;
       prompt_id: string;
-      version_label: string;
       system_prompt: string;
       user_template: string;
       format_instruction: string;
       notes: string;
-      image_slot_specs: ImageSlotSpec[];
-      variable_specs: VariableSpec[];
-      few_shot_examples: FewShotExample[];
       created_at: string;
     }
   >('GET', `/api/prompts/${encodeURIComponent(promptId)}/versions/${encodeURIComponent(versionId)}`);
@@ -1002,6 +1003,7 @@ export async function listResultSnapshots(options?: {
   tag?: string;
   provider_id?: string;
   model_id?: string;
+  linked_task_version_id?: string | null;
 }): Promise<ResultSnapshot[]> {
   const params = new URLSearchParams();
   if (options?.limit !== undefined) params.set('limit', String(options.limit));
@@ -1009,6 +1011,9 @@ export async function listResultSnapshots(options?: {
   if (options?.tag) params.set('tag', options.tag);
   if (options?.provider_id) params.set('provider_id', options.provider_id);
   if (options?.model_id) params.set('model_id', options.model_id);
+  if (options?.linked_task_version_id) {
+    params.set('linked_task_version_id', options.linked_task_version_id);
+  }
   const query = params.toString();
   return request<ResultSnapshot[]>('GET', `/api/result-snapshots${query ? `?${query}` : ''}`);
 }

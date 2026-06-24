@@ -41,6 +41,21 @@ export function ModelBar() {
   const [pricingOpen, setPricingOpen] = useState(false);
   const pricingRef = useRef<HTMLDivElement>(null);
 
+  const lastTempRef = useRef<number>(modelParameters.temperature ?? 0.7);
+  const lastTopPRef = useRef<number>(modelParameters.top_p ?? 0.9);
+
+  useEffect(() => {
+    if (modelParameters.temperature != null) {
+      lastTempRef.current = modelParameters.temperature;
+    }
+  }, [modelParameters.temperature]);
+
+  useEffect(() => {
+    if (modelParameters.top_p != null) {
+      lastTopPRef.current = modelParameters.top_p;
+    }
+  }, [modelParameters.top_p]);
+
   useEffect(() => {
     void loadProviderConfigs();
   }, [loadProviderConfigs]);
@@ -279,26 +294,40 @@ export function ModelBar() {
         <div className="grid grid-cols-1 gap-3 border-t border-surface-800 pt-3 sm:grid-cols-2 lg:grid-cols-3">
           {/* Temperature */}
           <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
-              {t('model.temperature')}
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                {t('model.temperature')}
+              </label>
+              <ToggleSwitch
+                checked={modelParameters.temperature !== null}
+                onChange={(checked) =>
+                  setModelParameters({
+                    ...modelParameters,
+                    temperature: checked ? lastTempRef.current : null,
+                  })
+                }
+              />
+            </div>
             <div className="flex items-center gap-2">
               <input
                 type="range"
                 min={0}
                 max={2}
                 step={0.1}
-                value={modelParameters.temperature ?? 0}
+                disabled={modelParameters.temperature === null}
+                value={modelParameters.temperature ?? lastTempRef.current}
                 onChange={(e) =>
                   setModelParameters({
                     ...modelParameters,
                     temperature: parseNumber(e.target.value),
                   })
                 }
-                className="slider flex-1"
+                className="slider flex-1 disabled:opacity-40"
               />
-              <span className="w-6 text-right text-xs font-medium text-ink">
-                {modelParameters.temperature ?? 0}
+              <span className="w-8 text-right text-xs font-medium text-ink">
+                {modelParameters.temperature !== null
+                  ? modelParameters.temperature
+                  : t('model.paramDefault')}
               </span>
             </div>
           </div>
@@ -325,26 +354,40 @@ export function ModelBar() {
 
           {/* Top P */}
           <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
-              {t('model.topP')}
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                {t('model.topP')}
+              </label>
+              <ToggleSwitch
+                checked={modelParameters.top_p !== null}
+                onChange={(checked) =>
+                  setModelParameters({
+                    ...modelParameters,
+                    top_p: checked ? lastTopPRef.current : null,
+                  })
+                }
+              />
+            </div>
             <div className="flex items-center gap-2">
               <input
                 type="range"
                 min={0}
                 max={1}
                 step={0.05}
-                value={modelParameters.top_p ?? 1}
+                disabled={modelParameters.top_p === null}
+                value={modelParameters.top_p ?? lastTopPRef.current}
                 onChange={(e) =>
                   setModelParameters({
                     ...modelParameters,
                     top_p: parseNumber(e.target.value),
                   })
                 }
-                className="slider flex-1"
+                className="slider flex-1 disabled:opacity-40"
               />
               <span className="w-10 text-right text-xs font-medium text-ink">
-                {modelParameters.top_p ?? 1}
+                {modelParameters.top_p !== null
+                  ? modelParameters.top_p
+                  : t('model.paramDefault')}
               </span>
             </div>
           </div>
@@ -385,25 +428,40 @@ export function ModelBar() {
 
               {thinkingOpen && (
                 <div className="grid grid-cols-1 gap-3 border-t border-surface-800 px-3 py-3 sm:grid-cols-3">
-                  <div className="flex items-center gap-2">
-                    <input
-                      id="enable-thinking"
-                      type="checkbox"
-                      checked={modelParameters.enable_thinking ?? false}
-                      onChange={(e) =>
-                        setModelParameters({
-                          ...modelParameters,
-                          enable_thinking: e.target.checked,
-                        })
-                      }
-                      className="h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent"
-                    />
-                    <label htmlFor="enable-thinking" className="text-xs text-ink-muted">
-                      {t('model.enableThinking')}
-                    </label>
+                  {/* Tri-state thinking control */}
+                  <div className="sm:col-span-3">
+                    <div className="flex gap-1">
+                      {([
+                        { value: null, label: t('model.thinkingDefault') },
+                        { value: true, label: t('model.thinkingOn') },
+                        { value: false, label: t('model.thinkingOff') },
+                      ] as const).map((opt) => {
+                        const isActive = modelParameters.enable_thinking === opt.value;
+                        return (
+                          <button
+                            key={opt.label}
+                            type="button"
+                            onClick={() =>
+                              setModelParameters({
+                                ...modelParameters,
+                                enable_thinking: opt.value,
+                              })
+                            }
+                            className={[
+                              'flex-1 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors',
+                              isActive
+                                ? 'border-accent/50 bg-accent/10 text-accent'
+                                : 'border-surface-700 bg-surface-800 text-ink-muted hover:border-surface-600 hover:text-ink',
+                            ].join(' ')}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
 
-                  {modelParameters.enable_thinking && (
+                  {modelParameters.enable_thinking === true && (
                     <>
                       <div className="flex flex-col gap-1">
                         <label className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
@@ -523,6 +581,34 @@ function parseIntOrNull(value: string): number | null {
   if (trimmed === '') return null;
   const parsed = parseInt(trimmed, 10);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+function ToggleSwitch({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={[
+        'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors',
+        checked ? 'bg-accent' : 'bg-surface-700',
+      ].join(' ')}
+    >
+      <span
+        className={[
+          'inline-block h-3 w-3 transform rounded-full bg-white transition-transform',
+          checked ? 'translate-x-3.5' : 'translate-x-0.5',
+        ].join(' ')}
+      />
+    </button>
+  );
 }
 
 interface CostEstimateDisplay {

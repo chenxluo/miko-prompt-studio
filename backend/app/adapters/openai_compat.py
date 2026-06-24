@@ -262,6 +262,8 @@ class OpenAICompatAdapter(BaseAdapter):
         self,
         lines: AsyncIterator[str],
     ) -> AsyncIterator[StreamEvent]:
+        finish_reason: str | None = None
+
         async for line in lines:
             line = line.strip()
             if not line or not line.startswith("data:"):
@@ -300,6 +302,11 @@ class OpenAICompatAdapter(BaseAdapter):
                 if not isinstance(delta, dict):
                     continue
 
+                # Capture finish_reason from the final chunk
+                fr = choice.get("finish_reason")
+                if isinstance(fr, str) and fr:
+                    finish_reason = fr
+
                 reasoning = delta.get("reasoning_content")
                 if reasoning is None:
                     reasoning = delta.get("reasoning")
@@ -312,7 +319,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 if content_text:
                     yield StreamEvent(event="content", delta=content_text)
 
-        yield StreamEvent(event="done")
+        yield StreamEvent(event="done", finish_reason=finish_reason)
 
     def parse_usage(self, response_data: dict[str, Any]) -> Usage:
         usage = response_data.get("usage") or {}

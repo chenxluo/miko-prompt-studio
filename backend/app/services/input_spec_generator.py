@@ -38,8 +38,8 @@ def generate_input_spec_for_task_version(
     task_version: TaskVersionORM,
     prompt_version: PromptVersionORM,
 ) -> TaskInputSpec:
-    image_specs = [ImageSlotSpec(**item) for item in (prompt_version.image_slot_specs or [])]
-    variable_specs = [VariableSpec(**item) for item in (prompt_version.variable_specs or [])]
+    image_specs = [ImageSlotSpec(**item) for item in (task_version.image_slot_specs or [])]
+    variable_specs = [VariableSpec(**item) for item in (task_version.variable_specs or [])]
 
     image_slots: list[TaskInputImageSlot] = []
     variable_slots: list[TaskInputVariableSlot] = []

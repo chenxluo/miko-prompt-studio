@@ -1,6 +1,6 @@
 /** Request payload types for POST/PUT endpoints. */
 
-import type { FewShotExample, ImagePreprocessConfig, ImageSlotSpec, VariableSpec } from '../types';
+import type { ImagePreprocessConfig, ImageSlotSpec, VariableSpec } from '../types';
 
 export interface CreateModelConfigPayload {
   name: string;
@@ -31,9 +31,6 @@ export interface SavePromptPayload {
   user_template?: string;
   format_instruction?: string;
   notes?: string;
-  image_slot_specs?: ImageSlotSpec[];
-  variable_specs?: VariableSpec[];
-  few_shot_examples?: FewShotExample[];
   prompt_id?: string | null;
 }
 
@@ -54,6 +51,8 @@ export interface CreateTaskVersionPayload {
   image_preprocess_config?: ImagePreprocessConfig | null;
   pricing_profile_id?: string | null;
   notes?: string;
+  image_slot_specs?: ImageSlotSpec[];
+  variable_specs?: VariableSpec[];
 }
 
 export interface CreateTaskPayload {
@@ -79,6 +78,7 @@ export interface CreateResultSnapshotPayload {
   tags?: string[];
   notes?: string;
   starred?: boolean;
+  linked_task_version_id?: string | null;
 }
 
 export interface UpdateResultSnapshotPayload {
@@ -89,4 +89,5 @@ export interface UpdateResultSnapshotPayload {
   starred?: boolean;
   accepted?: boolean | null;
   rating?: number | null;
+  linked_task_version_id?: string | null;
 }

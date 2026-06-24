@@ -74,13 +74,15 @@ async def init_db() -> None:
         await _migrate_tasks_to_versions(conn)
         await _recreate_tasks_table_without_legacy_columns(conn)
         await _migrate_result_snapshot_full_snapshot_columns(conn)
+        await _migrate_snapshot_linked_task_version(conn)
         await _migrate_prompt_version_library_columns(conn)
         await _migrate_prompt_version_variable_specs_column(conn)
+        await _migrate_prompt_specs_to_task_versions(conn)
         await _migrate_pricing_profiles_to_per_million_tokens(conn)
 
 
 async def _migrate_prompt_version_library_columns(conn) -> None:
-    """Add prompt-library columns (image slots / few-shot) for existing DBs."""
+    """Add prompt-library image slot columns for existing DBs."""
 
     result = await conn.execute(text("PRAGMA table_info(prompt_versions)"))
     existing_columns = {row[1] for row in result.fetchall()}
@@ -88,10 +90,6 @@ async def _migrate_prompt_version_library_columns(conn) -> None:
     if "image_slot_specs" not in existing_columns:
         await conn.execute(
             text("ALTER TABLE prompt_versions ADD COLUMN image_slot_specs JSON DEFAULT '[]'")
-        )
-    if "few_shot_examples" not in existing_columns:
-        await conn.execute(
-            text("ALTER TABLE prompt_versions ADD COLUMN few_shot_examples JSON DEFAULT '[]'")
         )
 
 
@@ -105,6 +103,81 @@ async def _migrate_prompt_version_variable_specs_column(conn) -> None:
         await conn.execute(
             text("ALTER TABLE prompt_versions ADD COLUMN variable_specs JSON DEFAULT '[]'")
         )
+
+
+async def _migrate_prompt_specs_to_task_versions(conn) -> None:
+    """Move prompt contract metadata from prompt_versions to task_versions."""
+
+    task_result = await conn.execute(text("PRAGMA table_info(task_versions)"))
+    task_columns = {row[1] for row in task_result.fetchall()}
+    if not task_columns:
+        return
+
+    for column in ("image_slot_specs", "variable_specs"):
+        if column not in task_columns:
+            await conn.execute(
+                text(f"ALTER TABLE task_versions ADD COLUMN {column} JSON DEFAULT '[]'")
+            )
+            task_columns.add(column)
+
+    prompt_result = await conn.execute(text("PRAGMA table_info(prompt_versions)"))
+    prompt_columns = {row[1] for row in prompt_result.fetchall()}
+    if not prompt_columns:
+        return
+
+    spec_columns = {"image_slot_specs", "variable_specs"}
+    for column in spec_columns.intersection(prompt_columns):
+        await conn.execute(
+            text(
+                f"UPDATE task_versions "
+                f"SET {column} = CASE "
+                f"WHEN {column} IS NULL OR {column} = '[]' THEN "
+                f"COALESCE((SELECT pv.{column} FROM prompt_versions pv "
+                f"WHERE pv.prompt_id = task_versions.prompt_id "
+                f"AND pv.prompt_version_id = task_versions.prompt_version_id "
+                f"LIMIT 1), '[]') "
+                f"ELSE {column} END"
+            )
+        )
+
+    removable_columns = spec_columns | {"version_label", "parent_version_id"}
+    if not removable_columns.intersection(prompt_columns):
+        return
+
+    await conn.execute(
+        text(
+            "CREATE TABLE prompt_versions_new ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "prompt_version_id VARCHAR NOT NULL UNIQUE, "
+            "prompt_id VARCHAR NOT NULL, "
+            "system_prompt TEXT DEFAULT '', "
+            "user_template TEXT DEFAULT '', "
+            "format_instruction TEXT DEFAULT '', "
+            "notes TEXT DEFAULT '', "
+            "created_at VARCHAR, "
+            "updated_at VARCHAR"
+            ")"
+        )
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO prompt_versions_new "
+            "(id, prompt_version_id, prompt_id, system_prompt, user_template, "
+            "format_instruction, notes, created_at, updated_at) "
+            "SELECT id, prompt_version_id, prompt_id, "
+            "COALESCE(system_prompt, ''), COALESCE(user_template, ''), "
+            "COALESCE(format_instruction, ''), COALESCE(notes, ''), "
+            "created_at, updated_at FROM prompt_versions"
+        )
+    )
+    await conn.execute(text("DROP TABLE prompt_versions"))
+    await conn.execute(text("ALTER TABLE prompt_versions_new RENAME TO prompt_versions"))
+    await conn.execute(
+        text("CREATE UNIQUE INDEX IF NOT EXISTS ix_prompt_versions_prompt_version_id ON prompt_versions (prompt_version_id)")
+    )
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)")
+    )
 
 
 async def _migrate_result_snapshot_full_snapshot_columns(conn) -> None:
@@ -124,6 +197,24 @@ async def _migrate_result_snapshot_full_snapshot_columns(conn) -> None:
     if "image_dir" not in existing_columns:
         await conn.execute(
             text("ALTER TABLE result_snapshots ADD COLUMN image_dir VARCHAR")
+        )
+
+
+async def _migrate_snapshot_linked_task_version(conn) -> None:
+    """Add task-version linkage for result snapshots used as run examples."""
+
+    result = await conn.execute(text("PRAGMA table_info(result_snapshots)"))
+    existing_columns = {row[1] for row in result.fetchall()}
+    if "linked_task_version_id" not in existing_columns:
+        await conn.execute(
+            text("ALTER TABLE result_snapshots ADD COLUMN linked_task_version_id VARCHAR")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_result_snapshots_linked_task_version_id "
+                "ON result_snapshots (linked_task_version_id)"
+            )
         )
 
 async def _migrate_provider_config_cache_columns(conn) -> None:
@@ -295,12 +386,10 @@ async def _migrate_tasks_to_versions(conn) -> None:
             await conn.execute(
                 text(
                     "INSERT INTO prompt_versions "
-                    "(prompt_version_id, prompt_id, version_label, parent_version_id, "
-                    "system_prompt, user_template, format_instruction, notes, "
-                    "image_slot_specs, variable_specs, few_shot_examples, created_at, updated_at) "
-                    "VALUES (:prompt_version_id, :prompt_id, 'v1', NULL, :system_prompt, "
-                    ":user_template, :format_instruction, :notes, '[]', '[]', '[]', "
-                    ":created_at, :updated_at)"
+                    "(prompt_version_id, prompt_id, system_prompt, user_template, "
+                    "format_instruction, notes, created_at, updated_at) "
+                    "VALUES (:prompt_version_id, :prompt_id, :system_prompt, "
+                    ":user_template, :format_instruction, :notes, :created_at, :updated_at)"
                 ),
                 {
                     "prompt_version_id": prompt_version_id,
@@ -324,11 +413,13 @@ async def _migrate_tasks_to_versions(conn) -> None:
                     "INSERT INTO task_versions "
                     "(task_version_id, task_id, version_label, parent_version_id, prompt_id, "
                     "prompt_version_id, provider_config_id, model_id, model_parameters, "
-                    "output_contract, image_preprocess_config, pricing_profile_id, notes, "
+                    "output_contract, image_preprocess_config, image_slot_specs, "
+                    "variable_specs, pricing_profile_id, notes, "
                     "created_at, updated_at) "
                     "VALUES (:task_version_id, :task_id, 'v1', NULL, :prompt_id, "
                     ":prompt_version_id, :provider_config_id, :model_id, :model_parameters, "
-                    ":output_contract, :image_preprocess_config, :pricing_profile_id, :notes, "
+                    ":output_contract, :image_preprocess_config, '[]', '[]', "
+                    ":pricing_profile_id, :notes, "
                     ":created_at, :updated_at)"
                 ),
                 {

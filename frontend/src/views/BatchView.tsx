@@ -6,6 +6,8 @@ import {
   ChevronRight,
   Clock,
   Coins,
+  Download,
+  FileDown,
   Loader2,
   Play,
   RefreshCw,
@@ -69,6 +71,7 @@ export function BatchView() {
   const [isStarting, setIsStarting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<'jsonl' | 'csv' | null>(null);
 
   const [selectedItem, setSelectedItem] = useState<RunItemSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -201,8 +204,12 @@ export function BatchView() {
     return result;
   }, [items]);
 
-  const totalItems = items.length;
-  const completedCount = counts.succeeded + counts.failed + counts.cancelled;
+  const summary = (session?.summary ?? {}) as Record<string, number>;
+  const totalItems = summary.total_items ?? items.length;
+  const succeededCount = summary.succeeded_items ?? counts.succeeded;
+  const failedCount = summary.failed_items ?? counts.failed;
+  const cancelledCount = summary.cancelled_items ?? counts.cancelled;
+  const completedCount = succeededCount + failedCount + cancelledCount;
   const progress = totalItems > 0 ? (completedCount / totalItems) * 100 : 0;
 
   const totalCost = useMemo(
@@ -302,6 +309,22 @@ export function BatchView() {
     }
   }
 
+  async function handleExport(format: 'jsonl' | 'csv') {
+    if (!runId) return;
+    setExportingFormat(format);
+    try {
+      if (format === 'jsonl') {
+        await api.exportRunJsonl(runId);
+      } else {
+        await api.exportRunCsv(runId);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('batch.exportFailed'));
+    } finally {
+      setExportingFormat(null);
+    }
+  }
+
   function handleBackToSetup() {
     setPhase('setup');
     setRunId(null);
@@ -392,6 +415,8 @@ export function BatchView() {
             onRetry={handleRetryFailed}
             isRetrying={isRetrying}
             onViewItem={setSelectedItem}
+            onExport={handleExport}
+            exportingFormat={exportingFormat}
           />
         )}
       </section>
@@ -801,6 +826,8 @@ interface ResultsPanelProps {
   onRetry: () => void;
   isRetrying: boolean;
   onViewItem: (item: RunItemSummary) => void;
+  onExport?: (format: 'jsonl' | 'csv') => void;
+  exportingFormat?: 'jsonl' | 'csv' | null;
 }
 
 function ResultsPanel({
@@ -812,6 +839,8 @@ function ResultsPanel({
   onRetry,
   isRetrying,
   onViewItem,
+  onExport,
+  exportingFormat,
 }: ResultsPanelProps) {
   const { t } = useI18n();
 
@@ -835,19 +864,47 @@ function ResultsPanel({
               <span className="font-mono">{formatDuration(elapsedMs)}</span>
             </span>
           </div>
-          <button
-            type="button"
-            onClick={onRetry}
-            disabled={isRetrying || counts.failed === 0}
-            className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted transition-colors hover:bg-surface-800 hover:text-ink disabled:opacity-50"
-          >
-            {isRetrying ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <RefreshCw size={14} />
-            )}
-            {t('batch.retryFailed')}
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void onExport?.('jsonl')}
+              disabled={exportingFormat !== null}
+              className="btn-secondary inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs disabled:opacity-50"
+            >
+              {exportingFormat === 'jsonl' ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <FileDown size={12} />
+              )}
+              {t('batch.exportJsonl')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onExport?.('csv')}
+              disabled={exportingFormat !== null}
+              className="btn-secondary inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs disabled:opacity-50"
+            >
+              {exportingFormat === 'csv' ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Download size={12} />
+              )}
+              {t('batch.exportCsv')}
+            </button>
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={isRetrying || counts.failed === 0}
+              className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted transition-colors hover:border-danger/50 hover:text-danger disabled:opacity-50"
+            >
+              {isRetrying ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <RefreshCw size={12} />
+              )}
+              {t('batch.retryFailed')}
+            </button>
+          </div>
         </div>
       </section>
 

@@ -38,7 +38,13 @@ from app.schemas.internal_request import ImagePreprocessConfig, InternalRequest
 from app.schemas.model_config import ModelConfig, ModelConfigSnapshot
 from app.schemas.output_contract import OutputContract
 from app.schemas.pricing import PricingProfile, PricingSnapshot
-from app.schemas.prompt import PromptSnapshot, PromptVersion, PromptVersionData
+from app.schemas.prompt import (
+    ImageSlotSpec,
+    PromptSnapshot,
+    PromptVersion,
+    PromptVersionData,
+    VariableSpec,
+)
 from app.schemas.run_record import (
     AdapterInfo,
     Attempt,
@@ -77,6 +83,8 @@ class LabRunRequest:
         provider_config_id: str | None = None,
         image_resolution_enabled: bool = False,
         image_resolution_target: int = 1024,
+        image_slot_specs: list[ImageSlotSpec] | None = None,
+        variable_specs: list[VariableSpec] | None = None,
     ):
         self.sample = sample
         self.prompt = prompt
@@ -88,6 +96,8 @@ class LabRunRequest:
         self.provider_config_id = provider_config_id
         self.image_resolution_enabled = image_resolution_enabled
         self.image_resolution_target = image_resolution_target
+        self.image_slot_specs = image_slot_specs or []
+        self.variable_specs = variable_specs or []
 
 
 # ---------------------------------------------------------------------------
@@ -125,9 +135,18 @@ async def execute_lab_run(
         pricing=request.pricing,
         preprocess_config=preprocess_config,
     )
+    print(
+        f"[run_executor] sample_id={request.sample.sample_id} "
+        f"sample_images={len(request.sample.images)} "
+        f"internal_request_images={len(internal_request.images)}"
+    )
 
     # 2. Prepare snapshots for the Run Session --------------------------------
-    prompt_snapshot = _make_prompt_snapshot(request.prompt)
+    prompt_snapshot = _make_prompt_snapshot(
+        request.prompt,
+        image_slot_specs=request.image_slot_specs,
+        variable_specs=request.variable_specs,
+    )
     model_snapshot = ModelConfigSnapshot(
         model_config_id=request.model_config.model_config_id,
         provider_id=request.model_config.provider_id,
@@ -236,6 +255,8 @@ async def execute_lab_run(
         raw_text = result.normalized_response.text or ""
 
     parsed = parse_response(raw_text, request.output_contract)
+    if result.normalized_response:
+        parsed.reasoning_text = result.normalized_response.reasoning_text
 
     # 7. Calculate cost -------------------------------------------------------
     usage = result.usage or Usage(
@@ -293,7 +314,14 @@ async def execute_lab_run(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_prompt_snapshot(prompt: PromptVersion | PromptVersionData) -> PromptSnapshot:
+def _make_prompt_snapshot(
+    prompt: PromptVersion | PromptVersionData,
+    *,
+    image_slot_specs: list[ImageSlotSpec] | None = None,
+    variable_specs: list[VariableSpec] | None = None,
+) -> PromptSnapshot:
+    image_slot_specs = image_slot_specs or []
+    variable_specs = variable_specs or []
     if isinstance(prompt, PromptVersion):
         return PromptSnapshot(
             prompt_id=prompt.prompt_id,
@@ -302,19 +330,16 @@ def _make_prompt_snapshot(prompt: PromptVersion | PromptVersionData) -> PromptSn
             user_template=prompt.user_template,
             format_instruction=prompt.format_instruction,
             notes=prompt.notes,
-            image_slot_specs=prompt.image_slot_specs,
-            variable_specs=prompt.variable_specs,
-            few_shot_examples=prompt.few_shot_examples,
-            version_label=prompt.version_label,
+            image_slot_specs=image_slot_specs,
+            variable_specs=variable_specs,
         )
     return PromptSnapshot(
         system_prompt=prompt.system_prompt,
         user_template=prompt.user_template,
         format_instruction=prompt.format_instruction,
         notes=prompt.notes,
-        image_slot_specs=prompt.image_slot_specs,
-        variable_specs=prompt.variable_specs,
-        few_shot_examples=prompt.few_shot_examples,
+        image_slot_specs=image_slot_specs,
+        variable_specs=variable_specs,
     )
 
 

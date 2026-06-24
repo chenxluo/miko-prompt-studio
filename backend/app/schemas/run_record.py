@@ -142,6 +142,7 @@ class ParsedResponse(BaseModel):
     parsed: Any = None
     parse_status: ParseStatus = ParseStatus.NOT_PARSED
     parse_errors: list[dict[str, Any]] = Field(default_factory=list)
+    reasoning_text: str | None = None
 
 
 class StreamEvent(BaseModel):
@@ -151,6 +152,7 @@ class StreamEvent(BaseModel):
     delta: str | None = None
     usage: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+    finish_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------

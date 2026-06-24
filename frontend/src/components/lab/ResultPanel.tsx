@@ -7,13 +7,13 @@ import {
   ChevronDown,
   Clock,
   Coins,
-  Copy,
   Cpu,
   ImageIcon,
   Layers,
   Loader2,
   Sparkles,
   Terminal,
+  XCircle,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
@@ -22,7 +22,6 @@ import ReactMarkdown from 'react-markdown';
 import { useI18n } from '../../i18n';
 import { useSnapshotStore } from '../../store/snapshotStore';
 import { useLabStore } from '../../store/labStore';
-import { UseAsFewShotDialog } from '../prompts/UseAsFewShotDialog';
 import type { RunItemType, RunSession, RunItemSummary } from '../../types';
 import type { CreateResultSnapshotPayload } from '../../api/payloads';
 
@@ -33,7 +32,6 @@ export function ResultPanel() {
   const lastResult = useLabStore((state) => state.lastResult);
   const error = useLabStore((state) => state.error);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
-  const [isFewShotDialogOpen, setIsFewShotDialogOpen] = useState(false);
 
   if (isRunning && !lastRunItem) {
     return (
@@ -94,14 +92,6 @@ export function ResultPanel() {
           <Bookmark size={12} className="fill-accent" />
           {t('snapshot.save')}
         </button>
-        <button
-          type="button"
-          onClick={() => setIsFewShotDialogOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 bg-surface-800 px-2.5 py-1.5 text-xs font-medium text-ink-muted hover:bg-surface-700"
-        >
-          <Copy size={12} />
-          {t('prompt.useAsFewShot')}
-        </button>
       </div>
 
       {isSaveDialogOpen && lastResult && (
@@ -109,13 +99,6 @@ export function ResultPanel() {
           runSession={lastResult}
           runItem={lastRunItem}
           onClose={() => setIsSaveDialogOpen(false)}
-        />
-      )}
-
-      {isFewShotDialogOpen && (
-        <UseAsFewShotDialog
-          runItem={lastRunItem}
-          onClose={() => setIsFewShotDialogOpen(false)}
         />
       )}
 
@@ -260,11 +243,26 @@ function StatusBadge({ status }: { status: string }) {
       </span>
     );
   }
-  if (status === 'failed') {
+  if (status === 'failed' || status === 'timeout' || status === 'rate_limited' || status === 'blocked') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger">
         <AlertTriangle size={12} />
         {t('result.failed')}
+      </span>
+    );
+  }
+  if (status === 'cancelled') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-surface-800 px-2 py-0.5 text-xs font-medium text-ink-muted">
+        <XCircle size={12} />
+        {t('result.cancelled')}
+      </span>
+    );
+  }
+  if (status === 'skipped') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-surface-800 px-2 py-0.5 text-xs font-medium text-ink-muted">
+        {t('result.skipped')}
       </span>
     );
   }
@@ -277,8 +275,9 @@ function StatusBadge({ status }: { status: string }) {
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-surface-800 px-2 py-0.5 text-xs font-medium text-ink-muted">
-      {status}
+    <span className="inline-flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger">
+      <AlertTriangle size={12} />
+      {status || t('result.error')}
     </span>
   );
 }
@@ -483,11 +482,14 @@ function SaveSnapshotDialog({
 }) {
   const { t } = useI18n();
   const createSnapshot = useSnapshotStore((state) => state.createSnapshot);
+  const activeTaskId = useLabStore((state) => state.activeTaskId);
+  const activeTaskVersionId = useLabStore((state) => state.activeTaskVersionId);
   const [name, setName] = useState(runSession.name || `${t('snapshot.title')} ${new Date().toLocaleString()}`);
   const [description, setDescription] = useState('');
   const [tags, setTags] = useState('');
   const [notes, setNotes] = useState('');
   const [starred, setStarred] = useState(false);
+  const [setAsTaskExample, setSetAsTaskExample] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   async function handleSave() {
@@ -505,6 +507,7 @@ function SaveSnapshotDialog({
       tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean),
       notes: notes.trim() || undefined,
       starred,
+      linked_task_version_id: setAsTaskExample && activeTaskVersionId ? activeTaskVersionId : undefined,
     };
     const snapshot = await createSnapshot(payload);
     setIsSaving(false);
@@ -572,6 +575,17 @@ function SaveSnapshotDialog({
             />
             {t('snapshot.starred')}
           </label>
+          {activeTaskId && (
+            <label className="flex items-center gap-2 text-xs text-ink-muted">
+              <input
+                type="checkbox"
+                checked={setAsTaskExample}
+                onChange={(event) => setSetAsTaskExample(event.target.checked)}
+                className="rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent"
+              />
+              {t('snapshot.setAsTaskExample')}
+            </label>
+          )}
         </div>
         <div className="mt-5 flex justify-end gap-2">
           <button

@@ -3,7 +3,6 @@ import {
   Check,
   Clock,
   Coins,
-  Copy,
   Cpu,
   ImageIcon,
   Loader2,
@@ -23,7 +22,6 @@ import * as api from '../api/client';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
 import { useSnapshotStore } from '../store/snapshotStore';
-import { UseAsFewShotDialog } from '../components/prompts/UseAsFewShotDialog';
 import type {
   ImageRef,
   ModelParameters,
@@ -475,7 +473,6 @@ function SnapshotDetailDrawer({
 }: SnapshotDetailDrawerProps) {
   const { t } = useI18n();
   const { snapshot, run_item } = detail;
-  const [isFewShotDialogOpen, setIsFewShotDialogOpen] = useState(false);
 
   return (
     <div
@@ -525,16 +522,6 @@ function SnapshotDetailDrawer({
 
           <div className="mt-6 flex gap-2">
             <LoadIntoLabButton detail={detail} />
-            {run_item && (
-              <button
-                type="button"
-                onClick={() => setIsFewShotDialogOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted hover:bg-surface-800"
-              >
-                <Copy size={12} />
-                {t('prompt.useAsFewShot')}
-              </button>
-            )}
             <button
               type="button"
               onClick={() => onDelete(snapshot)}
@@ -549,13 +536,6 @@ function SnapshotDetailDrawer({
               {t('snapshot.delete')}
             </button>
           </div>
-
-          {isFewShotDialogOpen && run_item && (
-            <UseAsFewShotDialog
-              runItem={run_item}
-              onClose={() => setIsFewShotDialogOpen(false)}
-            />
-          )}
         </div>
       </div>
     </div>

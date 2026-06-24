@@ -4,7 +4,6 @@ import importlib
 import pytest
 from fastapi.testclient import TestClient
 
-from app.schemas.prompt import PromptVersion, VariableSpec
 from app.schemas.sample_record import SampleRecord
 from app.services.prompt_renderer import (
     extract_variable_specs,
@@ -88,23 +87,13 @@ def test_missing_vars_still_resolve_to_empty_string() -> None:
     assert prompt.system_prompt == "System "
 
 
-def test_prompt_version_round_trip_includes_variable_specs(client: TestClient) -> None:
+def test_prompt_version_round_trip_excludes_variable_specs(client: TestClient) -> None:
     response = client.post(
         "/api/prompts",
         json={
             "name": "Prompt Contract",
             "system_prompt": "Use {{vars.tone}}",
             "user_template": "Describe {{vars.title}}",
-            "variable_specs": [
-                {
-                    "var_id": "title",
-                    "label": "Title",
-                    "description": "Image title",
-                    "type": "string",
-                    "required": True,
-                    "default_value": "",
-                }
-            ],
         },
     )
     assert response.status_code == 200, response.text
@@ -114,25 +103,4 @@ def test_prompt_version_round_trip_includes_variable_specs(client: TestClient) -
         f"/api/prompts/{created['prompt_id']}/versions/{created['prompt_version_id']}"
     )
     assert fetched.status_code == 200, fetched.text
-    assert fetched.json()["variable_specs"] == [
-        {
-            "var_id": "title",
-            "label": "Title",
-            "description": "Image title",
-            "type": "string",
-            "required": True,
-            "default_value": "",
-        }
-    ]
-
-    version = PromptVersion(**fetched.json())
-    assert version.variable_specs == [
-        VariableSpec(
-            var_id="title",
-            label="Title",
-            description="Image title",
-            type="string",
-            required=True,
-            default_value="",
-        )
-    ]
+    assert "variable_specs" not in fetched.json()

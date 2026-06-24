@@ -13,7 +13,6 @@ from app.database import get_session_factory
 from app.models.run import AttemptORM, RunItemORM, RunSessionORM
 from app.schemas.common import RunItemType, RunSessionStatus, RunType, utc_now
 from app.schemas.model_config import ModelConfigSnapshot
-from app.schemas.prompt import PromptVersion
 from app.schemas.run_record import ConfigSnapshot, RunSource, RunSummary
 from app.schemas.sample_record import SampleRecord
 from app.services.batch_executor import (
@@ -91,7 +90,11 @@ async def _create_session(db: AsyncSession, spec: CompareRunSpec) -> None:
     config_snapshot = ConfigSnapshot()
     currency = "USD"
     if request is not None:
-        prompt_snapshot = _make_prompt_snapshot(request.prompt)
+        prompt_snapshot = _make_prompt_snapshot(
+            request.prompt,
+            image_slot_specs=request.image_slot_specs,
+            variable_specs=request.variable_specs,
+        )
         model_snapshot = ModelConfigSnapshot(
             model_config_id=request.model_config.model_config_id,
             provider_id=request.model_config.provider_id,
@@ -222,8 +225,8 @@ async def _execute_one_item(
 ) -> None:
     template = cell.variant.request_template
     mapped_sample = cell.sample
-    if isinstance(template.prompt, PromptVersion):
-        mapped_sample = map_sample_images_to_prompt_slots(cell.sample, template.prompt)
+    if template.image_slot_specs:
+        mapped_sample = map_sample_images_to_prompt_slots(cell.sample, template.image_slot_specs)
     request = LabRunRequest(
         sample=mapped_sample,
         prompt=template.prompt,
@@ -235,6 +238,8 @@ async def _execute_one_item(
         provider_config_id=template.provider_config_id,
         image_resolution_enabled=template.image_resolution_enabled,
         image_resolution_target=template.image_resolution_target,
+        image_slot_specs=template.image_slot_specs,
+        variable_specs=template.variable_specs,
     )
 
     compare_item.status = RunItemType.RUNNING.value

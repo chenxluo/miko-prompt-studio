@@ -38,6 +38,47 @@ def _provider(client: TestClient) -> str:
     return response.json()["provider_config_id"]
 
 
+IMAGE_SPECS = [
+    {
+        "slot_id": "front_slot",
+        "role_hint": "front",
+        "label": "Front image",
+        "description": "Primary view",
+        "required": True,
+        "min_count": 1,
+        "max_count": 1,
+    },
+    {
+        "slot_id": "detail_slot",
+        "role_hint": "detail",
+        "label": "Detail images",
+        "description": "Optional detail views",
+        "required": False,
+        "min_count": 0,
+        "max_count": 3,
+    },
+]
+
+VARIABLE_SPECS = [
+    {
+        "var_id": "title",
+        "label": "Title",
+        "description": "Object title",
+        "type": "string",
+        "required": True,
+        "default_value": "",
+    },
+    {
+        "var_id": "optional_hint",
+        "label": "Hint",
+        "description": "Optional annotation hint",
+        "type": "string",
+        "required": False,
+        "default_value": "focus on defects",
+    },
+]
+
+
 def _prompt_with_contract(client: TestClient) -> dict:
     response = client.post(
         "/api/prompts",
@@ -46,44 +87,6 @@ def _prompt_with_contract(client: TestClient) -> dict:
             "system_prompt": "You are a careful image annotator.",
             "user_template": "Compare {{vars.title}} with {{vars.optional_hint}}.",
             "format_instruction": "Return JSON.",
-            "image_slot_specs": [
-                {
-                    "slot_id": "front_slot",
-                    "role_hint": "front",
-                    "label": "Front image",
-                    "description": "Primary view",
-                    "required": True,
-                    "min_count": 1,
-                    "max_count": 1,
-                },
-                {
-                    "slot_id": "detail_slot",
-                    "role_hint": "detail",
-                    "label": "Detail images",
-                    "description": "Optional detail views",
-                    "required": False,
-                    "min_count": 0,
-                    "max_count": 3,
-                },
-            ],
-            "variable_specs": [
-                {
-                    "var_id": "title",
-                    "label": "Title",
-                    "description": "Object title",
-                    "type": "string",
-                    "required": True,
-                    "default_value": "",
-                },
-                {
-                    "var_id": "optional_hint",
-                    "label": "Hint",
-                    "description": "Optional annotation hint",
-                    "type": "string",
-                    "required": False,
-                    "default_value": "focus on defects",
-                },
-            ],
         },
     )
     assert response.status_code == 200, response.text
@@ -104,6 +107,8 @@ def _task(client: TestClient, prompt: dict, provider_config_id: str) -> dict:
                 "model_parameters": {"temperature": 0.2},
                 "output_contract": {"mode": "strict_json"},
                 "image_preprocess_config": {"enabled": False},
+                "image_slot_specs": IMAGE_SPECS,
+                "variable_specs": VARIABLE_SPECS,
                 "notes": "stored task version notes",
             },
         },

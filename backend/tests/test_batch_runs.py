@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.schemas.common import AttemptStatus
-from app.schemas.prompt import ImageSlotSpec, PromptVersion
+from app.schemas.prompt import ImageSlotSpec
 from app.schemas.run_record import AdapterResult, NormalizedResponse, Usage
 from app.schemas.sample_record import ImageRef, SampleRecord
 from app.services.batch_executor import map_sample_images_to_prompt_slots
@@ -140,16 +140,12 @@ def test_map_sample_images_to_prompt_slots_by_role() -> None:
             ImageRef(image_id="target", role="target", uri="data:image/png;base64,ccc", order=2),
         ],
     )
-    prompt = PromptVersion(
-        prompt_id="prompt_1",
-        prompt_version_id="pv_1",
-        image_slot_specs=[
-            ImageSlotSpec(slot_id="slot_target", role_hint="target", required=True),
-            ImageSlotSpec(slot_id="slot_mask", role_hint="mask", required=True),
-        ],
-    )
+    image_slot_specs = [
+        ImageSlotSpec(slot_id="slot_target", role_hint="target", required=True),
+        ImageSlotSpec(slot_id="slot_mask", role_hint="mask", required=True),
+    ]
 
-    mapped = map_sample_images_to_prompt_slots(sample, prompt)
+    mapped = map_sample_images_to_prompt_slots(sample, image_slot_specs)
 
     assert [image.image_id for image in sorted(mapped.images, key=lambda image: image.order)] == [
         "target",
@@ -160,11 +156,7 @@ def test_map_sample_images_to_prompt_slots_by_role() -> None:
 
 def test_map_sample_images_to_prompt_slots_missing_required_fails() -> None:
     sample = SampleRecord(sample_id="s1", images=[])
-    prompt = PromptVersion(
-        prompt_id="prompt_1",
-        prompt_version_id="pv_1",
-        image_slot_specs=[ImageSlotSpec(slot_id="slot_target", role_hint="target", required=True)],
-    )
+    image_slot_specs = [ImageSlotSpec(slot_id="slot_target", role_hint="target", required=True)]
 
     with pytest.raises(ValueError, match="missing image"):
-        map_sample_images_to_prompt_slots(sample, prompt)
+        map_sample_images_to_prompt_slots(sample, image_slot_specs)

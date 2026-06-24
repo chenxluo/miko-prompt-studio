@@ -1,8 +1,8 @@
 # Miko Prompt Studio — 开发文档
 
-> 随开发进度持续更新的配套文档。最后更新：2026-06-23
+> 随开发进度持续更新的配套文档。最后更新：2026-06-24
 
-**版本：0.2.0**
+**版本：0.3.0**
 
 ## 1. 项目定位
 
@@ -222,6 +222,7 @@ run_executor.execute_lab_run()
 | DELETE | `/api/tasks/{id}` | 删除 Task 及所有版本 |
 | POST | `/api/tasks/{id}/versions` | 创建 Task 新版本 |
 | GET | `/api/tasks/{id}/versions/{vid}/input-spec` | 生成 TaskVersion 输入说明文档 |
+| GET | `/api/tasks/{id}/versions/{vid}/snapshots` | 列出关联到此版本的快照（含响应数据） |
 | POST | `/api/batch-runs` | 创建 Batch 运行（Task + SampleSet） |
 | POST | `/api/batch-runs/estimate` | 估算 Batch 成本 |
 | GET | `/api/batch-runs/{id}/status` | 查询 Batch 运行状态 |
@@ -233,7 +234,10 @@ run_executor.execute_lab_run()
 | POST | `/api/compare-runs/{id}/cancel` | 取消 Compare 运行 |
 | POST | `/api/upload/image` | 上传图片，返回 url |
 | GET | `/api/uploads/{filename}` | 服务上传的图片文件 |
+| GET | `/api/sample-images?path=...` | 代理服务任意路径的图片文件（用于样本集绝对路径） |
 | GET | `/api/snapshots/{snapshot_id}/images/{filename}` | 服务快照持久化的图片文件 |
+| GET | `/api/runs/{id}/export/jsonl` | 导出运行结果为 JSONL（含输入图片路径、变量、prompt） |
+| GET | `/api/runs/{id}/export/csv` | 导出运行结果为 CSV（含输入图片路径、变量、prompt） |
 | POST | `/api/import/csv/preview` | 预览 CSV |
 | POST | `/api/import/csv` | 导入 CSV 为 Sample Set |
 
@@ -281,9 +285,26 @@ run_executor.execute_lab_run()
 - [x] **输入说明文档**：`GET /api/tasks/{id}/versions/{vid}/input-spec` 生成完整输入契约（prompt + slots + variables + CSV/JSONL 示例），前端一键复制
 - [x] **ImagePanel 统一槽位网格**：槽位与图像合并为统一网格，槽位即角色，上传自动分配、空槽位可编辑设置、Focus Mode 大图对比
 - [x] **变量编辑器合并**：声明与使用合为一体（var_id + 值输入 + 齿轮展开元数据），快捷插入变量 + 语法帮助
+
+### Phase 2（v0.3.0 — Prompt 简化 + 快照示例 + UX 改进）
+- [x] **模型参数 UX**：temperature/top_p 开关（关→null，开→上次值）；thinking 三态（默认/思考/不思考 → null/true/false）
+- [x] **reasoning_text 持久化**：`ParsedResponse` 新增 `reasoning_text` 字段，思考过程保存到数据库
+- [x] **错误状态修复**：StatusBadge 处理 failed/timeout/rate_limited/blocked/cancelled/skipped；catch 块设置 lastRunItem 状态
+- [x] **流式截断检测**：`finish_reason` 从 SSE → StreamEvent.done → `_result_from_stream_events` 流转，length/content_filter 设错误状态
+- [x] **Prompt 简化重构**：PromptVersion 仅保留文本字段（system_prompt/user_template/format_instruction/notes）；specs（image_slot_specs/variable_specs）移至 TaskVersion；移除 few_shot_examples
+- [x] **TasksView 两级抽屉**：Level 1 = 任务概览；Level 2 = 版本详情（Prompt 文本、image slots、variables、模型配置、输出契约、CSV 列/示例）；InputSpecModal 集成至 Level 2
+- [x] **Snapshot-Task 链接**：`ResultSnapshotORM.linked_task_version_id` 列；`GET /api/tasks/{id}/versions/{vid}/snapshots` 端点；SnapshotLinkPickerModal；SaveSnapshotDialog 复选框
+- [x] **快照示例预览**：左侧 520px 面板展示输入缩略图 + 变量 + 可滚动响应文本 + 元信息；点击卡片切换右侧详情视图
+- [x] **条件块下拉菜单**：插入条件块改为下拉选择变量规格，替代文本输入框
+- [x] **Task 版本保存修复**：`resolvePromptIds` 始终创建新 PromptVersion，不再复用旧 ID
+- [x] **样本集图片代理**：`GET /api/sample-images?path=...` 端点代理任意路径图片；SamplesView 使用代理端点替代无效的 `file:///`
+- [x] **样本集图片预览**：缩略图增大至 80px，点击弹出全屏预览
+- [x] **批量进度条修复**：使用 `session.summary.total_items` 作为分母，不再随轮询增长
+- [x] **批量完成面板导出**：ResultsPanel 新增 JSONL/CSV 导出按钮，无需跳转运行历史
+- [x] **导出格式增强**：JSONL/CSV 导出包含输入信息（images 路径/角色、vars、rendered prompt），不含 base64 uri
 - [ ] Review 标签系统 UI
-- [ ] 导出（JSONL / CSV / 文件夹）
 - [ ] Python Import Script
+- [ ] 批量运行并发控制 + 重试分流（并发过载/网络问题/安全拦截区分）
 - [ ] 更多原生 adapter（Google Vertex、阿里百炼）
 - [ ] 更丰富的图片预处理策略 UI（resize/crop/quality 可视化配置）
 - [ ] 系统 keychain 集成
@@ -380,7 +401,12 @@ npm run dev    # 项目根目录，concurrently 启动后端+前端+Electron
 | Task 版本管理 | Task header + TaskVersion | TaskVersion 引用 PromptVersion，不复制内容 |
 | 变量语法 | `{{vars.x}}` + `{{#vars.x}}...{{/vars.x}}` | 简单条件块，不引入模板引擎 |
 | 图像槽位模型 | 槽位即角色（ImageSlotSpec.role_hint = ImageRef.role） | 消除独立 role 手填，上传自动匹配 |
-| 输入契约位置 | PromptVersion 上声明 image_slot_specs + variable_specs | TaskVersion 引用 PromptVersion 即获得契约 |
+| 输入契约位置 | TaskVersion 上声明 image_slot_specs + variable_specs | Prompt 简化后 specs 移至 TaskVersion，PromptVersion 仅保留文本 |
+| Few-shot 示例 | 移除 TaskVersion.few_shot_examples，改用 Snapshot-Task 链接 | 快照关联到 TaskVersion，哪个版本跑出什么结果一目了然 |
+| 快照-Task 关联 | `linked_task_version_id` 1:1 | 一个快照关联一个 TaskVersion，够用且简单 |
+| 模型参数持久化 | `exclude_none=True`，前端合并 `DEFAULT_MODEL_PARAMETERS` | null 值不入库，加载时与默认值合并 |
+| 样本集图片显示 | `GET /api/sample-images?path=...` 后端代理 | 浏览器禁止 `file://`，代理端点安全读取本地文件 |
+| 导出格式 | 含输入信息（images 路径/角色、vars、prompt），不含 base64 | 自包含但不过大；图片通过 path 关联原图 |
 | CSV 导入校验 | 导入时按 TaskVersion 契约校验 | 提前发现不匹配，避免运行时失败 |
 | Compare 运行 | samples × task_versions 矩阵 | 复用 batch_executor 生命周期，run_type="compare" |
 | ImagePanel 设计 | 统一槽位网格（槽位=图像容器） | 槽位声明与图像管理一体化，role 自动分配 |

@@ -10,7 +10,6 @@ import csv
 import hashlib
 import io
 import json
-import re
 import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -148,6 +147,8 @@ class LabRunPayload(BaseModel):
     api_base_url: str | None = None
 
     output_contract: OutputContract = Field(default_factory=OutputContract)
+    image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
+    variable_specs: list[VariableSpec] = Field(default_factory=list)
     pricing_profile_id: str | None = None
     image_resolution_enabled: bool = False
     image_resolution_target: int = 1024
@@ -211,9 +212,6 @@ class SavePromptPayload(BaseModel):
     user_template: str = ""
     format_instruction: str = ""
     notes: str = ""
-    image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
-    variable_specs: list[VariableSpec] = Field(default_factory=list)
-    few_shot_examples: list[FewShotExample] = Field(default_factory=list)
     prompt_id: str | None = None  # if provided, creates a new version
 
 
@@ -233,6 +231,7 @@ class CreateResultSnapshotPayload(BaseModel):
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
     starred: bool = False
+    linked_task_version_id: str | None = None
 
 
 class UpdateResultSnapshotPayload(BaseModel):
@@ -243,6 +242,7 @@ class UpdateResultSnapshotPayload(BaseModel):
     starred: bool | None = None
     accepted: bool | None = None
     rating: int | None = None
+    linked_task_version_id: str | None = None
 
 
 class ApiKeyPayload(BaseModel):
@@ -460,6 +460,8 @@ async def lab_run(payload: LabRunPayload, db: AsyncSession = Depends(get_db)):
         provider_config_id=payload.provider_config_id,
         image_resolution_enabled=payload.image_resolution_enabled,
         image_resolution_target=payload.image_resolution_target,
+        image_slot_specs=payload.image_slot_specs,
+        variable_specs=payload.variable_specs,
     )
 
     if payload.parameters.stream is True:
@@ -516,15 +518,10 @@ def _prompt_version_to_schema(row: PromptVersionORM) -> PromptVersion:
     return PromptVersion(
         prompt_version_id=row.prompt_version_id,
         prompt_id=row.prompt_id,
-        version_label=row.version_label,
-        parent_version_id=row.parent_version_id,
         system_prompt=row.system_prompt,
         user_template=row.user_template,
         format_instruction=row.format_instruction,
         notes=row.notes,
-        image_slot_specs=row.image_slot_specs or [],
-        variable_specs=row.variable_specs or [],
-        few_shot_examples=row.few_shot_examples or [],
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -606,6 +603,8 @@ async def _resolve_batch_template(payload: BatchRunPayload, db: AsyncSession) ->
         provider_config_id=task_version.provider_config_id,
         image_resolution_enabled=bool(image_config.get("enabled", False)),
         image_resolution_target=int(image_config.get("target", 1024)),
+        image_slot_specs=task_version.image_slot_specs,
+        variable_specs=task_version.variable_specs,
     )
 
 
@@ -1005,6 +1004,8 @@ def _task_version_to_schema(row: TaskVersionORM) -> TaskVersion:
         model_parameters=ModelParameters(**(row.model_parameters or {})),
         output_contract=OutputContract(**(row.output_contract or {})),
         image_preprocess_config=row.image_preprocess_config or {},
+        image_slot_specs=row.image_slot_specs or [],
+        variable_specs=row.variable_specs or [],
         pricing_profile_id=row.pricing_profile_id,
         notes=row.notes,
         created_at=row.created_at,
@@ -1039,8 +1040,8 @@ def _task_to_schema(
         description=row.description or "",
         current_version_id=row.current_version_id,
         tags=row.tags or [],
-        current_version=_task_version_summary(current_version),
-        versions=[_task_version_summary(version) for version in versions] if versions is not None else None,
+        current_version=_task_version_to_schema(current_version) if current_version else None,
+        versions=[_task_version_to_schema(version) for version in versions] if versions is not None else None,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -1054,6 +1055,8 @@ def _apply_version_data(row: TaskVersionORM, data: TaskVersionDataSchema) -> Non
     row.model_parameters = data.model_parameters.model_dump(mode="json", exclude_none=True)
     row.output_contract = data.output_contract.model_dump(mode="json", exclude_none=True)
     row.image_preprocess_config = data.image_preprocess_config
+    row.image_slot_specs = [spec.model_dump(mode="json") for spec in data.image_slot_specs]
+    row.variable_specs = [spec.model_dump(mode="json") for spec in data.variable_specs]
     row.pricing_profile_id = data.pricing_profile_id
     row.notes = data.notes
 
@@ -1120,6 +1123,10 @@ async def _prompt_version_for_task_version(
     if prompt_row is None:
         raise HTTPException(404, f"Prompt version '{task_version.prompt_version_id}' not found.")
     return _prompt_version_to_schema(prompt_row)
+
+
+async def _task_version_schema_by_id(task_version_id: str, db: AsyncSession) -> TaskVersion:
+    return _task_version_to_schema(await _get_task_version_by_id_or_404(task_version_id, db))
 
 
 async def _current_task_version(row: TaskORM, db: AsyncSession) -> TaskVersionORM | None:
@@ -1236,6 +1243,77 @@ async def get_task_input_spec(
     )
 
 
+@app.get("/api/tasks/{task_id}/versions/{task_version_id}/snapshots")
+async def list_task_version_snapshots(
+    task_id: str,
+    task_version_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_task_version_or_404(task_id, task_version_id, db)
+
+    # LEFT JOIN run_items + attempts so the caller gets response preview data
+    # (response_text, reasoning_text, parsed_output, usage, latency_ms, status)
+    # alongside each snapshot without an extra round-trip per snapshot.
+    stmt = (
+        select(ResultSnapshotORM, RunItemORM, AttemptORM)
+        .outerjoin(
+            RunItemORM,
+            RunItemORM.run_item_id == ResultSnapshotORM.run_item_id,
+        )
+        .outerjoin(
+            AttemptORM,
+            (AttemptORM.attempt_id == ResultSnapshotORM.attempt_id)
+            & (AttemptORM.run_item_id == ResultSnapshotORM.run_item_id),
+        )
+        .where(ResultSnapshotORM.linked_task_version_id == task_version_id)
+        .order_by(ResultSnapshotORM.created_at.desc())
+    )
+    rows = (await db.execute(stmt)).all()
+
+    snapshots: list[dict[str, Any]] = []
+    for snap_row, run_item, attempt in rows:
+        snap = _result_snapshot_to_schema(snap_row).model_dump(mode="json")
+
+        response_text: str | None = None
+        reasoning_text: str | None = None
+        parsed_output: Any = None
+        usage: dict[str, Any] | None = None
+        latency_ms: int | None = None
+        run_item_status: str | None = None
+
+        if attempt is not None:
+            norm_resp = attempt.normalized_response or {}
+            response_text = norm_resp.get("text")
+            reasoning_text = norm_resp.get("reasoning_text")
+            usage = attempt.usage
+            latency_ms = attempt.latency_ms
+            run_item_status = attempt.status
+
+        if run_item is not None:
+            resp = run_item.response or {}
+            if response_text is None:
+                response_text = resp.get("raw_text")
+            if reasoning_text is None:
+                reasoning_text = resp.get("reasoning_text")
+            parsed_output = resp.get("parsed")
+            if usage is None:
+                usage = run_item.usage or None
+            if latency_ms is None:
+                latency_ms = run_item.latency_ms
+            if run_item_status is None:
+                run_item_status = run_item.status
+
+        snap["response_text"] = response_text
+        snap["reasoning_text"] = reasoning_text
+        snap["parsed_output"] = parsed_output
+        snap["usage"] = usage
+        snap["latency_ms"] = latency_ms
+        snap["run_item_status"] = run_item_status
+        snapshots.append(snap)
+
+    return snapshots
+
+
 @app.put("/api/tasks/{task_id}")
 async def update_task(task_id: str, payload: UpdateTaskPayload, db: AsyncSession = Depends(get_db)):
     row = await _get_task_or_404(task_id, db)
@@ -1308,6 +1386,7 @@ def _result_snapshot_to_schema(row: ResultSnapshotORM) -> ResultSnapshotSchema:
         provider_id=row.provider_id,
         model_id=row.model_id,
         prompt_version_id=row.prompt_version_id,
+        linked_task_version_id=row.linked_task_version_id,
         thumbnail_image_uri=row.thumbnail_image_uri,
         internal_request_snapshot=row.internal_request_snapshot,
         config_snapshot=row.config_snapshot,
@@ -1478,6 +1557,7 @@ async def create_result_snapshot(
         provider_id=provider_id,
         model_id=model_id,
         prompt_version_id=prompt_version_id,
+        linked_task_version_id=payload.linked_task_version_id,
         thumbnail_image_uri=thumbnail_image_uri,
         internal_request_snapshot=None,
         config_snapshot=None,
@@ -1497,9 +1577,21 @@ async def create_result_snapshot(
         run_item.internal_request_snapshot if run_item is not None else None
     ) or {}
     images = request_snapshot.get("images") or []
+    print(
+        f"[snapshot] run_item_id={payload.run_item_id} "
+        f"images_in_run_item={len(images)}"
+    )
     persisted_images = persist_request_images(images, snapshot_dir)
+    print(
+        f"[snapshot] after persist_request_images: "
+        f"persisted_count={len(persisted_images)}"
+    )
     served_images = rewrite_image_uris(
         persisted_images, f"/api/result-snapshots/{snapshot_id}/images"
+    )
+    print(
+        f"[snapshot] after rewrite_image_uris: "
+        f"served_count={len(served_images)}"
     )
     request_snapshot = {**request_snapshot, "images": served_images}
 
@@ -1521,6 +1613,7 @@ async def list_result_snapshots(
     tag: str | None = None,
     provider_id: str | None = None,
     model_id: str | None = None,
+    linked_task_version_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     limit = max(0, min(limit, 200))
@@ -1538,6 +1631,8 @@ async def list_result_snapshots(
         stmt = stmt.where(ResultSnapshotORM.provider_id == provider_id)
     if model_id:
         stmt = stmt.where(ResultSnapshotORM.model_id == model_id)
+    if linked_task_version_id:
+        stmt = stmt.where(ResultSnapshotORM.linked_task_version_id == linked_task_version_id)
     stmt = stmt.order_by(ResultSnapshotORM.created_at.desc()).limit(limit)
     result = await db.execute(stmt)
     return [
@@ -1638,6 +1733,8 @@ async def update_result_snapshot(
         row.accepted = payload.accepted
     if "rating" in fields:
         row.rating = payload.rating
+    if "linked_task_version_id" in fields:
+        row.linked_task_version_id = payload.linked_task_version_id
     row.updated_at = datetime.utcnow().isoformat()
     await db.commit()
     await db.refresh(row)
@@ -1789,6 +1886,26 @@ async def export_run_jsonl(run_id: str, db: AsyncSession = Depends(get_db)):
     lines = []
     for item in items:
         item_data = _run_item_to_dict(item)
+        # Extract input information from the internal request snapshot so the
+        # exported record is self-contained: the reader can associate each
+        # model response with the images and variables that produced it.
+        req_snap = item_data.get("internal_request_snapshot") or {}
+        input_images = []
+        for img in req_snap.get("images") or []:
+            if not isinstance(img, dict):
+                continue
+            resolved = img.get("resolved") or {}
+            input_images.append({
+                "request_image_id": img.get("request_image_id"),
+                "source_image_id": img.get("source_image_id"),
+                "role": img.get("role"),
+                "path": img.get("path"),
+                "mime_type": resolved.get("mime_type") or img.get("mime_type"),
+                "display_name": img.get("display_name"),
+                "order": img.get("order"),
+            })
+        prompt_spec = req_snap.get("prompt") or {}
+        render_context = prompt_spec.get("render_context") or {}
         lines.append(
             json.dumps(
                 {
@@ -1798,6 +1915,13 @@ async def export_run_jsonl(run_id: str, db: AsyncSession = Depends(get_db)):
                     "status": item_data["status"],
                     "model_id": item_data["model_id"],
                     "provider_id": item_data["provider_id"],
+                    "input": {
+                        "images": input_images,
+                        "vars": render_context.get("vars") or {},
+                        "system_prompt": prompt_spec.get("system_prompt"),
+                        "user_prompt": prompt_spec.get("user_prompt"),
+                        "format_instruction": prompt_spec.get("format_instruction"),
+                    },
                     "response": item_data["response"] or {},
                     "usage": item_data["usage"] or {},
                     "cost": item_data["cost"] or {},
@@ -1837,6 +1961,10 @@ async def export_run_csv(run_id: str, db: AsyncSession = Depends(get_db)):
         "status",
         "model_id",
         "provider_id",
+        "input_images",
+        "input_vars",
+        "system_prompt",
+        "user_prompt",
         "latency_ms",
         "input_tokens",
         "output_tokens",
@@ -1864,6 +1992,19 @@ async def export_run_csv(run_id: str, db: AsyncSession = Depends(get_db)):
         labels = review.get("labels", [])
         if not isinstance(labels, list):
             labels = [labels]
+        # Extract input information from the internal request snapshot.
+        req_snap = item_data.get("internal_request_snapshot") or {}
+        prompt_spec = req_snap.get("prompt") or {}
+        render_context = prompt_spec.get("render_context") or {}
+        input_images = []
+        for img in req_snap.get("images") or []:
+            if not isinstance(img, dict):
+                continue
+            resolved = img.get("resolved") or {}
+            path = img.get("path") or ""
+            role = img.get("role") or ""
+            input_images.append(f"{role}:{path}")
+        input_vars = render_context.get("vars") or {}
         writer.writerow(
             {
                 "run_id": session_data["run_id"],
@@ -1872,6 +2013,10 @@ async def export_run_csv(run_id: str, db: AsyncSession = Depends(get_db)):
                 "status": item_data["status"],
                 "model_id": item_data["model_id"],
                 "provider_id": item_data["provider_id"],
+                "input_images": "; ".join(input_images),
+                "input_vars": _csv_value(input_vars),
+                "system_prompt": prompt_spec.get("system_prompt"),
+                "user_prompt": prompt_spec.get("user_prompt"),
                 "latency_ms": item_data["latency_ms"],
                 "input_tokens": usage.get("input_tokens"),
                 "output_tokens": usage.get("output_tokens"),
@@ -2106,22 +2251,14 @@ async def delete_sample_set(sample_set_id: str, db: AsyncSession = Depends(get_d
 # Prompts
 # ---------------------------------------------------------------------------
 
-_VERSION_LABEL_RE = re.compile(r"^v(\d+)$")
-
-
 def _prompt_version_to_dict(version: PromptVersionORM) -> dict[str, Any]:
     return {
         "prompt_version_id": version.prompt_version_id,
         "prompt_id": version.prompt_id,
-        "version_label": version.version_label,
-        "parent_version_id": version.parent_version_id,
         "system_prompt": version.system_prompt,
         "user_template": version.user_template,
         "format_instruction": version.format_instruction,
         "notes": version.notes,
-        "image_slot_specs": version.image_slot_specs or [],
-        "variable_specs": version.variable_specs or [],
-        "few_shot_examples": version.few_shot_examples or [],
         "created_at": version.created_at,
         "updated_at": version.updated_at,
     }
@@ -2149,19 +2286,7 @@ def _prompt_to_dict(prompt: PromptORM, versions: list[PromptVersionORM]) -> dict
 
 
 def _version_sort_key(version: PromptVersionORM) -> tuple[int, int, str]:
-    match = _VERSION_LABEL_RE.match(version.version_label or "")
-    if match:
-        return (0, int(match.group(1)), version.created_at)
-    return (1, 0, version.created_at)
-
-
-def _next_version_label(versions: list[PromptVersionORM]) -> str:
-    max_version = 0
-    for version in versions:
-        match = _VERSION_LABEL_RE.match(version.version_label or "")
-        if match:
-            max_version = max(max_version, int(match.group(1)))
-    return f"v{max_version + 1}" if max_version else "v1"
+    return (0, version.id or 0, version.created_at)
 
 
 @app.get("/api/prompts")
@@ -2226,11 +2351,6 @@ async def save_prompt(payload: SavePromptPayload, db: AsyncSession = Depends(get
     result = await db.execute(stmt)
     prompt = result.scalar_one_or_none()
 
-    versions_result = await db.execute(
-        select(PromptVersionORM).where(PromptVersionORM.prompt_id == prompt_id)
-    )
-    existing_versions = versions_result.scalars().all()
-
     if prompt is None:
         prompt = PromptORM(
             prompt_id=prompt_id,
@@ -2245,18 +2365,10 @@ async def save_prompt(payload: SavePromptPayload, db: AsyncSession = Depends(get
     version = PromptVersionORM(
         prompt_version_id=version_id,
         prompt_id=prompt_id,
-        version_label=_next_version_label(existing_versions),
-        parent_version_id=prompt.current_version_id if prompt else None,
         system_prompt=payload.system_prompt,
         user_template=payload.user_template,
         format_instruction=payload.format_instruction,
         notes=payload.notes,
-        image_slot_specs=[spec.model_dump(mode="json") for spec in payload.image_slot_specs],
-        variable_specs=[spec.model_dump(mode="json") for spec in payload.variable_specs],
-        few_shot_examples=[
-            _persist_few_shot_example(example, prompt_id, version_id)
-            for example in payload.few_shot_examples
-        ],
     )
     db.add(version)
     prompt.current_version_id = version_id
@@ -2532,6 +2644,28 @@ async def serve_upload(filename: str):
     return FileResponse(file_path)
 
 
+@app.get("/api/sample-images")
+async def serve_sample_image(path: str):
+    """Serve a sample image from an arbitrary filesystem path.
+
+    This endpoint allows the frontend to display images referenced by
+    absolute paths in JSONL/CSV imports, which cannot be loaded via
+    ``file://`` URLs due to browser security restrictions.
+    """
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+
+    file_path = Path(path).expanduser()
+    # Security: only allow image files, prevent directory listing
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(404, "Image file not found")
+    # Basic extension check to prevent serving arbitrary files
+    allowed_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
+    if file_path.suffix.lower() not in allowed_suffixes:
+        raise HTTPException(403, "Only image files are allowed")
+    return FileResponse(file_path)
+
+
 # ---------------------------------------------------------------------------
 # Provider configs (bundle adapter + base_url + api_key)
 # ---------------------------------------------------------------------------
@@ -2660,11 +2794,15 @@ async def csv_suggest_mapping(payload: dict, db: AsyncSession = Depends(get_db))
         csv_path = payload.get("csv_path", "")
         delimiter = payload.get("delimiter", ",")
         columns = detect_columns(csv_path, delimiter=delimiter)
-    prompt_version = None
+    task_version = None
     task_version_id = payload.get("task_version_id")
     if task_version_id:
-        prompt_version = await _prompt_version_for_task_version(task_version_id, db)
-    mapping = suggest_column_mapping(list(columns or []), prompt_version)
+        task_version = await _task_version_schema_by_id(task_version_id, db)
+    mapping = suggest_column_mapping(
+        list(columns or []),
+        task_version.image_slot_specs if task_version else None,
+        task_version.variable_specs if task_version else None,
+    )
     if task_version_id:
         mapping.task_version_id = task_version_id
     return mapping.model_dump(mode="json")
@@ -2677,8 +2815,12 @@ async def _validation_report_for_records(
 ) -> ImportValidationReport | None:
     if not task_version_id:
         return None
-    prompt_version = await _prompt_version_for_task_version(task_version_id, db)
-    valid_records, invalid_rows = validate_records_against_contract(records, prompt_version)
+    task_version = await _task_version_schema_by_id(task_version_id, db)
+    valid_records, invalid_rows = validate_records_against_contract(
+        records,
+        task_version.image_slot_specs,
+        task_version.variable_specs,
+    )
     return ImportValidationReport(valid_count=len(valid_records), invalid_rows=invalid_rows)
 
 
