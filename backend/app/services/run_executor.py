@@ -328,7 +328,6 @@ def _make_prompt_snapshot(
             prompt_version_id=prompt.prompt_version_id,
             system_prompt=prompt.system_prompt,
             user_template=prompt.user_template,
-            format_instruction=prompt.format_instruction,
             notes=prompt.notes,
             image_slot_specs=image_slot_specs,
             variable_specs=variable_specs,
@@ -336,7 +335,6 @@ def _make_prompt_snapshot(
     return PromptSnapshot(
         system_prompt=prompt.system_prompt,
         user_template=prompt.user_template,
-        format_instruction=prompt.format_instruction,
         notes=prompt.notes,
         image_slot_specs=image_slot_specs,
         variable_specs=variable_specs,

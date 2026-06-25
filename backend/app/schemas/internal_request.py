@@ -57,7 +57,6 @@ class PromptSpec(BaseModel):
     user_prompt: str = ""
     render_context: RenderContext = Field(default_factory=RenderContext)
     template_refs: TemplateRefs = Field(default_factory=TemplateRefs)
-    format_instruction: str = ""
 
 
 class ImagePreprocessConfig(BaseModel):

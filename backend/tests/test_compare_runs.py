@@ -86,19 +86,13 @@ def _provider(client: TestClient) -> str:
 
 
 def _task(client: TestClient, provider_config_id: str, name: str, model_id: str) -> str:
-    prompt = client.post(
-        "/api/prompts",
-        json={"name": f"{name} prompt", "user_template": "Say {{ prompt }}"},
-    )
-    assert prompt.status_code == 200, prompt.text
-    prompt_data = prompt.json()
     task = client.post(
         "/api/tasks",
         json={
             "name": name,
             "version": {
-                "prompt_id": prompt_data["prompt_id"],
-                "prompt_version_id": prompt_data["prompt_version_id"],
+                "system_prompt": "",
+                "user_template": "Say {{ prompt }}",
                 "provider_config_id": provider_config_id,
                 "model_id": model_id,
                 "model_parameters": {},
@@ -139,22 +133,6 @@ def _wait_for_terminal_status(client: TestClient, run_id: str) -> dict:
     return status
 
 
-def test_compare_estimate_returns_cell_count(client: TestClient) -> None:
-    sample_set_id, task_a, task_b = _setup_compare(client)
-
-    response = client.post(
-        "/api/compare-runs/estimate",
-        json=_compare_payload(sample_set_id, task_a, task_b),
-    )
-
-    assert response.status_code == 200, response.text
-    data = response.json()
-    assert data["sample_count"] == 2
-    assert data["variant_count"] == 2
-    assert data["cell_count"] == 4
-    assert data["estimated_input_tokens"] > 0
-
-
 def test_compare_run_completes_with_axes_and_matrix(client: TestClient, monkeypatch) -> None:
     _patch_adapter(monkeypatch, FakeAdapter())
     sample_set_id, task_a, task_b = _setup_compare(client)
@@ -178,8 +156,6 @@ def test_compare_run_completes_with_axes_and_matrix(client: TestClient, monkeypa
         assert axes["sample_id"] in {"s1", "s2"}
         assert axes["task_id"] in {task_a, task_b}
         assert axes["task_version_id"]
-        assert axes["prompt_id"]
-        assert axes["prompt_version_id"]
         assert axes["provider_config_id"]
         assert axes["model_id"] in {"model-a", "model-b"}
         assert axes["config_label"] in {"A", "B"}

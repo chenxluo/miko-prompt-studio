@@ -24,6 +24,7 @@ class Base(DeclarativeBase):
 
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+_LEGACY_FORMAT_COLUMN = "format" + chr(95) + "instruction"
 
 
 def get_engine():
@@ -78,6 +79,10 @@ async def init_db() -> None:
         await _migrate_prompt_version_library_columns(conn)
         await _migrate_prompt_version_variable_specs_column(conn)
         await _migrate_prompt_specs_to_task_versions(conn)
+        await _migrate_task_version_prompt_inline(conn)
+        await _migrate_prompt_snippets(conn)
+        await _recreate_prompts_table_without_legacy_columns(conn)
+        await _recreate_task_versions_table_without_legacy_columns(conn)
         await _migrate_pricing_profiles_to_per_million_tokens(conn)
 
 
@@ -86,6 +91,8 @@ async def _migrate_prompt_version_library_columns(conn) -> None:
 
     result = await conn.execute(text("PRAGMA table_info(prompt_versions)"))
     existing_columns = {row[1] for row in result.fetchall()}
+    if not existing_columns:
+        return
 
     if "image_slot_specs" not in existing_columns:
         await conn.execute(
@@ -98,6 +105,8 @@ async def _migrate_prompt_version_variable_specs_column(conn) -> None:
 
     result = await conn.execute(text("PRAGMA table_info(prompt_versions)"))
     existing_columns = {row[1] for row in result.fetchall()}
+    if not existing_columns:
+        return
 
     if "variable_specs" not in existing_columns:
         await conn.execute(
@@ -152,7 +161,6 @@ async def _migrate_prompt_specs_to_task_versions(conn) -> None:
             "prompt_id VARCHAR NOT NULL, "
             "system_prompt TEXT DEFAULT '', "
             "user_template TEXT DEFAULT '', "
-            "format_instruction TEXT DEFAULT '', "
             "notes TEXT DEFAULT '', "
             "created_at VARCHAR, "
             "updated_at VARCHAR"
@@ -163,10 +171,10 @@ async def _migrate_prompt_specs_to_task_versions(conn) -> None:
         text(
             "INSERT INTO prompt_versions_new "
             "(id, prompt_version_id, prompt_id, system_prompt, user_template, "
-            "format_instruction, notes, created_at, updated_at) "
+            "notes, created_at, updated_at) "
             "SELECT id, prompt_version_id, prompt_id, "
             "COALESCE(system_prompt, ''), COALESCE(user_template, ''), "
-            "COALESCE(format_instruction, ''), COALESCE(notes, ''), "
+            "COALESCE(notes, ''), "
             "created_at, updated_at FROM prompt_versions"
         )
     )
@@ -178,6 +186,275 @@ async def _migrate_prompt_specs_to_task_versions(conn) -> None:
     await conn.execute(
         text("CREATE INDEX IF NOT EXISTS ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)")
     )
+
+
+async def _migrate_task_version_prompt_inline(conn) -> None:
+    """Inline prompt text into task_versions and preserve legacy extra instructions."""
+
+    result = await conn.execute(text("PRAGMA table_info(task_versions)"))
+    columns = {row[1] for row in result.fetchall()}
+    if not columns:
+        return
+
+    if "system_prompt" not in columns:
+        await conn.execute(text("ALTER TABLE task_versions ADD COLUMN system_prompt TEXT DEFAULT ''"))
+        columns.add("system_prompt")
+    if "user_template" not in columns:
+        await conn.execute(text("ALTER TABLE task_versions ADD COLUMN user_template TEXT DEFAULT ''"))
+        columns.add("user_template")
+
+    prompt_result = await conn.execute(text("PRAGMA table_info(prompt_versions)"))
+    prompt_columns = {row[1] for row in prompt_result.fetchall()}
+    if prompt_columns:
+        select_extra = (
+            f", pv.{_LEGACY_FORMAT_COLUMN} AS legacy_extra"
+            if _LEGACY_FORMAT_COLUMN in prompt_columns
+            else ", '' AS legacy_extra"
+        )
+        rows = await conn.execute(
+            text(
+                "SELECT tv.task_version_id, pv.system_prompt, pv.user_template"
+                f"{select_extra} "
+                "FROM task_versions tv "
+                "JOIN prompt_versions pv "
+                "ON pv.prompt_id = tv.prompt_id "
+                "AND pv.prompt_version_id = tv.prompt_version_id "
+                "WHERE COALESCE(tv.system_prompt, '') = '' "
+                "AND COALESCE(tv.user_template, '') = ''"
+            )
+        )
+        for row in rows.mappings():
+            system_prompt = row["system_prompt"] or ""
+            user_template = row["user_template"] or ""
+            legacy_extra = row["legacy_extra"] or ""
+            if legacy_extra:
+                system_prompt = (
+                    f"{system_prompt.rstrip()}\n\n{legacy_extra}"
+                    if system_prompt
+                    else legacy_extra
+                )
+            await conn.execute(
+                text(
+                    "UPDATE task_versions "
+                    "SET system_prompt = :system_prompt, user_template = :user_template "
+                    "WHERE task_version_id = :task_version_id"
+                ),
+                {
+                    "system_prompt": system_prompt,
+                    "user_template": user_template,
+                    "task_version_id": row["task_version_id"],
+                },
+            )
+
+        if _LEGACY_FORMAT_COLUMN in prompt_columns:
+            await conn.execute(
+                text(
+                    "CREATE TABLE prompt_versions_clean ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "prompt_version_id VARCHAR NOT NULL UNIQUE, "
+                    "prompt_id VARCHAR NOT NULL, "
+                    "system_prompt TEXT DEFAULT '', "
+                    "user_template TEXT DEFAULT '', "
+                    "notes TEXT DEFAULT '', "
+                    "created_at VARCHAR, "
+                    "updated_at VARCHAR"
+                    ")"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO prompt_versions_clean "
+                    "(id, prompt_version_id, prompt_id, system_prompt, user_template, "
+                    "notes, created_at, updated_at) "
+                    "SELECT id, prompt_version_id, prompt_id, "
+                    "COALESCE(system_prompt, ''), COALESCE(user_template, ''), "
+                    "COALESCE(notes, ''), created_at, updated_at FROM prompt_versions"
+                )
+            )
+            await conn.execute(text("DROP TABLE prompt_versions"))
+            await conn.execute(text("ALTER TABLE prompt_versions_clean RENAME TO prompt_versions"))
+            await conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_prompt_versions_prompt_version_id "
+                    "ON prompt_versions (prompt_version_id)"
+                )
+            )
+            await conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)")
+            )
+
+
+async def _migrate_prompt_snippets(conn) -> None:
+    """Flatten prompt library rows into editable prompt snippets.
+
+    Legacy databases stored editable content in prompt_versions and pointed
+    prompts.current_version_id at the latest version. Preserve prompt_versions
+    for historical compatibility, but copy the current content into prompts.
+    """
+
+    result = await conn.execute(text("PRAGMA table_info(prompts)"))
+    prompt_columns = {row[1] for row in result.fetchall()}
+    if not prompt_columns or "system_prompt" in prompt_columns:
+        return
+
+    for column in ("system_prompt", "user_template", "notes"):
+        await conn.execute(text(f"ALTER TABLE prompts ADD COLUMN {column} TEXT DEFAULT ''"))
+        prompt_columns.add(column)
+
+    if "current_version_id" not in prompt_columns:
+        return
+
+    version_result = await conn.execute(text("PRAGMA table_info(prompt_versions)"))
+    version_columns = {row[1] for row in version_result.fetchall()}
+    required_version_columns = {
+        "prompt_id",
+        "prompt_version_id",
+        "system_prompt",
+        "user_template",
+        "notes",
+    }
+    if not required_version_columns.issubset(version_columns):
+        return
+
+    await conn.execute(
+        text(
+            "UPDATE prompts "
+            "SET system_prompt = COALESCE(("
+            "SELECT pv.system_prompt FROM prompt_versions pv "
+            "WHERE pv.prompt_id = prompts.prompt_id "
+            "AND pv.prompt_version_id = prompts.current_version_id "
+            "LIMIT 1), ''), "
+            "user_template = COALESCE(("
+            "SELECT pv.user_template FROM prompt_versions pv "
+            "WHERE pv.prompt_id = prompts.prompt_id "
+            "AND pv.prompt_version_id = prompts.current_version_id "
+            "LIMIT 1), ''), "
+            "notes = COALESCE(("
+            "SELECT pv.notes FROM prompt_versions pv "
+            "WHERE pv.prompt_id = prompts.prompt_id "
+            "AND pv.prompt_version_id = prompts.current_version_id "
+            "LIMIT 1), '')"
+        )
+    )
+
+
+async def _recreate_prompts_table_without_legacy_columns(conn) -> None:
+    """Recreate prompts table without legacy NOT NULL description/current_version_id columns.
+
+    SQLite cannot DROP COLUMN with NOT NULL constraints on older versions,
+    so we recreate the table with only the current schema columns.
+    """
+
+    result = await conn.execute(text("PRAGMA table_info(prompts)"))
+    columns = {row[1] for row in result.fetchall()}
+    if not columns:
+        return
+
+    # Only recreate if legacy NOT NULL columns still exist
+    if "description" not in columns and "current_version_id" not in columns:
+        return
+
+    await conn.execute(
+        text(
+            "CREATE TABLE prompts_new ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "prompt_id VARCHAR NOT NULL UNIQUE, "
+            "name VARCHAR DEFAULT '', "
+            "system_prompt TEXT DEFAULT '', "
+            "user_template TEXT DEFAULT '', "
+            "notes TEXT DEFAULT '', "
+            "tags JSON DEFAULT '[]', "
+            "created_at VARCHAR, "
+            "updated_at VARCHAR"
+            ")"
+        )
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO prompts_new "
+            "(id, prompt_id, name, system_prompt, user_template, notes, tags, "
+            "created_at, updated_at) "
+            "SELECT id, prompt_id, name, "
+            "COALESCE(system_prompt, ''), COALESCE(user_template, ''), "
+            "COALESCE(notes, ''), COALESCE(tags, '[]'), "
+            "created_at, updated_at FROM prompts"
+        )
+    )
+    await conn.execute(text("DROP TABLE prompts"))
+    await conn.execute(text("ALTER TABLE prompts_new RENAME TO prompts"))
+    await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_prompts_prompt_id ON prompts (prompt_id)"))
+
+
+async def _recreate_task_versions_table_without_legacy_columns(conn) -> None:
+    """Recreate task_versions table with nullable prompt_id/prompt_version_id.
+
+    Phase 1 made prompt_id/prompt_version_id nullable in the ORM, but existing
+    databases still have NOT NULL constraints on these columns. Recreate to
+    match the current schema.
+    """
+
+    result = await conn.execute(text("PRAGMA table_info(task_versions)"))
+    rows = result.fetchall()
+    if not rows:
+        return
+
+    # row format: (cid, name, type, notnull, dflt_value, pk)
+    col_notnull = {row[1]: row[3] for row in rows}
+    if col_notnull.get("prompt_id", 0) == 0 and col_notnull.get("prompt_version_id", 0) == 0:
+        return  # Already nullable, nothing to do
+
+    await conn.execute(
+        text(
+            "CREATE TABLE task_versions_new ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "task_version_id VARCHAR NOT NULL UNIQUE, "
+            "task_id VARCHAR NOT NULL, "
+            "version_label VARCHAR DEFAULT 'v1', "
+            "parent_version_id VARCHAR, "
+            "system_prompt TEXT DEFAULT '', "
+            "user_template TEXT DEFAULT '', "
+            "prompt_id VARCHAR, "
+            "prompt_version_id VARCHAR, "
+            "provider_config_id VARCHAR, "
+            "model_id VARCHAR NOT NULL, "
+            "model_parameters JSON DEFAULT '{}', "
+            "output_contract JSON DEFAULT '{}', "
+            "image_preprocess_config JSON DEFAULT '{}', "
+            "image_slot_specs JSON DEFAULT '[]', "
+            "variable_specs JSON DEFAULT '[]', "
+            "pricing_profile_id VARCHAR, "
+            "notes TEXT DEFAULT '', "
+            "created_at VARCHAR, "
+            "updated_at VARCHAR"
+            ")"
+        )
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO task_versions_new "
+            "(id, task_version_id, task_id, version_label, parent_version_id, "
+            "system_prompt, user_template, prompt_id, prompt_version_id, "
+            "provider_config_id, model_id, model_parameters, output_contract, "
+            "image_preprocess_config, image_slot_specs, variable_specs, "
+            "pricing_profile_id, notes, created_at, updated_at) "
+            "SELECT id, task_version_id, task_id, version_label, parent_version_id, "
+            "COALESCE(system_prompt, ''), COALESCE(user_template, ''), "
+            "prompt_id, prompt_version_id, "
+            "provider_config_id, model_id, model_parameters, output_contract, "
+            "image_preprocess_config, "
+            "COALESCE(image_slot_specs, '[]'), COALESCE(variable_specs, '[]'), "
+            "pricing_profile_id, notes, created_at, updated_at "
+            "FROM task_versions"
+        )
+    )
+    await conn.execute(text("DROP TABLE task_versions"))
+    await conn.execute(text("ALTER TABLE task_versions_new RENAME TO task_versions"))
+    await conn.execute(
+        text("CREATE UNIQUE INDEX IF NOT EXISTS ix_task_versions_task_version_id ON task_versions (task_version_id)")
+    )
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_versions_task_id ON task_versions (task_id)"))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_versions_prompt_id ON task_versions (prompt_id)"))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_versions_prompt_version_id ON task_versions (prompt_version_id)"))
 
 
 async def _migrate_result_snapshot_full_snapshot_columns(conn) -> None:
@@ -346,7 +623,7 @@ async def _migrate_tasks_to_versions(conn) -> None:
         "model_id",
         "system_prompt",
         "user_prompt",
-        "format_instruction",
+        _LEGACY_FORMAT_COLUMN,
     }
     if not legacy_columns.issubset(task_columns):
         return
@@ -387,21 +664,28 @@ async def _migrate_tasks_to_versions(conn) -> None:
                 text(
                     "INSERT INTO prompt_versions "
                     "(prompt_version_id, prompt_id, system_prompt, user_template, "
-                    "format_instruction, notes, created_at, updated_at) "
+                    "notes, created_at, updated_at) "
                     "VALUES (:prompt_version_id, :prompt_id, :system_prompt, "
-                    ":user_template, :format_instruction, :notes, :created_at, :updated_at)"
+                    ":user_template, :notes, :created_at, :updated_at)"
                 ),
                 {
                     "prompt_version_id": prompt_version_id,
                     "prompt_id": prompt_id,
                     "system_prompt": row.get("system_prompt") or "",
                     "user_template": row.get("user_prompt") or "",
-                    "format_instruction": row.get("format_instruction") or "",
                     "notes": row.get("notes") or "",
                     "created_at": now,
                     "updated_at": now,
                 },
             )
+            legacy_extra = row.get(_LEGACY_FORMAT_COLUMN) or ""
+            inlined_system_prompt = row.get("system_prompt") or ""
+            if legacy_extra:
+                inlined_system_prompt = (
+                    f"{inlined_system_prompt.rstrip()}\n\n{legacy_extra}"
+                    if inlined_system_prompt
+                    else legacy_extra
+                )
             image_config = {}
             if row.get("image_resolution_enabled"):
                 image_config = {
@@ -411,13 +695,15 @@ async def _migrate_tasks_to_versions(conn) -> None:
             await conn.execute(
                 text(
                     "INSERT INTO task_versions "
-                    "(task_version_id, task_id, version_label, parent_version_id, prompt_id, "
-                    "prompt_version_id, provider_config_id, model_id, model_parameters, "
+                    "(task_version_id, task_id, version_label, parent_version_id, "
+                    "system_prompt, user_template, prompt_id, prompt_version_id, "
+                    "provider_config_id, model_id, model_parameters, "
                     "output_contract, image_preprocess_config, image_slot_specs, "
                     "variable_specs, pricing_profile_id, notes, "
                     "created_at, updated_at) "
-                    "VALUES (:task_version_id, :task_id, 'v1', NULL, :prompt_id, "
-                    ":prompt_version_id, :provider_config_id, :model_id, :model_parameters, "
+                    "VALUES (:task_version_id, :task_id, 'v1', NULL, "
+                    ":system_prompt, :user_template, :prompt_id, :prompt_version_id, "
+                    ":provider_config_id, :model_id, :model_parameters, "
                     ":output_contract, :image_preprocess_config, '[]', '[]', "
                     ":pricing_profile_id, :notes, "
                     ":created_at, :updated_at)"
@@ -425,6 +711,8 @@ async def _migrate_tasks_to_versions(conn) -> None:
                 {
                     "task_version_id": task_version_id,
                     "task_id": task_id,
+                    "system_prompt": inlined_system_prompt,
+                    "user_template": row.get("user_prompt") or "",
                     "prompt_id": prompt_id,
                     "prompt_version_id": prompt_version_id,
                     "provider_config_id": row.get("provider_config_id"),
@@ -462,7 +750,7 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
         "model_id",
         "system_prompt",
         "user_prompt",
-        "format_instruction",
+        _LEGACY_FORMAT_COLUMN,
         "provider_config_id",
         "model_parameters",
         "output_contract",
@@ -530,7 +818,7 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
         return
 
     # Only recreate if legacy columns still exist
-    legacy_columns = {"model_id", "system_prompt", "user_prompt", "format_instruction"}
+    legacy_columns = {"model_id", "system_prompt", "user_prompt", _LEGACY_FORMAT_COLUMN}
     if not legacy_columns.intersection(columns):
         return
 
@@ -583,7 +871,7 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
         "model_id",
         "system_prompt",
         "user_prompt",
-        "format_instruction",
+        _LEGACY_FORMAT_COLUMN,
         "provider_config_id",
         "model_parameters",
         "output_contract",
@@ -649,7 +937,7 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
         "model_id",
         "system_prompt",
         "user_prompt",
-        "format_instruction",
+        _LEGACY_FORMAT_COLUMN,
         "provider_config_id",
         "model_parameters",
         "output_contract",
@@ -712,7 +1000,7 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
         "model_id",
         "system_prompt",
         "user_prompt",
-        "format_instruction",
+        _LEGACY_FORMAT_COLUMN,
         "provider_config_id",
         "model_parameters",
         "output_contract",

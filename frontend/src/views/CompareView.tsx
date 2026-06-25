@@ -78,9 +78,6 @@ export function CompareView() {
   const [selectedVersionIdForAdd, setSelectedVersionIdForAdd] = useState<string | null>(null);
   const [selectedVersions, setSelectedVersions] = useState<SelectedVersion[]>([]);
 
-  const [estimate, setEstimate] = useState<api.CompareRunEstimateResponse | null>(null);
-  const [isEstimating, setIsEstimating] = useState(false);
-
   const [runId, setRunId] = useState<string | null>(null);
   const [session, setSession] = useState<api.RunListItem | null>(null);
   const [items, setItems] = useState<RunItemSummary[]>([]);
@@ -223,21 +220,6 @@ export function CompareView() {
     };
   }
 
-  async function handleEstimate() {
-    if (!canStart) return;
-    setIsEstimating(true);
-    setError(null);
-    try {
-      const result = await api.estimateCompareRun(buildPayload());
-      setEstimate(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('compare.estimateFailed'));
-      setEstimate(null);
-    } finally {
-      setIsEstimating(false);
-    }
-  }
-
   async function startRun(response: api.CompareRunCreationResponse) {
     setRunId(response.run_id);
     setSession({
@@ -254,7 +236,6 @@ export function CompareView() {
     setElapsedMs(0);
     setRunStartedAt(Date.now());
     setPhase('running');
-    setEstimate(null);
     setError(null);
     setBestItemIds(new Set());
   }
@@ -298,7 +279,6 @@ export function CompareView() {
     setItems([]);
     setElapsedMs(0);
     setRunStartedAt(null);
-    setEstimate(null);
     setError(null);
     setSelectedItem(null);
     setBestItemIds(new Set());
@@ -323,12 +303,10 @@ export function CompareView() {
         version,
       },
     ]);
-    setEstimate(null);
   }
 
   function handleRemoveVersion(taskVersionId: string) {
     setSelectedVersions((current) => current.filter((v) => v.taskVersionId !== taskVersionId));
-    setEstimate(null);
   }
 
   function toggleBest(item: RunItemSummary) {
@@ -398,9 +376,6 @@ export function CompareView() {
             limit={limit}
             onChangeLimit={setLimit}
             providerNames={providerNames}
-            estimate={estimate}
-            isEstimating={isEstimating}
-            onEstimate={handleEstimate}
             onStart={handleStart}
             isStarting={isStarting}
             canStart={canStart}
@@ -470,9 +445,6 @@ interface SetupPanelProps {
   limit: LimitOption;
   onChangeLimit: (value: LimitOption) => void;
   providerNames: Map<string, string>;
-  estimate: api.CompareRunEstimateResponse | null;
-  isEstimating: boolean;
-  onEstimate: () => void;
   onStart: () => void;
   isStarting: boolean;
   canStart: boolean;
@@ -497,9 +469,6 @@ function SetupPanel({
   limit,
   onChangeLimit,
   providerNames,
-  estimate,
-  isEstimating,
-  onEstimate,
   onStart,
   isStarting,
   canStart,
@@ -704,59 +673,20 @@ function SetupPanel({
       </section>
 
       <section className="panel p-5">
-        <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-ink-muted">
-          {t('batch.estimate')}
-        </h2>
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-          <div className="flex flex-wrap gap-x-6 gap-y-2 text-xs">
-            {estimate ? (
-              <>
-                <span className="text-ink">
-                  <span className="text-ink-dim">{t('batch.sampleCount')}:</span>{' '}
-                  {estimate.sample_count}
-                </span>
-                <span className="text-ink">
-                  <span className="text-ink-dim">{t('batch.estimateTokens')}:</span>{' '}
-                  {estimate.estimated_input_tokens.toLocaleString()} /{' '}
-                  {estimate.estimated_output_tokens.toLocaleString()}
-                </span>
-                <span className="text-cost">
-                  <span className="text-ink-dim">{t('batch.estimateCost')}:</span>{' '}
-                  {estimate.currency} {estimate.estimated_cost.toFixed(6)}
-                </span>
-              </>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onStart}
+            disabled={!canStart || isStarting}
+            className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
+          >
+            {isStarting ? (
+              <Loader2 size={14} className="animate-spin" />
             ) : (
-              <span className="text-ink-dim">{t('batch.estimatePlaceholder')}</span>
+              <Play size={14} />
             )}
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onEstimate}
-              disabled={!canStart || isEstimating}
-              className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-            >
-              {isEstimating ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Coins size={14} />
-              )}
-              {t('batch.estimate')}
-            </button>
-            <button
-              type="button"
-              onClick={onStart}
-              disabled={!canStart || isStarting}
-              className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
-            >
-              {isStarting ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Play size={14} />
-              )}
-              {t('compare.start')}
-            </button>
-          </div>
+            {t('compare.start')}
+          </button>
         </div>
       </section>
     </div>
@@ -1199,12 +1129,6 @@ function buildPrefillFromItem(item: RunItemSummary): SaveTaskDialogPrefill {
     (modelSnapshot.image_preprocess_config as ImagePreprocessConfig | null | undefined) ?? null;
 
   return {
-    prompt_id:
-      typeof promptSnapshot.prompt_id === 'string' ? promptSnapshot.prompt_id : null,
-    prompt_version_id:
-      typeof promptSnapshot.prompt_version_id === 'string'
-        ? promptSnapshot.prompt_version_id
-        : null,
     system_prompt:
       typeof promptSnapshot.system_prompt === 'string'
         ? promptSnapshot.system_prompt
@@ -1212,10 +1136,6 @@ function buildPrefillFromItem(item: RunItemSummary): SaveTaskDialogPrefill {
     user_template:
       typeof promptSnapshot.user_template === 'string'
         ? promptSnapshot.user_template
-        : undefined,
-    format_instruction:
-      typeof promptSnapshot.format_instruction === 'string'
-        ? promptSnapshot.format_instruction
         : undefined,
     image_slot_specs: Array.isArray(promptSnapshot.image_slot_specs)
       ? promptSnapshot.image_slot_specs

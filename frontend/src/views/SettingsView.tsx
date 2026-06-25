@@ -489,7 +489,7 @@ export function SettingsView() {
       {/* Pricing section */}
       <div className="border-t border-surface-800 pt-6">
         <h2 className="text-lg font-semibold text-ink">{t('pricing.title')}</h2>
-        <p className="mt-1 text-sm text-ink-muted">{t('pricing.description')}</p>
+        <p className="mt-1 text-sm text-ink-muted">{t('settings.pricingDescription')}</p>
       </div>
 
       {pricingError && (

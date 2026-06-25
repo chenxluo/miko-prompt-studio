@@ -66,19 +66,13 @@ def _sample_set(client: TestClient) -> str:
 
 
 def _task(client: TestClient, provider_config_id: str) -> str:
-    prompt = client.post(
-        "/api/prompts",
-        json={"name": "batch prompt", "user_template": "Say {{ prompt }}"},
-    )
-    assert prompt.status_code == 200, prompt.text
-    prompt_data = prompt.json()
     task = client.post(
         "/api/tasks",
         json={
             "name": "batch task",
             "version": {
-                "prompt_id": prompt_data["prompt_id"],
-                "prompt_version_id": prompt_data["prompt_version_id"],
+                "system_prompt": "",
+                "user_template": "Say {{ prompt }}",
                 "provider_config_id": provider_config_id,
                 "model_id": "test-model",
                 "model_parameters": {},

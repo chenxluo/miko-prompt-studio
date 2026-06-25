@@ -33,7 +33,6 @@ async def _test_prompt_save(client: httpx.AsyncClient) -> None:
         "name": f"integration-test-{uuid4().hex[:8]}",
         "system_prompt": "sys",
         "user_template": "user",
-        "format_instruction": "",
         "notes": "",
         "prompt_id": None,
     }

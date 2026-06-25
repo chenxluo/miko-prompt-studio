@@ -344,9 +344,6 @@ function PromptListCard({
               <BookOpen size={14} className="text-accent" />
               <h2 className="truncate text-sm font-semibold text-ink">{prompt.name}</h2>
             </div>
-            {prompt.description && (
-              <p className="mt-1 truncate text-xs text-ink-dim">{prompt.description}</p>
-            )}
           </button>
         </div>
 
@@ -409,9 +406,8 @@ function PromptDetailDrawer({
   onDelete: () => void;
 }) {
   const { t } = useI18n();
-  const version = prompt.latest_version;
-  const systemPrompt = version?.system_prompt ?? '';
-  const userTemplate = version?.user_template ?? '';
+  const systemPrompt = prompt.system_prompt;
+  const userTemplate = prompt.user_template;
 
   return (
     <div

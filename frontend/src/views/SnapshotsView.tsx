@@ -793,7 +793,6 @@ function LoadIntoLabButton({ detail }: { detail: ResultSnapshotDetail }) {
   const providerConfigs = useLabStore((state) => state.providerConfigs);
   const setSystemPrompt = useLabStore((state) => state.setSystemPrompt);
   const setUserPrompt = useLabStore((state) => state.setUserPrompt);
-  const setFormatInstruction = useLabStore((state) => state.setFormatInstruction);
   const setSelectedProviderConfigId = useLabStore(
     (state) => state.setSelectedProviderConfigId,
   );
@@ -814,7 +813,6 @@ function LoadIntoLabButton({ detail }: { detail: ResultSnapshotDetail }) {
     if (prompt) {
       setSystemPrompt(prompt.system_prompt ?? '');
       setUserPrompt(prompt.user_template ?? '');
-      setFormatInstruction(prompt.format_instruction ?? '');
     }
 
     if (config?.output_contract) {

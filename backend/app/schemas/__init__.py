@@ -46,10 +46,10 @@ from app.schemas.prompt import (
     PromptSnapshot,
     PromptVersion,
     PromptVersionData,
+    ImageSlotSpec,
     VariableSpec,
 )
 from app.schemas.run_record import (
-    BUILTIN_REVIEW_LABELS,
     AdapterInfo,
     AdapterResult,
     Attempt,
@@ -123,12 +123,12 @@ __all__ = [
     "PromptSnapshot",
     "PromptVersion",
     "PromptVersionData",
+    "ImageSlotSpec",
     "VariableSpec",
     # run record
     "AdapterInfo",
     "AdapterResult",
     "Attempt",
-    "BUILTIN_REVIEW_LABELS",
     "CompareAxes",
     "ConfigSnapshot",
     "NormalizedResponse",

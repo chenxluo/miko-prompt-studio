@@ -188,30 +188,12 @@ class Attempt(BaseModel):
 # Review (lightweight human evaluation)
 # ---------------------------------------------------------------------------
 
-BUILTIN_REVIEW_LABELS = frozenset(
-    {
-        "good",
-        "bad",
-        "needs_revision",
-        "refusal",
-        "hallucination",
-        "missing_detail",
-        "format_error",
-        "too_verbose",
-        "too_short",
-        "wrong_image_order",
-        "wrong_role_reference",
-        "safety_overrefusal",
-    }
-)
-
 
 class Review(BaseModel):
     """Optional human review attached to a Run Item."""
 
     accepted: bool | None = None
     rating: int | None = None  # 1-5
-    labels: list[str] = Field(default_factory=list)
     notes: str = ""
     reviewed_at: datetime | None = None
 

@@ -79,29 +79,15 @@ VARIABLE_SPECS = [
 ]
 
 
-def _prompt_with_contract(client: TestClient) -> dict:
-    response = client.post(
-        "/api/prompts",
-        json={
-            "name": "Input Spec Prompt",
-            "system_prompt": "You are a careful image annotator.",
-            "user_template": "Compare {{vars.title}} with {{vars.optional_hint}}.",
-            "format_instruction": "Return JSON.",
-        },
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-def _task(client: TestClient, prompt: dict, provider_config_id: str) -> dict:
+def _task(client: TestClient, provider_config_id: str) -> dict:
     response = client.post(
         "/api/tasks",
         json={
             "name": "Input Spec Task",
             "description": "Generate specs for importers",
             "version": {
-                "prompt_id": prompt["prompt_id"],
-                "prompt_version_id": prompt["prompt_version_id"],
+                "system_prompt": "You are a careful image annotator.",
+                "user_template": "Compare {{vars.title}} with {{vars.optional_hint}}.",
                 "provider_config_id": provider_config_id,
                 "model_id": "test-model",
                 "model_parameters": {"temperature": 0.2},
@@ -119,8 +105,7 @@ def _task(client: TestClient, prompt: dict, provider_config_id: str) -> dict:
 
 def _input_spec(client: TestClient) -> dict:
     provider_config_id = _provider(client)
-    prompt = _prompt_with_contract(client)
-    task = _task(client, prompt, provider_config_id)
+    task = _task(client, provider_config_id)
     task_version_id = task["current_version"]["task_version_id"]
 
     response = client.get(f"/api/tasks/{task['task_id']}/versions/{task_version_id}/input-spec")
@@ -137,7 +122,6 @@ def test_input_spec_endpoint_returns_expected_structure(client: TestClient) -> N
     assert spec["version_label"] == "v1"
     assert spec["system_prompt"] == "You are a careful image annotator."
     assert spec["user_template"] == "Compare {{vars.title}} with {{vars.optional_hint}}."
-    assert spec["format_instruction"] == "Return JSON."
     assert len(spec["image_slots"]) == 2
     assert len(spec["variable_slots"]) == 2
     assert isinstance(spec["notes"], str)

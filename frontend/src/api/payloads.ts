@@ -29,7 +29,6 @@ export interface SavePromptPayload {
   name: string;
   system_prompt?: string;
   user_template?: string;
-  format_instruction?: string;
   notes?: string;
   prompt_id?: string | null;
 }
@@ -42,8 +41,8 @@ export interface UpdateReviewPayload {
 }
 
 export interface CreateTaskVersionPayload {
-  prompt_id: string;
-  prompt_version_id: string;
+  system_prompt: string;
+  user_template: string;
   provider_config_id?: string | null;
   model_id: string;
   model_parameters?: Record<string, unknown>;

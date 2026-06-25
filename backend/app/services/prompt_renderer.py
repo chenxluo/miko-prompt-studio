@@ -100,9 +100,8 @@ def render_prompt(
     user_template: str,
     system_prompt: str,
     sample: SampleRecord,
-    format_instruction: str = "",
 ) -> PromptSpec:
-    """Render prompts for a sample and append output format instructions."""
+    """Render prompts for a sample."""
 
     sample_dict = sample.model_dump(mode="json")
     context = {
@@ -112,11 +111,6 @@ def render_prompt(
     }
     rendered_user = render_template_with_conditionals(user_template, context)
     rendered_system = render_template_with_conditionals(system_prompt, context)
-    instruction = (format_instruction or "").strip()
-    if instruction:
-        rendered_user = (
-            f"{rendered_user.rstrip()}\n\n{instruction}" if rendered_user else instruction
-        )
 
     return PromptSpec(
         system_prompt=rendered_system,
@@ -127,7 +121,6 @@ def render_prompt(
             sample_id=sample.sample_id,
         ),
         template_refs=TemplateRefs(),
-        format_instruction=instruction,
     )
 
 

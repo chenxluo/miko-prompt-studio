@@ -2,28 +2,27 @@ import {
   AlertCircle,
   AlertTriangle,
   Bookmark,
-  Brain,
   CheckCircle2,
-  ChevronDown,
   Clock,
   Coins,
   Cpu,
   ImageIcon,
   Layers,
   Loader2,
-  Sparkles,
   Terminal,
   XCircle,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
 
 import { useI18n } from '../../i18n';
 import { useSnapshotStore } from '../../store/snapshotStore';
 import { useLabStore } from '../../store/labStore';
 import type { RunItemType, RunSession, RunItemSummary } from '../../types';
 import type { CreateResultSnapshotPayload } from '../../api/payloads';
+import { CollapsibleSection } from '../results/CollapsibleSection';
+import { ParsedOutputView } from '../results/ParsedOutputView';
+import { ReasoningBlock } from '../results/ReasoningBlock';
 
 export function ResultPanel() {
   const { t } = useI18n();
@@ -130,7 +129,11 @@ export function ResultPanel() {
 
         <ReasoningBlock reasoningText={reasoningText} />
 
-        <CollapsibleRawOutput rawText={rawText} />
+        <CollapsibleSection title={t('result.raw')} defaultOpen={false} icon={<Terminal size={12} />}>
+          <pre className="overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
+            {rawText ?? t('result.noRawOutput')}
+          </pre>
+        </CollapsibleSection>
 
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
@@ -162,75 +165,6 @@ function extractReasoningText(response: Record<string, unknown>): string | undef
     return value;
   }
   return undefined;
-}
-
-function ReasoningBlock({ reasoningText }: { reasoningText: string | undefined }) {
-  const { t } = useI18n();
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  if (!reasoningText) {
-    return null;
-  }
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      <button
-        type="button"
-        onClick={() => setIsExpanded((prev) => !prev)}
-        className="flex items-center justify-between rounded-md border border-accent/20 bg-accent/5 px-3 py-2 text-left transition-colors hover:border-accent/30 hover:bg-accent/10"
-      >
-        <div className="flex items-center gap-2 text-xs font-medium text-accent">
-          <Sparkles size={12} />
-          <Brain size={14} />
-          <span>{t('result.reasoning')}</span>
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-ink-muted">
-          <span>{isExpanded ? t('result.hideReasoning') : t('result.showReasoning')}</span>
-          <ChevronDown
-            size={14}
-            className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`}
-          />
-        </div>
-      </button>
-      {isExpanded && (
-        <div className="markdown-body overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 text-sm text-ink">
-          <ReactMarkdown>{reasoningText}</ReactMarkdown>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CollapsibleRawOutput({ rawText }: { rawText: string | undefined }) {
-  const { t } = useI18n();
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      <button
-        type="button"
-        onClick={() => setIsExpanded((prev) => !prev)}
-        className="flex items-center justify-between rounded-md border border-surface-800 bg-surface-950 px-3 py-2 text-left transition-colors hover:border-surface-700 hover:bg-surface-800"
-      >
-        <div className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
-          <Terminal size={12} />
-          {t('result.raw')}
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-ink-muted">
-          <span>{isExpanded ? t('result.hideRaw') : t('result.showRaw')}</span>
-          <ChevronDown
-            size={14}
-            className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`}
-          />
-        </div>
-      </button>
-      {isExpanded && (
-        <pre className="overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-          {rawText ?? t('result.noRawOutput')}
-        </pre>
-      )}
-    </div>
-  );
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -280,73 +214,6 @@ function StatusBadge({ status }: { status: string }) {
       {status || t('result.error')}
     </span>
   );
-}
-
-function ParsedOutputView({
-  parsed,
-  parseStatus,
-  fallbackText,
-}: {
-  parsed: unknown;
-  parseStatus: string | undefined;
-  fallbackText: string | undefined;
-}) {
-  const { t } = useI18n();
-
-  if (parseStatus === 'not_parsed' || parseStatus === 'parse_failed') {
-    const text = typeof parsed === 'string' ? parsed : fallbackText;
-    if (text) {
-      return (
-        <div className="markdown-body overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 text-sm text-ink">
-          <ReactMarkdown>{text}</ReactMarkdown>
-        </div>
-      );
-    }
-    return (
-      <div className="rounded-md border border-surface-800 bg-surface-950 p-3 text-xs text-ink-dim">
-        {t('result.notParsed')}
-      </div>
-    );
-  }
-
-  if (parseStatus === 'parsed' && parsed !== undefined) {
-    return (
-      <pre className="overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-        {formatParsedOutput(parsed)}
-      </pre>
-    );
-  }
-
-  if (parseStatus === 'partially_parsed') {
-    return (
-      <div className="rounded-md bg-cost/10 px-3 py-3 text-sm text-cost">
-        <div className="mb-1 flex items-center gap-1.5 font-semibold">
-          <AlertTriangle size={14} />
-          {t('result.partiallyParsed')}
-        </div>
-        {parsed !== undefined && (
-          <pre className="mt-2 overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-            {formatParsedOutput(parsed)}
-          </pre>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-md border border-surface-800 bg-surface-950 p-3 text-xs text-ink-dim">
-      {t('result.notParsed')}
-    </div>
-  );
-}
-
-function formatParsedOutput(parsed: unknown): string {
-  if (typeof parsed === 'string') return parsed;
-  try {
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return String(parsed);
-  }
 }
 
 function UsageBlock({ usage }: { usage: Record<string, unknown> }) {

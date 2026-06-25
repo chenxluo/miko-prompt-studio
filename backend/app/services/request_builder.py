@@ -35,18 +35,10 @@ def build_internal_request(
     """Build an InternalRequest from saved configuration and one sample."""
 
     request_id = f"req_{uuid4().hex}"
-    instruction_parts = [
-        prompt_version.format_instruction,
-        output_contract.effective_format_instruction(),
-    ]
-    format_instruction = "\n\n".join(
-        part.strip() for part in instruction_parts if part and part.strip()
-    )
     prompt = render_prompt(
         prompt_version.user_template,
         prompt_version.system_prompt,
         sample,
-        format_instruction=format_instruction,
     )
     if isinstance(prompt_version, PromptVersion):
         prompt.template_refs = TemplateRefs(

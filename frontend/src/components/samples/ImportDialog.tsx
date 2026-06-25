@@ -45,6 +45,7 @@ export function ImportDialog({ onClose, onImported }: ImportDialogProps) {
   const [varColumns, setVarColumns] = useState<Set<string>>(new Set());
   const [metadataColumns, setMetadataColumns] = useState<Set<string>>(new Set());
   const [baseDir, setBaseDir] = useState('');
+  const [sampleSetName, setSampleSetName] = useState('');
 
   const [isImporting, setIsImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -165,13 +166,17 @@ export function ImportDialog({ onClose, onImported }: ImportDialogProps) {
           if (!csvFile) throw new Error(t('samples.noFileSelected'));
           if (!idColumn) throw new Error(t('samples.idColumnRequired'));
           const mapping = buildMapping();
-          const result = await importCsvFile(csvFile, mapping, delimiter || ',');
+          const result = await importCsvFile(csvFile, mapping, delimiter || ',', {
+            sampleSetName: sampleSetName.trim() || undefined,
+          });
           if ('sample_set_id' in result) {
             onImported(result.sample_set_id);
           }
         } else {
           if (!jsonlFile) throw new Error(t('samples.noFileSelected'));
-          const result = await importJsonlFile(jsonlFile);
+          const result = await importJsonlFile(jsonlFile, {
+            sampleSetName: sampleSetName.trim() || undefined,
+          });
           if ('sample_set_id' in result) {
             onImported(result.sample_set_id);
           }
@@ -450,6 +455,17 @@ export function ImportDialog({ onClose, onImported }: ImportDialogProps) {
               </div>
             </div>
           )}
+        </div>
+
+        <div className="border-t border-surface-800 px-4 py-3">
+          <label className="mb-1 block text-xs text-ink-muted">{t('samples.name')}</label>
+          <input
+            type="text"
+            value={sampleSetName}
+            onChange={(e) => setSampleSetName(e.target.value)}
+            placeholder={t('samples.namePlaceholder')}
+            className="w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-xs text-ink focus:border-accent focus:outline-none"
+          />
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-surface-800 px-4 py-3">

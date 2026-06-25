@@ -1,25 +1,21 @@
-"""Prompt and Prompt Version schemas.
+"""Prompt schemas.
 
 Mirrors section 8.2 of 设计文档.md.
 
 A Prompt is split into:
 - system_prompt
 - user_template  (may contain {{vars.x}} / {{sample.x}} / {{metadata.x}})
-- format_instruction
 - notes
 
-Versions are immutable snapshots — editing creates a new version, it never
-mutates an existing one.
+The prompt library stores editable snippets as a single flat object. Historical
+run records still store PromptSnapshot values so old runs remain reproducible.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field
 
 from app.schemas.common import TimestampedModel
-from app.schemas.sample_record import ImageRef
 
 
 class ImageSlotSpec(BaseModel):
@@ -41,22 +37,6 @@ class VariableSpec(BaseModel):
     default_value: str | None = ""
 
 
-class FewShotExample(BaseModel):
-    example_id: str
-    title: str = ""
-    enabled: bool = True
-    input_text: str = ""
-    output_text: str = ""
-    parsed_output: Any = None
-    reasoning_text: str | None = None
-    images: list[ImageRef] = Field(default_factory=list)
-    source_run_id: str | None = None
-    source_run_item_id: str | None = None
-    source_attempt_id: str | None = None
-    notes: str = ""
-    created_from: str = "manual"
-
-
 class PromptVersionData(BaseModel):
     """The editable content of a prompt version.
 
@@ -67,7 +47,6 @@ class PromptVersionData(BaseModel):
 
     system_prompt: str = ""
     user_template: str = ""
-    format_instruction: str = ""
     notes: str = ""
 
 
@@ -79,12 +58,13 @@ class PromptVersion(PromptVersionData, TimestampedModel):
 
 
 class Prompt(TimestampedModel):
-    """A named prompt with one or more versions."""
+    """A named editable prompt snippet."""
 
     prompt_id: str
     name: str
-    description: str = ""
-    current_version_id: str | None = None
+    system_prompt: str = ""
+    user_template: str = ""
+    notes: str = ""
     tags: list[str] = Field(default_factory=list)
 
 
@@ -100,7 +80,6 @@ class PromptSnapshot(BaseModel):
     prompt_version_id: str | None = None
     system_prompt: str = ""
     user_template: str = ""
-    format_instruction: str = ""
     notes: str = ""
     image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
     variable_specs: list[VariableSpec] = Field(default_factory=list)

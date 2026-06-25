@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.models.prompt import PromptVersionORM
 from app.models.task import TaskORM, TaskVersionORM
 from app.schemas.prompt import ImageSlotSpec, VariableSpec
 from app.schemas.task import (
@@ -36,7 +35,6 @@ def _variable_example_value(spec: VariableSpec) -> str:
 def generate_input_spec_for_task_version(
     task: TaskORM,
     task_version: TaskVersionORM,
-    prompt_version: PromptVersionORM,
 ) -> TaskInputSpec:
     image_specs = [ImageSlotSpec(**item) for item in (task_version.image_slot_specs or [])]
     variable_specs = [VariableSpec(**item) for item in (task_version.variable_specs or [])]
@@ -111,9 +109,8 @@ def generate_input_spec_for_task_version(
         task_version_id=task_version.task_version_id,
         task_name=task.name,
         version_label=task_version.version_label,
-        system_prompt=prompt_version.system_prompt,
-        user_template=prompt_version.user_template,
-        format_instruction=prompt_version.format_instruction,
+        system_prompt=task_version.system_prompt,
+        user_template=task_version.user_template,
         image_slots=image_slots,
         variable_slots=variable_slots,
         expected_csv_columns=expected_columns,

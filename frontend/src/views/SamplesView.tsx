@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   FileImage,
   Loader2,
+  Pencil,
   Plus,
   Search,
   Trash2,
@@ -262,6 +263,9 @@ function SampleSetDetail({
   const [records, setRecords] = useState<api.SampleListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [isSavingRename, setIsSavingRename] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -293,6 +297,29 @@ function SampleSetDetail({
     ? new Date(sampleSet.created_at).toLocaleString()
     : '—';
 
+  function startRename() {
+    setRenameValue(sampleSet?.name ?? '');
+    setIsRenaming(true);
+  }
+
+  async function saveRename() {
+    const trimmed = renameValue.trim();
+    if (!trimmed || !sampleSet) {
+      setIsRenaming(false);
+      return;
+    }
+    setIsSavingRename(true);
+    try {
+      const updated = await api.updateSampleSet(sampleSet.sample_set_id, { name: trimmed });
+      setSampleSet({ ...sampleSet, name: updated.name });
+      setIsRenaming(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('samples.renameFailed'));
+    } finally {
+      setIsSavingRename(false);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-surface-950">
       <header className="flex items-center justify-between border-b border-surface-800 bg-surface-900/50 px-6 py-3 backdrop-blur">
@@ -305,11 +332,54 @@ function SampleSetDetail({
           >
             <ArrowLeft size={16} />
           </button>
-          <div>
-            <h1 className="text-sm font-semibold uppercase tracking-wider text-ink-muted">
-              {sampleSet?.name ?? t('samples.title')}
-            </h1>
-            {sampleSet && (
+          <div className="min-w-0">
+            {isRenaming ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void saveRename();
+                    if (e.key === 'Escape') setIsRenaming(false);
+                  }}
+                  autoFocus
+                  className="rounded-md border border-accent bg-surface-950 px-2 py-1 text-sm text-ink focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => void saveRename()}
+                  disabled={isSavingRename}
+                  className="btn-primary px-2 py-1 text-xs disabled:opacity-50"
+                >
+                  {isSavingRename ? <Loader2 size={12} className="animate-spin" /> : t('common.confirm')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsRenaming(false)}
+                  className="rounded-md border border-surface-700 px-2 py-1 text-xs text-ink-muted"
+                >
+                  {t('common.cancel')}
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <h1 className="truncate text-sm font-semibold uppercase tracking-wider text-ink-muted">
+                  {sampleSet?.name ?? t('samples.title')}
+                </h1>
+                {sampleSet && (
+                  <button
+                    type="button"
+                    onClick={startRename}
+                    className="inline-flex items-center justify-center rounded-md p-1 text-ink-dim transition-colors hover:bg-surface-800 hover:text-ink"
+                    title={t('samples.rename')}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                )}
+              </div>
+            )}
+            {sampleSet && !isRenaming && (
               <p className="mt-1 text-xs text-ink-dim">
                 {sampleSet.description || t('samples.recordCount', { count: records.length })}
                 {' · '}
@@ -318,20 +388,30 @@ function SampleSetDetail({
             )}
           </div>
         </div>
-        {sampleSet && (
-          <button
-            type="button"
-            onClick={() => onDelete(sampleSet)}
-            disabled={deletingId === sampleSet.sample_set_id}
-            className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted hover:border-danger/50 hover:text-danger disabled:opacity-50"
-          >
-            {deletingId === sampleSet.sample_set_id ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <Trash2 size={14} />
-            )}
-            {t('samples.delete')}
-          </button>
+        {sampleSet && !isRenaming && (
+          <div className="flex shrink-0 gap-2">
+            <button
+              type="button"
+              onClick={startRename}
+              className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted hover:border-accent/50 hover:text-accent"
+            >
+              <Pencil size={14} />
+              {t('samples.rename')}
+            </button>
+            <button
+              type="button"
+              onClick={() => onDelete(sampleSet)}
+              disabled={deletingId === sampleSet.sample_set_id}
+              className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted hover:border-danger/50 hover:text-danger disabled:opacity-50"
+            >
+              {deletingId === sampleSet.sample_set_id ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Trash2 size={14} />
+              )}
+              {t('samples.delete')}
+            </button>
+          </div>
         )}
       </header>
 

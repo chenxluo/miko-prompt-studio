@@ -407,14 +407,7 @@ class OpenAICompatAdapter(BaseAdapter):
         )
 
     def _build_user_prompt(self, request: InternalRequest) -> str:
-        pieces = [request.user_prompt]
-        format_instruction = request.prompt.format_instruction or ""
-        effective_instruction = request.output_contract.effective_format_instruction()
-        if format_instruction:
-            pieces.append(format_instruction)
-        if effective_instruction and effective_instruction != format_instruction:
-            pieces.append(effective_instruction)
-        return "\n\n".join(piece for piece in pieces if piece.strip())
+        return request.user_prompt
 
     # Regex for inline image references: {{image:0}}, {{image:1}}, etc.
     _INLINE_IMAGE_RE = re.compile(r"{{\s*image\s*:\s*(\d+)\s*}}", re.IGNORECASE)

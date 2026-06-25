@@ -87,7 +87,7 @@ def test_missing_vars_still_resolve_to_empty_string() -> None:
     assert prompt.system_prompt == "System "
 
 
-def test_prompt_version_round_trip_excludes_variable_specs(client: TestClient) -> None:
+def test_prompt_round_trip_excludes_variable_specs(client: TestClient) -> None:
     response = client.post(
         "/api/prompts",
         json={
@@ -98,9 +98,33 @@ def test_prompt_version_round_trip_excludes_variable_specs(client: TestClient) -
     )
     assert response.status_code == 200, response.text
     created = response.json()
+    assert created["created"] is True
+    assert "prompt_version_id" not in created
 
-    fetched = client.get(
-        f"/api/prompts/{created['prompt_id']}/versions/{created['prompt_version_id']}"
-    )
+    fetched = client.get(f"/api/prompts/{created['prompt_id']}")
     assert fetched.status_code == 200, fetched.text
-    assert "variable_specs" not in fetched.json()
+    data = fetched.json()
+    assert data["system_prompt"] == "Use {{vars.tone}}"
+    assert data["user_template"] == "Describe {{vars.title}}"
+    assert "variable_specs" not in data
+    assert "versions" not in data
+
+    updated = client.post(
+        "/api/prompts",
+        json={
+            "prompt_id": created["prompt_id"],
+            "name": "Prompt Contract",
+            "system_prompt": "Use concise tone",
+            "user_template": "Summarize {{vars.title}}",
+            "notes": "overwritten",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json() == {"prompt_id": created["prompt_id"], "created": False}
+
+    fetched_again = client.get(f"/api/prompts/{created['prompt_id']}")
+    assert fetched_again.status_code == 200, fetched_again.text
+    data = fetched_again.json()
+    assert data["system_prompt"] == "Use concise tone"
+    assert data["user_template"] == "Summarize {{vars.title}}"
+    assert data["notes"] == "overwritten"

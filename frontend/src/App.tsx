@@ -1,13 +1,14 @@
 import {
   Beaker,
   Bookmark,
+  Eye,
   FileImage,
   FileText,
   Layers,
   ListChecks,
   Settings,
   Sparkles,
-  Tag,
+  Calculator,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -20,10 +21,11 @@ import { PromptsView } from './views/PromptsView';
 import { SnapshotsView } from './views/SnapshotsView';
 import { SamplesView } from './views/SamplesView';
 import { RunsView } from './views/RunsView';
-import { PlaceholderView } from './components/PlaceholderView';
+import { CostView } from './views/CostView';
+import { ResultsView } from './views/ResultsView';
 import { useI18n } from './i18n';
 
-type View = 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'snapshots' | 'pricing' | 'settings';
+type View = 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'results' | 'snapshots' | 'cost' | 'settings';
 
 interface NavItem {
   id: View;
@@ -37,27 +39,31 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'prompts', labelKey: 'nav.prompts', icon: FileText },
   { id: 'samples', labelKey: 'nav.samples', icon: FileImage },
   { id: 'runs', labelKey: 'nav.runs', icon: Layers },
+  { id: 'results', labelKey: 'nav.results', icon: Eye },
   { id: 'snapshots', labelKey: 'nav.snapshots', icon: Bookmark },
-  { id: 'pricing', labelKey: 'nav.pricing', icon: Tag },
+  { id: 'cost', labelKey: 'nav.cost', icon: Calculator },
   { id: 'settings', labelKey: 'nav.settings', icon: Settings },
 ];
 
-const PLACEHOLDER_KEYS: Record<
-  Exclude<View, 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'snapshots' | 'settings'>,
-  { titleKey: string; descKey: string }
-> = {
-  pricing: { titleKey: 'nav.pricing', descKey: 'nav.pricing' },
-};
-
 export default function App() {
   const [activeView, setActiveView] = useState<View>('lab');
+  const [resultsRunId, setResultsRunId] = useState<string | null>(null);
   const { t } = useI18n();
 
   useEffect(() => {
     const handler = (event: CustomEvent) => {
-      const view = event.detail as View;
-      if (NAV_ITEMS.some((item) => item.id === view)) {
-        setActiveView(view);
+      const detail = event.detail as View | { view: View; runId?: string } | null | undefined;
+      if (typeof detail === 'string') {
+        if (NAV_ITEMS.some((item) => item.id === detail)) {
+          setActiveView(detail);
+        }
+      } else if (detail && typeof detail === 'object' && detail.view) {
+        if (NAV_ITEMS.some((item) => item.id === detail.view)) {
+          setActiveView(detail.view);
+        }
+        if (detail.view === 'results' && detail.runId) {
+          setResultsRunId(detail.runId);
+        }
       }
     };
     window.addEventListener('miko:navigate', handler as EventListener);
@@ -103,23 +109,10 @@ export default function App() {
         {activeView === 'prompts' && <PromptsView />}
         {activeView === 'samples' && <SamplesView />}
         {activeView === 'runs' && <RunsView />}
+        {activeView === 'results' && <ResultsView initialRunId={resultsRunId} />}
         {activeView === 'snapshots' && <SnapshotsView />}
+        {activeView === 'cost' && <CostView />}
         {activeView === 'settings' && <SettingsView />}
-        {activeView !== 'lab' && activeView !== 'tasks' && activeView !== 'prompts' && activeView !== 'samples' && activeView !== 'runs' && activeView !== 'snapshots' && activeView !== 'settings' && (
-          <>
-            <header className="flex items-center justify-between border-b border-surface-800 bg-surface-900/50 px-6 py-3 backdrop-blur">
-              <h1 className="text-sm font-semibold uppercase tracking-wider text-ink-muted">
-                {t(PLACEHOLDER_KEYS[activeView].titleKey)}
-              </h1>
-            </header>
-            <section className="flex-1 overflow-auto bg-surface-950">
-              <PlaceholderView
-                title={t(PLACEHOLDER_KEYS[activeView].titleKey)}
-                description={t(PLACEHOLDER_KEYS[activeView].descKey)}
-              />
-            </section>
-          </>
-        )}
       </main>
     </div>
   );

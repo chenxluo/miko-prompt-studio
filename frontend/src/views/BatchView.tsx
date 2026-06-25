@@ -7,7 +7,9 @@ import {
   Clock,
   Coins,
   Download,
+  Eye,
   FileDown,
+  ImageIcon,
   Loader2,
   Play,
   RefreshCw,
@@ -18,9 +20,11 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 
 import * as api from '../api/client';
+import { ImagePreviewGrid } from '../components/prompts/ImagePreviewGrid';
+import { resolveImageSrc } from '../components/lab/ImagePanel';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
-import type { RunItemSummary, Task, TaskVersion } from '../types';
+import type { ImageRef, RequestImage, RunItemSummary, Task, TaskVersion } from '../types';
 
 type Phase = 'setup' | 'running' | 'results';
 type LimitOption = 10 | 50 | 'all';
@@ -59,9 +63,6 @@ export function BatchView() {
 
   const [selectedSetId, setSelectedSetId] = useState<string>('');
   const [limit, setLimit] = useState<LimitOption>(10);
-
-  const [estimate, setEstimate] = useState<api.BatchRunEstimateResponse | null>(null);
-  const [isEstimating, setIsEstimating] = useState(false);
 
   const [runId, setRunId] = useState<string | null>(null);
   const [session, setSession] = useState<api.RunListItem | null>(null);
@@ -228,21 +229,6 @@ export function BatchView() {
     };
   }
 
-  async function handleEstimate() {
-    if (!canStart) return;
-    setIsEstimating(true);
-    setError(null);
-    try {
-      const result = await api.estimateBatchRun(buildPayload());
-      setEstimate(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('batch.estimateFailed'));
-      setEstimate(null);
-    } finally {
-      setIsEstimating(false);
-    }
-  }
-
   async function startRun(response: api.BatchRunCreationResponse) {
     setRunId(response.run_id);
     setSession({
@@ -259,7 +245,6 @@ export function BatchView() {
     setElapsedMs(0);
     setRunStartedAt(Date.now());
     setPhase('running');
-    setEstimate(null);
     setError(null);
   }
 
@@ -332,7 +317,6 @@ export function BatchView() {
     setItems([]);
     setElapsedMs(0);
     setRunStartedAt(null);
-    setEstimate(null);
     setError(null);
     setSelectedItem(null);
   }
@@ -384,9 +368,6 @@ export function BatchView() {
             onChangeLimit={setLimit}
             providerNames={providerNames}
             selectedSetName={selectedSetName}
-            estimate={estimate}
-            isEstimating={isEstimating}
-            onEstimate={handleEstimate}
             onStart={handleStart}
             isStarting={isStarting}
             canStart={canStart}
@@ -445,9 +426,6 @@ interface SetupPanelProps {
   onChangeLimit: (value: LimitOption) => void;
   providerNames: Map<string, string>;
   selectedSetName?: string;
-  estimate: api.BatchRunEstimateResponse | null;
-  isEstimating: boolean;
-  onEstimate: () => void;
   onStart: () => void;
   isStarting: boolean;
   canStart: boolean;
@@ -470,9 +448,6 @@ function SetupPanel({
   onChangeLimit,
   providerNames,
   selectedSetName,
-  estimate,
-  isEstimating,
-  onEstimate,
   onStart,
   isStarting,
   canStart,
@@ -556,15 +531,22 @@ function SetupPanel({
                               : 'border-surface-800 bg-surface-950 hover:border-surface-700'
                           }`}
                         >
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between gap-2">
                             <span className="text-xs font-medium text-ink">
                               {version.version_label || version.task_version_id}
                             </span>
-                            {isCurrent && (
-                              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">
-                                {t('task.currentVersion')}
-                              </span>
-                            )}
+                            <div className="flex items-center gap-2">
+                              {version.notes && (
+                                <span className="truncate text-right text-[10px] text-ink-dim max-w-[200px]" title={version.notes}>
+                                  {version.notes}
+                                </span>
+                              )}
+                              {isCurrent && (
+                                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent shrink-0">
+                                  {t('task.currentVersion')}
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-ink-dim">
                             <span>{t('task.model')}: {version.model_id}</span>
@@ -681,59 +663,20 @@ function SetupPanel({
       )}
 
       <section className="panel p-5">
-        <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-ink-muted">
-          {t('batch.estimate')}
-        </h2>
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-          <div className="flex flex-wrap gap-x-6 gap-y-2 text-xs">
-            {estimate ? (
-              <>
-                <span className="text-ink">
-                  <span className="text-ink-dim">{t('batch.sampleCount')}:</span>{' '}
-                  {estimate.sample_count}
-                </span>
-                <span className="text-ink">
-                  <span className="text-ink-dim">{t('batch.estimateTokens')}:</span>{' '}
-                  {estimate.estimated_input_tokens.toLocaleString()} /{' '}
-                  {estimate.estimated_output_tokens.toLocaleString()}
-                </span>
-                <span className="text-cost">
-                  <span className="text-ink-dim">{t('batch.estimateCost')}:</span>{' '}
-                  {estimate.currency} {estimate.estimated_cost.toFixed(6)}
-                </span>
-              </>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onStart}
+            disabled={!canStart || isStarting}
+            className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
+          >
+            {isStarting ? (
+              <Loader2 size={14} className="animate-spin" />
             ) : (
-              <span className="text-ink-dim">{t('batch.estimatePlaceholder')}</span>
+              <Play size={14} />
             )}
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onEstimate}
-              disabled={!canStart || isEstimating}
-              className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-            >
-              {isEstimating ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Coins size={14} />
-              )}
-              {t('batch.estimate')}
-            </button>
-            <button
-              type="button"
-              onClick={onStart}
-              disabled={!canStart || isStarting}
-              className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
-            >
-              {isStarting ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Play size={14} />
-              )}
-              {t('batch.start')}
-            </button>
-          </div>
+            {t('batch.start')}
+          </button>
         </div>
       </section>
     </div>
@@ -893,6 +836,19 @@ function ResultsPanel({
             </button>
             <button
               type="button"
+              onClick={() => {
+                if (!session?.run_id) return;
+                window.dispatchEvent(
+                  new CustomEvent('miko:navigate', { detail: { view: 'results', runId: session.run_id } }),
+                );
+              }}
+              className="btn-primary inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs"
+            >
+              <Eye size={12} />
+              {t('batch.viewResults')}
+            </button>
+            <button
+              type="button"
               onClick={onRetry}
               disabled={isRetrying || counts.failed === 0}
               className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted transition-colors hover:border-danger/50 hover:text-danger disabled:opacity-50"
@@ -939,6 +895,9 @@ function ResultsPanel({
                     {t('batch.latency')}
                   </th>
                   <th className="px-4 py-3 font-semibold uppercase tracking-wider">
+                    {t('batch.image')}
+                  </th>
+                  <th className="px-4 py-3 font-semibold uppercase tracking-wider">
                     {t('batch.responsePreview')}
                   </th>
                 </tr>
@@ -956,6 +915,9 @@ function ResultsPanel({
                     </td>
                     <td className="px-4 py-3 align-top text-ink">{item.estimated_cost.toFixed(6)}</td>
                     <td className="px-4 py-3 align-top text-ink-muted">{formatLatency(item.latency_ms)}</td>
+                    <td className="px-4 py-3 align-top">
+                      <ImageThumbnail snapshot={item.internal_request_snapshot} />
+                    </td>
                     <td className="px-4 py-3 align-top text-ink-muted">
                       <div className="flex items-center gap-2">
                         <span className="max-w-xs truncate">
@@ -978,6 +940,7 @@ function ResultsPanel({
 function ResponseModal({ item, onClose }: { item: RunItemSummary; onClose: () => void }) {
   const { t } = useI18n();
   const rawText = extractRawText(item.response);
+  const itemImages = extractImagesFromSnapshot(item.internal_request_snapshot);
 
   return (
     <div
@@ -1005,7 +968,15 @@ function ResponseModal({ item, onClose }: { item: RunItemSummary; onClose: () =>
             <X size={16} />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
+          {itemImages.length > 0 && (
+            <section>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-muted">
+                {t('batch.inputImages')}
+              </h3>
+              <ImagePreviewGrid images={itemImages} size="md" />
+            </section>
+          )}
           <pre className="whitespace-pre-wrap rounded-md border border-surface-800 bg-surface-950 p-4 font-mono text-xs text-ink">
             {rawText || t('result.noRawOutput')}
           </pre>
@@ -1093,6 +1064,50 @@ function extractRawText(response: Record<string, unknown>): string {
   const text = response.text;
   if (typeof text === 'string') return text;
   return '';
+}
+
+function extractImagesFromSnapshot(
+  snapshot: Record<string, unknown> | null | undefined,
+): ImageRef[] {
+  if (!snapshot) return [];
+  const images = snapshot.images as RequestImage[] | undefined;
+  if (!Array.isArray(images)) return [];
+  return images
+    .filter((img) => img && (img.resolved?.uri || img.resolved?.path || img.path))
+    .map((img) => ({
+      path: img.resolved?.path ?? img.path ?? null,
+      uri: img.resolved?.uri ?? null,
+      mime_type: img.mime_type ?? null,
+      role: img.role ?? undefined,
+      order: img.order ?? 0,
+    }))
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
+function ImageThumbnail({
+  snapshot,
+}: {
+  snapshot: Record<string, unknown> | null | undefined;
+}) {
+  const images = extractImagesFromSnapshot(snapshot);
+  const first = images[0];
+  const src = first ? resolveImageSrc(first) : '';
+
+  if (!src) {
+    return (
+      <div className="flex h-10 w-10 items-center justify-center rounded-md border border-surface-800 bg-surface-950 text-ink-dim">
+        <ImageIcon size={14} />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt=""
+      className="h-10 w-10 rounded-md border border-surface-700 object-cover"
+    />
+  );
 }
 
 function truncateText(text: string, maxLength: number): string {

@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Copy,
   FileText,
+  GitBranch,
   ImageIcon,
   Loader2,
   Plus,
@@ -16,6 +17,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import {
   deleteTask,
+  forkTask,
   getTask,
   getTaskInputSpec,
   listResultSnapshots,
@@ -153,6 +155,7 @@ export function TasksView() {
           onClose={() => setSelectedTask(null)}
           onLoad={(version) => void handleLoad(selectedTask, version)}
           onDelete={() => void handleDelete(selectedTask)}
+          onForkNavigate={(newTask) => setSelectedTask(newTask)}
         />
       )}
     </div>
@@ -244,6 +247,7 @@ function TaskDetailDrawer({
   onClose,
   onLoad,
   onDelete,
+  onForkNavigate,
 }: {
   task: Task;
   detail: (Task & { versions: TaskVersion[] }) | null;
@@ -252,6 +256,7 @@ function TaskDetailDrawer({
   onClose: () => void;
   onLoad: (version: TaskVersion) => void;
   onDelete: () => void;
+  onForkNavigate: (task: Task) => void;
 }) {
   const { t } = useI18n();
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
@@ -265,6 +270,9 @@ function TaskDetailDrawer({
   const [isLoadingExamples, setIsLoadingExamples] = useState(false);
   const [selectedExample, setSelectedExample] = useState<TaskVersionSnapshot | null>(null);
   const [isHistoryPickerOpen, setIsHistoryPickerOpen] = useState(false);
+  const [isForking, setIsForking] = useState(false);
+  const [forkName, setForkName] = useState('');
+  const [forkError, setForkError] = useState<string | null>(null);
 
   const versions = detail?.versions ?? [];
   const selectedVersion =
@@ -308,6 +316,31 @@ function TaskDetailDrawer({
     setViewLevel('task');
     setSelectedExample(null);
     setExampleSnapshots([]);
+    setForkName('');
+    setForkError(null);
+  }
+
+  async function handleFork() {
+    if (!selectedVersion || !task) return;
+    const trimmed = forkName.trim();
+    if (!trimmed) {
+      setForkError(t('task.nameRequired'));
+      return;
+    }
+    setIsForking(true);
+    setForkError(null);
+    try {
+      const newTask = await forkTask(task.task_id, {
+        source_version_id: selectedVersion.task_version_id,
+        name: trimmed,
+      });
+      onForkNavigate(newTask);
+      setForkName('');
+    } catch (err) {
+      setForkError(err instanceof Error ? err.message : t('task.forkFailed'));
+    } finally {
+      setIsForking(false);
+    }
   }
 
   function handleAddExampleFromHistory() {
@@ -472,7 +505,7 @@ function TaskDetailDrawer({
                         }`}
                         onClick={() => void handleSelectVersion(version)}
                       >
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
                             <span className="text-xs font-medium text-ink">
                               {version.version_label || version.task_version_id}
@@ -483,6 +516,11 @@ function TaskDetailDrawer({
                               </span>
                             )}
                           </div>
+                          {version.notes && (
+                            <span className="truncate text-right text-[10px] text-ink-dim" title={version.notes}>
+                              {version.notes}
+                            </span>
+                          )}
                         </div>
                         <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-ink-dim">
                           <span>
@@ -519,6 +557,36 @@ function TaskDetailDrawer({
           ) : null}
         </div>
 
+        {forkName !== '' && !isForking && (
+          <div className="border-t border-surface-800 px-4 py-3">
+            {forkError && <p className="mb-2 text-xs text-danger">{forkError}</p>}
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={forkName}
+                onChange={(e) => setForkName(e.target.value)}
+                placeholder={t('task.name')}
+                autoFocus
+                className="flex-1 rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-xs text-ink focus:border-accent focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => void handleFork()}
+                className="btn-primary px-3 py-2 text-xs"
+              >
+                {t('task.forkConfirm')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setForkName(''); setForkError(null); }}
+                className="rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted"
+              >
+                {t('common.cancel')}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex shrink-0 gap-2 border-t border-surface-800 px-4 py-3">
           <button
             type="button"
@@ -546,6 +614,23 @@ function TaskDetailDrawer({
             >
               <ArrowLeft size={12} />
               {t('task.backToTask')}
+            </button>
+          )}
+          {viewLevel === 'version' && !isForking && (
+            <button
+              type="button"
+              onClick={() => {
+                setForkName(
+                  selectedVersion?.version_label
+                    ? `${task.name} (${selectedVersion.version_label})`
+                    : `${task.name} (fork)`,
+                );
+                setForkError(null);
+              }}
+              className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted hover:border-accent/50 hover:text-accent"
+            >
+              <GitBranch size={12} />
+              {t('task.fork')}
             </button>
           )}
         </div>
@@ -615,12 +700,6 @@ function VersionDetailView({
               label={t('prompt.userTemplate')}
               value={inputSpec.user_template}
             />
-            {inputSpec.format_instruction && (
-              <CollapsibleCodeBlock
-                label={t('task.inputSpec.formatInstruction')}
-                value={inputSpec.format_instruction}
-              />
-            )}
           </>
         ) : (
           <div className="flex h-24 items-center justify-center text-xs text-ink-dim">
@@ -901,14 +980,6 @@ function OutputContractView({ contract }: { contract?: TaskVersion['output_contr
         <span className="text-ink-muted">{t('prompt.outputMode')}</span>
         <span className="text-ink">{contract.mode ?? '—'}</span>
       </div>
-      {contract.format_instruction && (
-        <div className="space-y-1">
-          <span className="text-ink-muted">{t('task.inputSpec.formatInstruction')}</span>
-          <p className="whitespace-pre-wrap rounded-md border border-surface-800 bg-surface-950 p-2 font-mono text-ink">
-            {contract.format_instruction}
-          </p>
-        </div>
-      )}
       {contract.json_schema && (
         <div className="space-y-1">
           <span className="text-ink-muted">{t('prompt.jsonSchema')}</span>
@@ -1494,12 +1565,6 @@ function formatFullDocument(
   lines.push('## User Template');
   lines.push(spec.user_template || '(empty)');
   lines.push('');
-
-  if (spec.format_instruction) {
-    lines.push('## Format Instruction');
-    lines.push(spec.format_instruction);
-    lines.push('');
-  }
 
   if (spec.image_slots.length > 0) {
     lines.push('## Image Slots');

@@ -168,7 +168,6 @@ export interface ParserConfig {
 
 export interface OutputContract {
   mode?: OutputMode;
-  format_instruction?: string | null;
   json_schema?: Record<string, unknown> | null;
   parser?: ParserConfig | null;
 }
@@ -213,8 +212,9 @@ export interface TaskVersion extends Timestamps {
   task_version_id: string;
   task_id: string;
   version_label?: string;
-  prompt_id: string;
-  prompt_version_id: string;
+  parent_version_id?: string | null;
+  system_prompt?: string;
+  user_template?: string;
   provider_config_id?: string | null;
   model_id: string;
   model_parameters?: ModelParameters;
@@ -242,7 +242,6 @@ export interface Task extends Timestamps {
   model_parameters?: ModelParameters;
   system_prompt?: string;
   user_prompt?: string;
-  format_instruction?: string;
   output_contract?: OutputContract;
   pricing_profile_id?: string | null;
   image_resolution_enabled?: boolean;
@@ -305,41 +304,13 @@ export interface FewShotExample {
   created_from?: string;
 }
 
-export interface PromptVersionData {
-  system_prompt?: string;
-  user_template?: string;
-  format_instruction?: string;
-  notes?: string;
-}
-
-export interface PromptVersion extends PromptVersionData, Timestamps {
-  prompt_version_id: string;
-  prompt_id: string;
-}
-
-export interface Prompt extends Timestamps {
-  prompt_id: string;
-  name: string;
-  description?: string;
-  current_version_id?: string | null;
-  tags?: string[];
-}
-
 export interface PromptListItem extends Timestamps {
   prompt_id: string;
   name: string;
-  description?: string;
-  current_version_id?: string | null;
-  tags?: string[];
-  latest_version?: {
-    prompt_version_id: string;
-    system_prompt?: string;
-    user_template?: string;
-    format_instruction?: string;
-    notes?: string;
-    created_at?: string;
-    updated_at?: string;
-  } | null;
+  system_prompt: string;
+  user_template: string;
+  notes: string;
+  tags: string[];
 }
 
 export interface PromptSnapshot {
@@ -347,7 +318,6 @@ export interface PromptSnapshot {
   prompt_version_id?: string | null;
   system_prompt?: string;
   user_template?: string;
-  format_instruction?: string;
   notes?: string;
   image_slot_specs?: ImageSlotSpec[];
   variable_specs?: VariableSpec[];
@@ -427,7 +397,6 @@ export interface PromptSpec {
   user_prompt?: string;
   render_context?: RenderContext;
   template_refs?: TemplateRefs;
-  format_instruction?: string;
 }
 
 export interface ImagePreprocessConfig {
@@ -730,7 +699,6 @@ export interface ResultSnapshotDetail {
 export interface RunLabRequest {
   system_prompt?: string;
   user_prompt?: string;
-  format_instruction?: string;
   images?: ImageRef[];
   model_config_id: string;
   output_contract?: OutputContract;
@@ -748,11 +716,6 @@ export interface ListResponse<T> {
 
 export interface CreateSampleRequest {
   sample: SampleRecord;
-}
-
-export interface SavePromptRequest {
-  prompt: Prompt;
-  version?: PromptVersionData;
 }
 
 export interface SaveModelConfigRequest {
@@ -799,20 +762,10 @@ export interface CreateCompareRunPayload {
   limit?: number | null;
 }
 
-export type CompareRunEstimatePayload = CreateCompareRunPayload;
-
 export interface CompareRunCreationResponse {
   run_id: string;
   status: string;
   summary: Record<string, unknown>;
-}
-
-export interface CompareRunEstimateResponse {
-  estimated_cost: number;
-  currency: string;
-  estimated_input_tokens: number;
-  estimated_output_tokens: number;
-  sample_count: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -853,7 +806,6 @@ export interface TaskInputSpec {
   version_label: string;
   system_prompt: string;
   user_template: string;
-  format_instruction: string;
   image_slots: TaskInputSpecImageSlot[];
   variable_slots: TaskInputSpecVariableSlot[];
   expected_csv_columns: ExpectedCsvColumn[];

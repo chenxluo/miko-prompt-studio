@@ -18,7 +18,6 @@ import type {
 
 export const DEFAULT_OUTPUT_CONTRACT: OutputContract = {
   mode: 'free_text',
-  format_instruction: null,
   json_schema: null,
   parser: null,
 };
@@ -309,7 +308,6 @@ interface LabState {
   // Prompt
   systemPrompt: string;
   userPrompt: string;
-  formatInstruction: string;
 
   // Images
   images: ImageRef[];
@@ -350,7 +348,6 @@ interface LabActions {
   setViewMode: (mode: LabViewMode) => void;
   setSystemPrompt: (value: string) => void;
   setUserPrompt: (value: string, change?: { position: number; delta: number }) => void;
-  setFormatInstruction: (value: string) => void;
   addImage: (image: ImageRef) => void;
   removeImage: (index: number) => void;
   updateImageRole: (index: number, role: string) => void;
@@ -389,7 +386,6 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
 
   systemPrompt: '你是图像标注助手。请根据图片内容生成准确、详细的标注。',
   userPrompt: '请为这张图片生成标注。',
-  formatInstruction: '',
   images: [],
   imageSlots: [],
   templateImageSlotSpecs: [],
@@ -424,7 +420,6 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         : state.imageSlots;
       return { userPrompt: value, imageSlots: slots };
     }),
-  setFormatInstruction: (value) => set({ formatInstruction: value }),
 
   addImageSlot: (imageIndex, position) =>
     set((state) => {
@@ -655,31 +650,22 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         imageResolutionTarget: preprocess.target,
         activeTaskId: task.task_id,
         activeTaskVersionId: resolvedVersion.task_version_id,
-        activePromptId: resolvedVersion.prompt_id,
-        activePromptVersionId: resolvedVersion.prompt_version_id,
+        activePromptId: null,
+        activePromptVersionId: null,
         availableModels: selectedConfig ? getExposedModels(selectedConfig) : state.availableModels,
         error: null,
       });
 
-      try {
-        const promptVersion = await api.getPromptVersion(
-          resolvedVersion.prompt_id,
-          resolvedVersion.prompt_version_id,
-        );
-        const parsed = parseImageTokens(promptVersion.user_template ?? '');
-        const variableSpecs = resolvedVersion.variable_specs ?? [];
-        set({
-          systemPrompt: promptVersion.system_prompt ?? '',
-          userPrompt: parsed.text,
-          formatInstruction: promptVersion.format_instruction ?? '',
-          imageSlots: parsed.slots,
-          templateImageSlotSpecs: resolvedVersion.image_slot_specs ?? [],
-          templateVariableSpecs: variableSpecs,
-          variables: buildDefaultVariables(variableSpecs),
-        });
-      } catch {
-        // Prompt detail is non-fatal; header state is already loaded.
-      }
+      const parsed = parseImageTokens(resolvedVersion.user_template ?? '');
+      const variableSpecs = resolvedVersion.variable_specs ?? [];
+      set({
+        systemPrompt: resolvedVersion.system_prompt ?? '',
+        userPrompt: parsed.text,
+        imageSlots: parsed.slots,
+        templateImageSlotSpecs: resolvedVersion.image_slot_specs ?? [],
+        templateVariableSpecs: variableSpecs,
+        variables: buildDefaultVariables(variableSpecs),
+      });
       return;
     }
 
@@ -694,7 +680,6 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
       modelParameters: { ...DEFAULT_MODEL_PARAMETERS, ...(task.model_parameters ?? {}) },
       systemPrompt: task.system_prompt ?? '',
       userPrompt: parsed.text,
-      formatInstruction: task.format_instruction ?? '',
       imageSlots: parsed.slots,
       templateImageSlotSpecs: [],
       templateVariableSpecs: [],
@@ -712,16 +697,13 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
 
   loadPrompt: (prompt) =>
     set(() => {
-      const version = prompt.latest_version;
-      const parsed = parseImageTokens(version?.user_template ?? '');
+      const parsed = parseImageTokens(prompt.user_template ?? '');
       return {
-        systemPrompt: version?.system_prompt ?? '',
+        systemPrompt: prompt.system_prompt ?? '',
         userPrompt: parsed.text,
-        formatInstruction: version?.format_instruction ?? '',
         imageSlots: parsed.slots,
         activePromptId: prompt.prompt_id,
-        activePromptVersionId:
-          version?.prompt_version_id ?? prompt.current_version_id ?? null,
+        activePromptVersionId: null,
         activeTaskId: null,
         activeTaskVersionId: null,
         error: null,
@@ -800,10 +782,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         sample,
         system_prompt: state.systemPrompt,
         user_prompt: effectiveUserPrompt,
-        format_instruction: state.formatInstruction,
         provider_config_id: state.selectedProviderConfigId,
-        prompt_id: state.activePromptId,
-        prompt_version_id: state.activePromptVersionId,
         model_id: state.modelId,
         parameters: state.modelParameters as unknown as Record<string, unknown>,
         output_contract: state.outputContract as unknown as Record<string, unknown>,

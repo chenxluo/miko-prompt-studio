@@ -5,7 +5,7 @@
   "main": "electron/dist-electron/main.js",
   "scripts": {
     "dev:frontend": "cd frontend && npm run dev",
-    "dev:backend": "cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 21317 --reload",
+    "dev:backend": "cd backend && .venv\\Scripts\\python -m uvicorn app.main:app --host 127.0.0.1 --port 21317 --reload",
     "dev:electron": "tsc -p electron/tsconfig.json && electron .",
     "dev": "concurrently -k -n BACKEND,FRONTEND,ELECTRON -c cyan,teal,yellow \"npm:dev:backend\" \"npm:dev:frontend\" \"wait-on tcp:21317 tcp:5173 && npm run dev:electron\"",
     "build:frontend": "cd frontend && npm run build",

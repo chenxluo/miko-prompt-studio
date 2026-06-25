@@ -1,7 +1,7 @@
 import { Loader2, Tag, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-import { createTask, createTaskVersion, savePrompt } from '../../api/client';
+import { createTask, createTaskVersion } from '../../api/client';
 import { useI18n } from '../../i18n';
 import {
   buildImagePreprocessConfig,
@@ -11,11 +11,8 @@ import {
 import type { ImagePreprocessConfig, ImageSlotSpec, VariableSpec } from '../../types';
 
 export interface SaveTaskDialogPrefill {
-  prompt_id?: string | null;
-  prompt_version_id?: string | null;
   system_prompt?: string;
   user_template?: string;
-  format_instruction?: string;
   image_slot_specs?: ImageSlotSpec[];
   variable_specs?: VariableSpec[];
   provider_config_id?: string | null;
@@ -42,6 +39,7 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saveMode, setSaveMode] = useState<'version' | 'newTask'>('version');
 
   const isAddingVersion = Boolean(useLabStore.getState().activeTaskId);
 
@@ -50,6 +48,7 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
       setNotes(prefill?.notes ?? '');
       setMessage(null);
       setError(null);
+      setSaveMode('version');
     }
   }, [isOpen, prefill?.notes]);
 
@@ -60,36 +59,10 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
     setNotes(prefill?.notes ?? '');
   };
 
-  async function resolvePromptIds(): Promise<
-    { promptId: string; promptVersionId: string } | { error: string }
-  > {
-    const state = useLabStore.getState();
-
-    // When prefill explicitly provides both IDs, trust them (e.g. loading
-    // from an external source that already persisted a prompt version).
-    if (prefill?.prompt_id && prefill?.prompt_version_id) {
-      return { promptId: prefill.prompt_id, promptVersionId: prefill.prompt_version_id };
-    }
-
-    // Always create a NEW prompt version with the current (possibly edited)
-    // prompt text.  Reusing activePromptVersionId would silently ignore the
-    // user's edits because the old PromptVersion row still holds the old text.
-    const trimmedName = name.trim() || t('task.untitled');
-    const saved = await savePrompt({
-      name: trimmedName,
-      system_prompt: prefill?.system_prompt ?? state.systemPrompt,
-      user_template:
-        prefill?.user_template ?? buildPromptWithImageSlots(state.userPrompt, state.imageSlots),
-      format_instruction: prefill?.format_instruction ?? state.formatInstruction,
-      notes,
-    });
-    return { promptId: saved.prompt_id, promptVersionId: saved.prompt_version_id };
-  }
-
   const handleSave = async () => {
     const state = useLabStore.getState();
     const trimmedName = name.trim();
-    if (!isAddingVersion && !trimmedName) {
+    if ((!isAddingVersion || saveMode === 'newTask') && !trimmedName) {
       setError(t('task.nameRequired'));
       return;
     }
@@ -99,12 +72,6 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
     setMessage(null);
 
     try {
-      const promptResult = await resolvePromptIds();
-      if ('error' in promptResult) {
-        setError(promptResult.error);
-        return;
-      }
-
       const modelParameters =
         prefill?.model_parameters ??
         (state.modelParameters as Record<string, unknown>);
@@ -116,8 +83,8 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
         buildImagePreprocessConfig(state.imageResolutionEnabled, state.imageResolutionTarget);
 
       const versionPayload = {
-        prompt_id: promptResult.promptId,
-        prompt_version_id: promptResult.promptVersionId,
+        system_prompt: prefill?.system_prompt ?? state.systemPrompt,
+        user_template: prefill?.user_template ?? buildPromptWithImageSlots(state.userPrompt, state.imageSlots),
         provider_config_id: prefill?.provider_config_id ?? state.selectedProviderConfigId,
         model_id: prefill?.model_id ?? state.modelId,
         model_parameters: modelParameters,
@@ -130,7 +97,7 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
         variable_specs: prefill?.variable_specs ?? state.templateVariableSpecs,
       };
 
-      if (state.activeTaskId) {
+      if (state.activeTaskId && saveMode === 'version') {
         const newVersion = await createTaskVersion(state.activeTaskId, versionPayload);
         // Update active version so subsequent operations (e.g. save snapshot) link to the new version
         useLabStore.setState({
@@ -149,7 +116,8 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
         });
         useLabStore.setState({
           activeTaskId: newTask.task_id,
-          activeTaskVersionId: newTask.current_version?.task_version_id ?? null,
+          activeTaskVersionId:
+            newTask.current_version_id ?? newTask.current_version?.task_version_id ?? null,
         });
         setMessage(t('task.saved'));
       }
@@ -182,7 +150,7 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
         </div>
 
         <div className="space-y-3">
-          {!isAddingVersion && (
+          {(!isAddingVersion || saveMode === 'newTask') && (
             <>
               <label className="flex flex-col gap-1 text-xs text-ink-muted">
                 {t('task.name')}
@@ -224,6 +192,33 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
               className="rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
             />
           </label>
+          {isAddingVersion && (
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-ink-muted">{t('task.saveTo')}</label>
+              <div className="flex gap-4">
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-ink">
+                  <input
+                    type="radio"
+                    name="saveMode"
+                    checked={saveMode === 'version'}
+                    onChange={() => setSaveMode('version')}
+                    className="h-3.5 w-3.5"
+                  />
+                  {t('task.saveModeVersion')}
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-ink">
+                  <input
+                    type="radio"
+                    name="saveMode"
+                    checked={saveMode === 'newTask'}
+                    onChange={() => setSaveMode('newTask')}
+                    className="h-3.5 w-3.5"
+                  />
+                  {t('task.saveModeNewTask')}
+                </label>
+              </div>
+            </div>
+          )}
         </div>
 
         {(error || message) && (

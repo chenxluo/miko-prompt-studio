@@ -116,8 +116,17 @@ export function PromptPanel() {
 
   const sectionNames = useMemo(
     () => extractSectionNames(outputContract),
-    [outputContract],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [], // Only initialize from contract on mount; the input is managed locally
   );
+  const [sectionNamesInput, setSectionNamesInput] = useState<string>(sectionNames);
+
+  // Sync from contract when it changes externally (e.g. loading a task)
+  useEffect(() => {
+    const extracted = extractSectionNames(outputContract);
+    setSectionNamesInput(extracted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outputContract.parser]);
 
   const jsonSchemaString = useMemo(() => {
     if (!outputContract.json_schema) return '';
@@ -340,6 +349,8 @@ export function PromptPanel() {
 
   const handleSectionNamesChange = useCallback(
     (value: string) => {
+      // Keep the input text as-is; only sync the parsed sections to the contract
+      setSectionNamesInput(value);
       const sections = value
         .split(',')
         .map((s) => s.trim())
@@ -427,13 +438,12 @@ export function PromptPanel() {
         name,
         system_prompt: state.systemPrompt,
         user_template: buildPromptWithImageSlots(state.userPrompt, state.imageSlots),
-        format_instruction: state.formatInstruction,
         prompt_id: state.activePromptId ?? undefined,
       });
       // Update active prompt tracking
       useLabStore.setState({
         activePromptId: result.prompt_id,
-        activePromptVersionId: result.prompt_version_id,
+        activePromptVersionId: null,
       });
       // Refresh prompt list
       const items = await api.listPrompts();
@@ -657,7 +667,7 @@ export function PromptPanel() {
               type="button"
               onClick={() => setSavePromptOpen(true)}
               className="inline-flex items-center gap-1 rounded-md border border-surface-700 bg-surface-800 px-2.5 py-1.5 text-xs text-ink-muted hover:border-surface-600 hover:text-ink"
-              title={activePromptId ? t('prompt.saveNewVersion') : t('prompt.saveAsNew')}
+              title={activePromptId ? t('prompt.updateSnippet') : t('prompt.saveAsNew')}
             >
               <Save size={12} />
               {t('prompt.save')}
@@ -919,7 +929,7 @@ export function PromptPanel() {
             </label>
             <input
               type="text"
-              value={sectionNames}
+              value={sectionNamesInput}
               onChange={(event) => handleSectionNamesChange(event.target.value)}
               placeholder={t('prompt.sectionNamesPlaceholder')}
               className="rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"

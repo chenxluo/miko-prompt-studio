@@ -13,8 +13,8 @@ from app.schemas.prompt import ImageSlotSpec, VariableSpec
 
 
 class TaskVersionData(BaseModel):
-    prompt_id: str
-    prompt_version_id: str
+    system_prompt: str = ""
+    user_template: str = ""
     provider_config_id: str | None = None
     model_id: str
     model_parameters: ModelParameters = Field(default_factory=ModelParameters)
@@ -36,8 +36,6 @@ class TaskVersion(TaskVersionData, TimestampedModel):
 class TaskVersionSummary(BaseModel):
     task_version_id: str
     version_label: str
-    prompt_id: str
-    prompt_version_id: str
     provider_config_id: str | None = None
     model_id: str
     notes: str = ""
@@ -74,7 +72,6 @@ class TaskInputExpectedColumn(BaseModel):
 class TaskInputPromptSummary(BaseModel):
     system_prompt: str = ""
     user_template: str = ""
-    format_instruction: str = ""
 
 
 class TaskInputSpec(BaseModel):
@@ -84,7 +81,6 @@ class TaskInputSpec(BaseModel):
     version_label: str
     system_prompt: str = ""
     user_template: str = ""
-    format_instruction: str = ""
     image_slots: list[TaskInputImageSlot] = Field(default_factory=list)
     variable_slots: list[TaskInputVariableSlot] = Field(default_factory=list)
     expected_csv_columns: list[TaskInputExpectedColumn] = Field(default_factory=list)
@@ -109,8 +105,6 @@ class TaskSnapshot(BaseModel):
     name: str = ""
     description: str = ""
     version_label: str | None = None
-    prompt_id: str | None = None
-    prompt_version_id: str | None = None
     provider_config_id: str | None = None
     model_id: str | None = None
     model_parameters: ModelParameters = Field(default_factory=ModelParameters)

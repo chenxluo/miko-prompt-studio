@@ -20,30 +20,25 @@ export function PromptEditor({ prompt, onSaved, onCancel }: PromptEditorProps) {
 
   const [name, setName] = useState(prompt?.name ?? '');
   const [systemPrompt, setSystemPrompt] = useState(
-    prompt?.latest_version?.system_prompt ?? '',
+    prompt?.system_prompt ?? '',
   );
   const [userTemplate, setUserTemplate] = useState(
-    prompt?.latest_version?.user_template ?? '',
+    prompt?.user_template ?? '',
   );
-  const [formatInstruction, setFormatInstruction] = useState(
-    prompt?.latest_version?.format_instruction ?? '',
-  );
-  const [notes, setNotes] = useState(prompt?.latest_version?.notes ?? '');
+  const [notes, setNotes] = useState(prompt?.notes ?? '');
   const [conditionalName, setConditionalName] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
 
   const error = localError ?? storeError;
 
   const hasChanges = useMemo(() => {
-    const version = prompt?.latest_version;
     return (
       name !== (prompt?.name ?? '') ||
-      systemPrompt !== (version?.system_prompt ?? '') ||
-      userTemplate !== (version?.user_template ?? '') ||
-      formatInstruction !== (version?.format_instruction ?? '') ||
-      notes !== (version?.notes ?? '')
+      systemPrompt !== (prompt?.system_prompt ?? '') ||
+      userTemplate !== (prompt?.user_template ?? '') ||
+      notes !== (prompt?.notes ?? '')
     );
-  }, [prompt, name, systemPrompt, userTemplate, formatInstruction, notes]);
+  }, [prompt, name, systemPrompt, userTemplate, notes]);
 
   function handleInsertConditional() {
     const textarea = userTemplateRef.current;
@@ -85,7 +80,6 @@ export function PromptEditor({ prompt, onSaved, onCancel }: PromptEditorProps) {
         name: name.trim(),
         system_prompt: systemPrompt,
         user_template: userTemplate,
-        format_instruction: formatInstruction,
         notes,
         prompt_id: prompt?.prompt_id ?? null,
       });
@@ -176,18 +170,6 @@ export function PromptEditor({ prompt, onSaved, onCancel }: PromptEditorProps) {
             className="min-h-[6rem] w-full resize-y rounded-md border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
           />
           <p className="text-xs text-ink-dim">{t('prompt.userTemplateHint')}</p>
-        </div>
-
-        <div className="space-y-3">
-          <label className="block text-xs font-medium text-ink-muted">
-            {t('prompt.formatInstruction')}
-          </label>
-          <textarea
-            value={formatInstruction}
-            onChange={(event) => setFormatInstruction(event.target.value)}
-            rows={3}
-            className="min-h-[4rem] w-full resize-y rounded-md border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
-          />
         </div>
 
         <div className="space-y-3">

@@ -43,6 +43,7 @@ def _parse_soft_sections(raw_text: str, contract: OutputContract) -> ParsedRespo
     sections: dict[str, str] = {}
     current: str | None = None
     buffer: list[str] = []
+    expected = _expected_sections(contract)
 
     def flush() -> None:
         nonlocal buffer, current
@@ -53,7 +54,11 @@ def _parse_soft_sections(raw_text: str, contract: OutputContract) -> ParsedRespo
     lines = raw_text.splitlines()
     for index, line in enumerate(lines):
         next_line = lines[index + 1] if index + 1 < len(lines) else None
-        heading = _match_section_heading(line, next_line)
+        heading = (
+            _match_named_heading(line, expected)
+            if expected
+            else _match_section_heading(line, next_line)
+        )
         if heading:
             flush()
             current, inline = heading
@@ -64,7 +69,6 @@ def _parse_soft_sections(raw_text: str, contract: OutputContract) -> ParsedRespo
     flush()
 
     errors: list[dict[str, Any]] = []
-    expected = _expected_sections(contract)
     if expected:
         for name in expected:
             if name not in sections:
@@ -102,6 +106,45 @@ def _match_section_heading(line: str, next_line: str | None) -> tuple[str, str] 
     ):
         return stripped, ""
     return None
+
+
+def _match_named_heading(line: str, section_names: list[str]) -> tuple[str, str] | None:
+    stripped = _strip_leading_heading_markers(line)
+    for name in sorted(section_names, key=len, reverse=True):
+        clean_name = _clean_section_name(name)
+        if not clean_name:
+            continue
+
+        match = re.match(
+            rf"^(?:[*_`]+)?{re.escape(clean_name)}(?:[*_`]+)?(?P<rest>.*)$",
+            stripped,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+
+        rest = match.group("rest")
+        if not rest:
+            return name, ""
+        stripped_rest = rest.strip()
+        if not stripped_rest:
+            return name, ""
+        if stripped_rest[0] in {":", "："}:
+            return name, stripped_rest[1:].strip()
+        if rest[0].isspace():
+            return name, stripped_rest
+    return None
+
+
+def _strip_leading_heading_markers(line: str) -> str:
+    stripped = line.strip()
+    stripped = re.sub(r"^#{1,6}\s*", "", stripped)
+    stripped = re.sub(r"^[-*]\s+", "", stripped)
+    return stripped.strip()
+
+
+def _clean_section_name(name: str) -> str:
+    return _strip_leading_heading_markers(str(name)).strip(" -*#\t`_")
 
 
 def _expected_sections(contract: OutputContract) -> list[str]:

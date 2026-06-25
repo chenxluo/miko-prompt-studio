@@ -3,13 +3,10 @@
 import type {
   ApiErrorBody,
   CompareRunCreationResponse,
-  CompareRunEstimatePayload,
-  CompareRunEstimateResponse,
   CreateCompareRunPayload,
   ImageSlotSpec,
   ModelConfig,
   PricingProfile,
-  Prompt,
   ResultSnapshot,
   ResultSnapshotDetail,
   RunItemSummary,
@@ -36,8 +33,6 @@ import type {
 
 export type {
   CompareRunCreationResponse,
-  CompareRunEstimatePayload,
-  CompareRunEstimateResponse,
   CreateCompareRunPayload,
 } from '../types';
 
@@ -258,7 +253,6 @@ export interface LabRunPayload {
   sample: SampleRecord;
   system_prompt: string;
   user_prompt: string;
-  format_instruction: string;
   prompt_version_id?: string | null;
   prompt_id?: string | null;
   model_config_id?: string | null;
@@ -380,6 +374,26 @@ export async function listTaskVersionSnapshots(
   );
 }
 
+export interface CostStats {
+  task_id: string;
+  task_version_id: string;
+  total_images: number;
+  total_cost: number;
+  avg_cost_per_image: number;
+  avg_cost_per_request: number;
+  run_count: number;
+  sample_count: number;
+  currency: string;
+  confidence: 'none' | 'low' | 'medium' | 'high';
+}
+
+export async function getCostStats(taskId: string, versionId: string): Promise<CostStats> {
+  return request<CostStats>(
+    'GET',
+    `/api/tasks/${encodeURIComponent(taskId)}/versions/${encodeURIComponent(versionId)}/cost-stats`,
+  );
+}
+
 export async function createTask(payload: CreateTaskPayload): Promise<Task> {
   return request<Task>('POST', '/api/tasks', payload);
 }
@@ -393,6 +407,13 @@ export async function createTaskVersion(
     `/api/tasks/${encodeURIComponent(taskId)}/versions`,
     payload,
   );
+}
+
+export async function forkTask(
+  taskId: string,
+  payload: { source_version_id: string; name: string; description?: string; tags?: string[] },
+): Promise<Task> {
+  return request<Task>('POST', `/api/tasks/${encodeURIComponent(taskId)}/fork`, payload);
 }
 
 export async function updateTask(
@@ -545,8 +566,6 @@ export interface CreateBatchRunPayload {
   limit?: number | null;
 }
 
-export type BatchRunEstimatePayload = CreateBatchRunPayload;
-
 export interface BatchRunCreationResponse {
   run_id: string;
   status: string;
@@ -556,14 +575,6 @@ export interface BatchRunCreationResponse {
 export interface BatchRunStatusResponse {
   session: RunListItem;
   items: RunItemSummary[];
-}
-
-export interface BatchRunEstimateResponse {
-  estimated_cost: number;
-  currency: string;
-  estimated_input_tokens: number;
-  estimated_output_tokens: number;
-  sample_count: number;
 }
 
 export async function createBatchRun(
@@ -597,12 +608,6 @@ export async function retryFailedBatchRun(
   );
 }
 
-export async function estimateBatchRun(
-  payload: CreateBatchRunPayload,
-): Promise<BatchRunEstimateResponse> {
-  return request<BatchRunEstimateResponse>('POST', '/api/batch-runs/estimate', payload);
-}
-
 // ---------------------------------------------------------------------------
 // Compare runs
 // ---------------------------------------------------------------------------
@@ -632,12 +637,6 @@ export async function cancelCompareRun(runId: string): Promise<{ cancelled: bool
     'POST',
     `/api/compare-runs/${encodeURIComponent(runId)}/cancel`,
   );
-}
-
-export async function estimateCompareRun(
-  payload: CompareRunEstimatePayload,
-): Promise<CompareRunEstimateResponse> {
-  return request<CompareRunEstimateResponse>('POST', '/api/compare-runs/estimate', payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -706,20 +705,13 @@ export async function deleteSampleSet(sampleSetId: string): Promise<{ deleted: b
 export interface PromptListItem {
   prompt_id: string;
   name: string;
-  description: string;
-  current_version_id: string | null;
+  system_prompt: string;
+  user_template: string;
+  notes: string;
   tags: string[];
-  latest_version: {
-    prompt_version_id: string;
-    system_prompt: string;
-    user_template: string;
-    format_instruction: string;
-    notes: string;
-  } | null;
   created_at: string;
+  updated_at: string;
 }
-
-export type { Prompt };
 
 export async function listPrompts(): Promise<PromptListItem[]> {
   return request<PromptListItem[]>('GET', '/api/prompts');
@@ -727,37 +719,12 @@ export async function listPrompts(): Promise<PromptListItem[]> {
 
 export async function savePrompt(
   payload: SavePromptPayload,
-): Promise<{ prompt_id: string; prompt_version_id: string; created: boolean }> {
+): Promise<{ prompt_id: string; created: boolean }> {
   return request('POST', '/api/prompts', payload);
 }
 
 export async function getPrompt(promptId: string): Promise<PromptListItem> {
   return request<PromptListItem>('GET', `/api/prompts/${encodeURIComponent(promptId)}`);
-}
-
-export async function getPromptVersion(
-  promptId: string,
-  versionId: string,
-): Promise<{
-  prompt_version_id: string;
-  prompt_id: string;
-  system_prompt: string;
-  user_template: string;
-  format_instruction: string;
-  notes: string;
-  created_at: string;
-}> {
-  return request<
-    {
-      prompt_version_id: string;
-      prompt_id: string;
-      system_prompt: string;
-      user_template: string;
-      format_instruction: string;
-      notes: string;
-      created_at: string;
-    }
-  >('GET', `/api/prompts/${encodeURIComponent(promptId)}/versions/${encodeURIComponent(versionId)}`);
 }
 
 export async function deletePrompt(promptId: string): Promise<{ deleted: boolean }> {
@@ -929,19 +896,19 @@ export async function importCsvFile(
   file: File,
   mapping: CsvImportFileMapping,
   delimiter?: string,
-  options?: { taskVersionId?: string | null; validateOnly?: false },
+  options?: { taskVersionId?: string | null; validateOnly?: false; sampleSetName?: string },
 ): Promise<CsvImportFileResponse>;
 export async function importCsvFile(
   file: File,
   mapping: CsvImportFileMapping,
   delimiter?: string,
-  options?: { taskVersionId?: string | null; validateOnly: true },
+  options?: { taskVersionId?: string | null; validateOnly: true; sampleSetName?: string },
 ): Promise<CsvValidationResponse>;
 export async function importCsvFile(
   file: File,
   mapping: CsvImportFileMapping,
   delimiter = ',',
-  options?: { taskVersionId?: string | null; validateOnly?: boolean },
+  options?: { taskVersionId?: string | null; validateOnly?: boolean; sampleSetName?: string },
 ): Promise<CsvImportFileResponse | CsvValidationResponse> {
   const formData = new FormData();
   formData.append('file', file);
@@ -958,6 +925,9 @@ export async function importCsvFile(
   if (validateOnly) {
     formData.append('validate_only', 'true');
   }
+  if (options?.sampleSetName) {
+    formData.append('sample_set_name', options.sampleSetName);
+  }
 
   return request<CsvImportFileResponse | CsvValidationResponse>(
     'POST',
@@ -969,7 +939,7 @@ export async function importCsvFile(
 
 export async function importJsonlFile(
   file: File,
-  options?: { taskVersionId?: string | null; validateOnly?: boolean },
+  options?: { taskVersionId?: string | null; validateOnly?: boolean; sampleSetName?: string },
 ): Promise<CsvImportFileResponse | CsvValidationResponse> {
   const formData = new FormData();
   formData.append('file', file);
@@ -978,6 +948,9 @@ export async function importJsonlFile(
   }
   if (options?.validateOnly) {
     formData.append('validate_only', 'true');
+  }
+  if (options?.sampleSetName) {
+    formData.append('sample_set_name', options.sampleSetName);
   }
   return request<CsvImportFileResponse | CsvValidationResponse>(
     'POST',
@@ -1040,5 +1013,20 @@ export async function deleteResultSnapshot(snapshotId: string): Promise<{ delete
   return request<{ deleted: boolean }>(
     'DELETE',
     `/api/result-snapshots/${encodeURIComponent(snapshotId)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sample set management
+// ---------------------------------------------------------------------------
+
+export async function updateSampleSet(
+  sampleSetId: string,
+  payload: { name?: string; description?: string },
+): Promise<SampleSetListItem> {
+  return request<SampleSetListItem>(
+    'PUT',
+    `/api/sample-sets/${encodeURIComponent(sampleSetId)}`,
+    payload,
   );
 }

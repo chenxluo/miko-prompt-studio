@@ -36,7 +36,7 @@ from app.core.security import (
 from app.database import get_db, init_db
 from app.models.model_config import ModelConfigORM
 from app.models.pricing import PricingProfileORM
-from app.models.prompt import PromptORM, PromptVersionORM
+from app.models.prompt import PromptORM
 from app.models.result_snapshot import ResultSnapshotORM
 from app.models.run import AttemptORM, RunItemORM, RunSessionORM
 from app.models.sample import SampleRecordORM, SampleSetORM
@@ -46,9 +46,7 @@ from app.schemas.model_config import ModelConfig, ModelParameters
 from app.schemas.output_contract import OutputContract, OutputMode
 from app.schemas.pricing import PricingProfile, PricingSnapshot
 from app.schemas.prompt import (
-    FewShotExample,
     ImageSlotSpec,
-    PromptVersion,
     PromptVersionData,
     VariableSpec,
 )
@@ -65,7 +63,6 @@ from app.schemas.task import (
 from app.services.cost_engine import calculate_cost
 from app.services.image_persist import (
     persist_request_images,
-    request_image_to_image_ref,
     rewrite_image_uris,
 )
 from app.services.contract_validation import (
@@ -129,7 +126,6 @@ class LabRunPayload(BaseModel):
     sample: SampleRecord
     system_prompt: str = ""
     user_prompt: str = ""
-    format_instruction: str = ""
     prompt_version_id: str | None = None
     prompt_id: str | None = None
 
@@ -157,7 +153,7 @@ class LabRunPayload(BaseModel):
 
 
 class BatchRunPayload(BaseModel):
-    """Payload for POST /api/batch-runs and /api/batch-runs/estimate."""
+    """Payload for POST /api/batch-runs."""
 
     task_id: str
     sample_set_id: str
@@ -175,7 +171,7 @@ class CompareVariant(CompareTaskVersion):
 
 
 class CompareRunPayload(BaseModel):
-    """Payload for POST /api/compare-runs and /api/compare-runs/estimate."""
+    """Payload for POST /api/compare-runs."""
 
     sample_set_id: str
     variants: list[CompareVariant] = Field(min_length=1)
@@ -210,15 +206,13 @@ class SavePromptPayload(BaseModel):
     name: str
     system_prompt: str = ""
     user_template: str = ""
-    format_instruction: str = ""
     notes: str = ""
-    prompt_id: str | None = None  # if provided, creates a new version
+    prompt_id: str | None = None  # if provided, overwrites the existing snippet
 
 
 class UpdateReviewPayload(BaseModel):
     accepted: bool | None = None
     rating: int | None = None
-    labels: list[str] = Field(default_factory=list)
     notes: str = ""
 
 
@@ -437,7 +431,6 @@ async def lab_run(payload: LabRunPayload, db: AsyncSession = Depends(get_db)):
     prompt_data = PromptVersionData(
         system_prompt=payload.system_prompt,
         user_template=payload.user_prompt,
-        format_instruction=payload.format_instruction,
     )
 
     # Load or create pricing snapshot
@@ -514,19 +507,6 @@ async def _stream_lab_run(db: AsyncSession, run_request: LabRunRequest):
 # Batch runs
 # ---------------------------------------------------------------------------
 
-def _prompt_version_to_schema(row: PromptVersionORM) -> PromptVersion:
-    return PromptVersion(
-        prompt_version_id=row.prompt_version_id,
-        prompt_id=row.prompt_id,
-        system_prompt=row.system_prompt,
-        user_template=row.user_template,
-        format_instruction=row.format_instruction,
-        notes=row.notes,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-    )
-
-
 async def _resolve_task_version_for_payload(
     payload: BatchRunPayload,
     db: AsyncSession,
@@ -574,16 +554,10 @@ async def _resolve_batch_template(payload: BatchRunPayload, db: AsyncSession) ->
         parameters=parameters,
         provider_options={},
     )
-    prompt_result = await db.execute(
-        select(PromptVersionORM).where(
-            PromptVersionORM.prompt_version_id == task_version.prompt_version_id,
-            PromptVersionORM.prompt_id == task_version.prompt_id,
-        )
+    prompt_data = PromptVersionData(
+        system_prompt=task_version.system_prompt,
+        user_template=task_version.user_template,
     )
-    prompt_row = prompt_result.scalar_one_or_none()
-    if prompt_row is None:
-        raise HTTPException(404, f"Prompt version '{task_version.prompt_version_id}' not found.")
-    prompt_data = _prompt_version_to_schema(prompt_row)
     pricing = await _get_pricing(
         db,
         provider_id,
@@ -724,42 +698,6 @@ async def retry_failed_batch_run(run_id: str, db: AsyncSession = Depends(get_db)
     return await _batch_status_response(new_run_id, db)
 
 
-@app.post("/api/batch-runs/estimate")
-async def estimate_batch_run(payload: BatchRunPayload, db: AsyncSession = Depends(get_db)):
-    samples = await _load_batch_samples(payload, db)
-    template = await _resolve_batch_template(payload, db)
-    pricing_snapshot = _pricing_snapshot(template.pricing)
-    estimated_input_tokens = 0
-    estimated_output_tokens = 0
-    estimated_cost = 0.0
-    for sample in samples:
-        input_tokens = (
-            800
-            + len(json.dumps(sample.vars, ensure_ascii=False)) // 4
-            + len(sample.images) * 1000
-        )
-        output_tokens = 400
-        usage = Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=input_tokens + output_tokens,
-            image_count=len(sample.images),
-            provider_reported=False,
-            estimated=True,
-        )
-        cost = calculate_cost(usage, pricing_snapshot)
-        estimated_input_tokens += input_tokens
-        estimated_output_tokens += output_tokens
-        estimated_cost += cost.estimated_cost
-    return {
-        "estimated_cost": estimated_cost,
-        "currency": pricing_snapshot.currency,
-        "estimated_input_tokens": estimated_input_tokens,
-        "estimated_output_tokens": estimated_output_tokens,
-        "sample_count": len(samples),
-    }
-
-
 async def _get_batch_session_or_404(run_id: str, db: AsyncSession) -> RunSessionORM:
     result = await db.execute(
         select(RunSessionORM).where(
@@ -827,8 +765,6 @@ async def _resolve_compare_variants(
                 request_template=template,
                 task_id=task.task_id,
                 task_version_id=task_version.task_version_id,
-                prompt_id=task_version.prompt_id,
-                prompt_version_id=task_version.prompt_version_id,
             )
         )
     return variants
@@ -844,47 +780,6 @@ async def _load_compare_samples(
         limit=payload.limit,
     )
     return await _load_batch_samples(batch_payload, db)
-
-
-@app.post("/api/compare-runs/estimate")
-async def estimate_compare_run(payload: CompareRunPayload, db: AsyncSession = Depends(get_db)):
-    samples = await _load_compare_samples(payload, db)
-    variants = await _resolve_compare_variants(payload, db)
-    estimated_input_tokens = 0
-    estimated_output_tokens = 0
-    estimated_cost = 0.0
-    currency = "USD"
-    for variant in variants:
-        pricing_snapshot = _pricing_snapshot(variant.request_template.pricing)
-        currency = pricing_snapshot.currency
-        for sample in samples:
-            input_tokens = (
-                800
-                + len(json.dumps(sample.vars, ensure_ascii=False)) // 4
-                + len(sample.images) * 1000
-            )
-            output_tokens = 400
-            usage = Usage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=input_tokens + output_tokens,
-                image_count=len(sample.images),
-                provider_reported=False,
-                estimated=True,
-            )
-            cost = calculate_cost(usage, pricing_snapshot)
-            estimated_input_tokens += input_tokens
-            estimated_output_tokens += output_tokens
-            estimated_cost += cost.estimated_cost
-    return {
-        "estimated_cost": estimated_cost,
-        "currency": currency,
-        "estimated_input_tokens": estimated_input_tokens,
-        "estimated_output_tokens": estimated_output_tokens,
-        "sample_count": len(samples),
-        "variant_count": len(variants),
-        "cell_count": len(samples) * len(variants),
-    }
 
 
 @app.post("/api/compare-runs")
@@ -997,8 +892,8 @@ def _task_version_to_schema(row: TaskVersionORM) -> TaskVersion:
         task_id=row.task_id,
         version_label=row.version_label,
         parent_version_id=row.parent_version_id,
-        prompt_id=row.prompt_id,
-        prompt_version_id=row.prompt_version_id,
+        system_prompt=row.system_prompt,
+        user_template=row.user_template,
         provider_config_id=row.provider_config_id,
         model_id=row.model_id,
         model_parameters=ModelParameters(**(row.model_parameters or {})),
@@ -1019,8 +914,6 @@ def _task_version_summary(row: TaskVersionORM | None) -> TaskVersionSummary | No
     return TaskVersionSummary(
         task_version_id=row.task_version_id,
         version_label=row.version_label,
-        prompt_id=row.prompt_id,
-        prompt_version_id=row.prompt_version_id,
         provider_config_id=row.provider_config_id,
         model_id=row.model_id,
         notes=row.notes,
@@ -1048,8 +941,8 @@ def _task_to_schema(
 
 
 def _apply_version_data(row: TaskVersionORM, data: TaskVersionDataSchema) -> None:
-    row.prompt_id = data.prompt_id
-    row.prompt_version_id = data.prompt_version_id
+    row.system_prompt = data.system_prompt
+    row.user_template = data.user_template
     row.provider_config_id = data.provider_config_id
     row.model_id = data.model_id
     row.model_parameters = data.model_parameters.model_dump(mode="json", exclude_none=True)
@@ -1106,23 +999,6 @@ async def _get_task_version_by_id_or_404(
     if row is None:
         raise HTTPException(404, "Task version not found")
     return row
-
-
-async def _prompt_version_for_task_version(
-    task_version_id: str,
-    db: AsyncSession,
-) -> PromptVersion:
-    task_version = await _get_task_version_by_id_or_404(task_version_id, db)
-    result = await db.execute(
-        select(PromptVersionORM).where(
-            PromptVersionORM.prompt_id == task_version.prompt_id,
-            PromptVersionORM.prompt_version_id == task_version.prompt_version_id,
-        )
-    )
-    prompt_row = result.scalar_one_or_none()
-    if prompt_row is None:
-        raise HTTPException(404, f"Prompt version '{task_version.prompt_version_id}' not found.")
-    return _prompt_version_to_schema(prompt_row)
 
 
 async def _task_version_schema_by_id(task_version_id: str, db: AsyncSession) -> TaskVersion:
@@ -1229,16 +1105,7 @@ async def get_task_input_spec(
 ):
     task = await _get_task_or_404(task_id, db)
     task_version = await _get_task_version_or_404(task_id, task_version_id, db)
-    prompt_result = await db.execute(
-        select(PromptVersionORM).where(
-            PromptVersionORM.prompt_id == task_version.prompt_id,
-            PromptVersionORM.prompt_version_id == task_version.prompt_version_id,
-        )
-    )
-    prompt_version = prompt_result.scalar_one_or_none()
-    if prompt_version is None:
-        raise HTTPException(404, f"Prompt version '{task_version.prompt_version_id}' not found.")
-    return generate_input_spec_for_task_version(task, task_version, prompt_version).model_dump(
+    return generate_input_spec_for_task_version(task, task_version).model_dump(
         mode="json"
     )
 
@@ -1314,6 +1181,70 @@ async def list_task_version_snapshots(
     return snapshots
 
 
+@app.get("/api/tasks/{task_id}/versions/{task_version_id}/cost-stats")
+async def get_task_version_cost_stats(
+    task_id: str,
+    task_version_id: str,
+    db: AsyncSession = Depends(get_db),  # noqa: B008
+):
+    await _get_task_version_or_404(task_id, task_version_id, db)
+
+    sessions_result = await db.execute(
+        select(RunSessionORM).where(
+            RunSessionORM.run_type.in_([RunType.BATCH.value, RunType.LAB.value]),
+            RunSessionORM.status == RunSessionStatus.COMPLETED.value,
+        )
+    )
+    sessions = [
+        session
+        for session in sessions_result.scalars().all()
+        if (session.source or {}).get("task_version_id") == task_version_id
+    ]
+    run_ids = [session.run_id for session in sessions]
+
+    items: list[RunItemORM] = []
+    if run_ids:
+        items_result = await db.execute(
+            select(RunItemORM).where(
+                RunItemORM.run_id.in_(run_ids),
+                RunItemORM.status.in_([RunItemType.SUCCEEDED.value, "completed"]),
+            )
+        )
+        items = list(items_result.scalars().all())
+
+    total_images = len(items)
+    total_cost = sum(float(item.estimated_cost or 0.0) for item in items)
+    avg_cost = total_cost / total_images if total_images > 0 else 0.0
+    sample_count = len({item.sample_id for item in items if item.sample_id})
+    currency = "USD"
+    for item in items:
+        snapshot = item.pricing_snapshot or {}
+        if snapshot.get("currency"):
+            currency = snapshot["currency"]
+            break
+
+    confidence = "none"
+    if total_images >= 50:
+        confidence = "high"
+    elif total_images >= 10:
+        confidence = "medium"
+    elif total_images > 0:
+        confidence = "low"
+
+    return {
+        "task_id": task_id,
+        "task_version_id": task_version_id,
+        "total_images": total_images,
+        "total_cost": total_cost,
+        "avg_cost_per_image": avg_cost,
+        "avg_cost_per_request": avg_cost,
+        "run_count": len(run_ids),
+        "sample_count": sample_count,
+        "currency": currency,
+        "confidence": confidence,
+    }
+
+
 @app.put("/api/tasks/{task_id}")
 async def update_task(task_id: str, payload: UpdateTaskPayload, db: AsyncSession = Depends(get_db)):
     row = await _get_task_or_404(task_id, db)
@@ -1330,6 +1261,61 @@ async def update_task(task_id: str, payload: UpdateTaskPayload, db: AsyncSession
     await db.commit()
     current = await _current_task_version(row, db)
     return _task_to_schema(row, current_version=current).model_dump(mode="json", exclude_none=True)
+
+
+class ForkTaskPayload(BaseModel):
+    source_version_id: str
+    name: str
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/tasks/{task_id}/fork")
+async def fork_task(task_id: str, payload: ForkTaskPayload, db: AsyncSession = Depends(get_db)):
+    """Fork a task version into a new independent task.
+
+    Creates a new Task with a single TaskVersion that is a complete copy of
+    the source version.
+    """
+    source_version = await _get_task_version_or_404(task_id, payload.source_version_id, db)
+
+    # 1. Create new Task
+    new_task_id = f"task_{uuid4().hex[:12]}"
+    new_task = TaskORM(
+        task_id=new_task_id,
+        name=payload.name,
+        description=payload.description,
+        tags=payload.tags,
+    )
+    db.add(new_task)
+    await db.flush()
+
+    # 2. Create new TaskVersion (copy all config from source)
+    new_version_id = f"tv_{uuid4().hex[:12]}"
+    new_version = TaskVersionORM(
+        task_version_id=new_version_id,
+        task_id=new_task_id,
+        version_label="v1",
+    )
+    # Copy all fields from source version
+    new_version.system_prompt = source_version.system_prompt
+    new_version.user_template = source_version.user_template
+    new_version.provider_config_id = source_version.provider_config_id
+    new_version.model_id = source_version.model_id
+    new_version.model_parameters = source_version.model_parameters
+    new_version.output_contract = source_version.output_contract
+    new_version.image_preprocess_config = source_version.image_preprocess_config
+    new_version.image_slot_specs = source_version.image_slot_specs
+    new_version.variable_specs = source_version.variable_specs
+    new_version.pricing_profile_id = source_version.pricing_profile_id
+    new_version.notes = source_version.notes
+    db.add(new_version)
+    new_task.current_version_id = new_version_id
+
+    await db.commit()
+    return _task_to_schema(new_task, current_version=new_version).model_dump(
+        mode="json", exclude_none=True
+    )
 
 
 @app.delete("/api/tasks/{task_id}")
@@ -1920,7 +1906,6 @@ async def export_run_jsonl(run_id: str, db: AsyncSession = Depends(get_db)):
                         "vars": render_context.get("vars") or {},
                         "system_prompt": prompt_spec.get("system_prompt"),
                         "user_prompt": prompt_spec.get("user_prompt"),
-                        "format_instruction": prompt_spec.get("format_instruction"),
                     },
                     "response": item_data["response"] or {},
                     "usage": item_data["usage"] or {},
@@ -2247,62 +2232,43 @@ async def delete_sample_set(sample_set_id: str, db: AsyncSession = Depends(get_d
     return {"deleted": True}
 
 
+@app.put("/api/sample-sets/{sample_set_id}")
+async def update_sample_set(sample_set_id: str, payload: dict, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(SampleSetORM).where(SampleSetORM.sample_set_id == sample_set_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "Sample set not found")
+    if "name" in payload and isinstance(payload["name"], str):
+        row.name = payload["name"]
+    if "description" in payload and isinstance(payload["description"], str):
+        row.description = payload["description"]
+    row.updated_at = utc_now().isoformat()
+    await db.commit()
+    await db.refresh(row)
+    return _sample_set_to_dict(row)
+
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
 
-def _prompt_version_to_dict(version: PromptVersionORM) -> dict[str, Any]:
-    return {
-        "prompt_version_id": version.prompt_version_id,
-        "prompt_id": version.prompt_id,
-        "system_prompt": version.system_prompt,
-        "user_template": version.user_template,
-        "format_instruction": version.format_instruction,
-        "notes": version.notes,
-        "created_at": version.created_at,
-        "updated_at": version.updated_at,
-    }
-
-
-def _prompt_to_dict(prompt: PromptORM, versions: list[PromptVersionORM]) -> dict[str, Any]:
-    latest_version = None
-    if prompt.current_version_id:
-        latest_version = next(
-            (v for v in versions if v.prompt_version_id == prompt.current_version_id), None
-        )
-    if latest_version is None and versions:
-        latest_version = versions[-1]
-
+def _prompt_to_dict(prompt: PromptORM) -> dict[str, Any]:
     return {
         "prompt_id": prompt.prompt_id,
         "name": prompt.name,
-        "description": prompt.description,
-        "current_version_id": prompt.current_version_id,
+        "system_prompt": prompt.system_prompt,
+        "user_template": prompt.user_template,
+        "notes": prompt.notes,
         "tags": prompt.tags,
-        "latest_version": _prompt_version_to_dict(latest_version) if latest_version else None,
         "created_at": prompt.created_at,
         "updated_at": prompt.updated_at,
     }
 
 
-def _version_sort_key(version: PromptVersionORM) -> tuple[int, int, str]:
-    return (0, version.id or 0, version.created_at)
-
-
 @app.get("/api/prompts")
 async def list_prompts(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PromptORM).order_by(PromptORM.created_at.desc()))
-    prompts = []
-    for r in result.scalars().all():
-        vstmt = (
-            select(PromptVersionORM)
-            .where(PromptVersionORM.prompt_id == r.prompt_id)
-            .order_by(PromptVersionORM.created_at.asc())
-        )
-        vresult = await db.execute(vstmt)
-        versions = sorted(vresult.scalars().all(), key=_version_sort_key)
-        prompts.append(_prompt_to_dict(r, versions))
-    return prompts
+    return [_prompt_to_dict(prompt) for prompt in result.scalars().all()]
 
 
 @app.get("/api/prompts/{prompt_id}")
@@ -2312,138 +2278,53 @@ async def get_prompt(prompt_id: str, db: AsyncSession = Depends(get_db)):
     if prompt is None:
         raise HTTPException(404, f"Prompt '{prompt_id}' not found.")
 
-    vresult = await db.execute(
-        select(PromptVersionORM)
-        .where(PromptVersionORM.prompt_id == prompt_id)
-        .order_by(PromptVersionORM.created_at.asc())
-    )
-    versions = sorted(vresult.scalars().all(), key=_version_sort_key)
-    data = _prompt_to_dict(prompt, versions)
-    data["versions"] = [_prompt_version_to_dict(version) for version in versions]
-    return data
-
-
-@app.get("/api/prompts/{prompt_id}/versions/{version_id}")
-async def get_prompt_version(
-    prompt_id: str, version_id: str, db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(
-        select(PromptVersionORM).where(
-            PromptVersionORM.prompt_id == prompt_id,
-            PromptVersionORM.prompt_version_id == version_id,
-        )
-    )
-    version = result.scalar_one_or_none()
-    if version is None:
-        raise HTTPException(
-            404, f"Prompt version '{version_id}' not found for prompt '{prompt_id}'."
-        )
-    return _prompt_version_to_dict(version)
+    return _prompt_to_dict(prompt)
 
 
 @app.post("/api/prompts")
 async def save_prompt(payload: SavePromptPayload, db: AsyncSession = Depends(get_db)):
     prompt_id = payload.prompt_id or f"prompt_{uuid4().hex[:12]}"
-    version_id = f"pv_{uuid4().hex[:16]}"
 
-    # Create or update prompt
     stmt = select(PromptORM).where(PromptORM.prompt_id == prompt_id)
     result = await db.execute(stmt)
     prompt = result.scalar_one_or_none()
+    created = prompt is None
 
-    if prompt is None:
+    if created:
         prompt = PromptORM(
             prompt_id=prompt_id,
             name=payload.name,
-            description="",
+            system_prompt=payload.system_prompt,
+            user_template=payload.user_template,
+            notes=payload.notes,
         )
         db.add(prompt)
     else:
         prompt.name = payload.name
-
-    # Create new version
-    version = PromptVersionORM(
-        prompt_version_id=version_id,
-        prompt_id=prompt_id,
-        system_prompt=payload.system_prompt,
-        user_template=payload.user_template,
-        format_instruction=payload.format_instruction,
-        notes=payload.notes,
-    )
-    db.add(version)
-    prompt.current_version_id = version_id
+        prompt.system_prompt = payload.system_prompt
+        prompt.user_template = payload.user_template
+        prompt.notes = payload.notes
+        prompt.updated_at = utc_now().isoformat()
     await db.commit()
 
     return {
         "prompt_id": prompt_id,
-        "prompt_version_id": version_id,
-        "created": True,
+        "created": created,
     }
 
 
 @app.delete("/api/prompts/{prompt_id}")
 async def delete_prompt(prompt_id: str, db: AsyncSession = Depends(get_db)):
-    """Delete a prompt and all of its versions."""
+    """Delete a prompt snippet."""
     result = await db.execute(select(PromptORM).where(PromptORM.prompt_id == prompt_id))
     prompt = result.scalar_one_or_none()
     if prompt is None:
         raise HTTPException(404, f"Prompt '{prompt_id}' not found.")
 
-    await db.execute(
-        delete(PromptVersionORM).where(PromptVersionORM.prompt_id == prompt_id)
-    )
     await db.delete(prompt)
     await db.commit()
 
-    # Clean up persisted few-shot images for this prompt.
-    settings = get_settings()
-    prompt_dir = settings.prompts_dir / prompt_id
-    if prompt_dir.exists():
-        shutil.rmtree(prompt_dir, ignore_errors=True)
-
     return {"deleted": True}
-
-
-@app.get("/api/prompts/{prompt_id}/versions/{version_id}/images/{filename}")
-async def serve_prompt_version_image(
-    prompt_id: str, version_id: str, filename: str
-):
-    """Serve a persisted few-shot image for a prompt version."""
-    from pathlib import Path
-    from fastapi.responses import FileResponse
-
-    safe_name = Path(filename).name
-    settings = get_settings()
-    file_path = settings.prompts_dir / prompt_id / version_id / safe_name
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(404, "File not found")
-    return FileResponse(file_path)
-
-
-def _persist_few_shot_example(
-    example: FewShotExample,
-    prompt_id: str,
-    version_id: str,
-) -> dict[str, Any]:
-    """Persist images inside a few-shot example and convert to ImageRefs.
-
-    The frontend may send RequestImage dicts (from a run result) in
-    example.images.  We copy any local files into the prompt version's own
-    directory and store lightweight ImageRefs instead.
-    """
-    settings = get_settings()
-    version_dir = settings.prompts_dir / prompt_id / version_id
-    version_dir.mkdir(parents=True, exist_ok=True)
-
-    raw_images = example.images or []
-    request_images = [img.model_dump(mode="json") if isinstance(img, BaseModel) else img for img in raw_images]
-    persisted = persist_request_images(request_images, version_dir)
-    served = rewrite_image_uris(persisted, f"/api/prompts/{prompt_id}/versions/{version_id}/images")
-    image_refs = [request_image_to_image_ref(img) for img in served]
-
-    data = example.model_dump(mode="json")
-    data["images"] = image_refs
-    return data
 
 
 # ---------------------------------------------------------------------------
@@ -2865,6 +2746,7 @@ async def csv_import_file(
     mapping: str = Form(...),
     task_version_id: str | None = Form(None),
     validate_only: bool = Form(False),
+    sample_set_name: str = Form(""),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -2883,7 +2765,7 @@ async def csv_import_file(
         sample_set_id = await _persist_sample_records(
             db,
             records,
-            name=f"Import {datetime.utcnow().isoformat()}",
+            name=sample_set_name.strip() or f"Import {datetime.utcnow().isoformat()}",
             import_source={"type": "csv", "filename": file.filename or ""},
         )
         response = {"sample_set_id": sample_set_id, "imported_count": len(records)}
@@ -2899,6 +2781,7 @@ async def jsonl_import_file(
     file: UploadFile = File(...),
     task_version_id: str | None = Form(None),
     validate_only: bool = Form(False),
+    sample_set_name: str = Form(""),
     db: AsyncSession = Depends(get_db),
 ):
     temp_path = await _save_upload_to_temp(file)
@@ -2914,7 +2797,7 @@ async def jsonl_import_file(
         sample_set_id = await _persist_sample_records(
             db,
             records,
-            name=f"Import {datetime.utcnow().isoformat()}",
+            name=sample_set_name.strip() or f"Import {datetime.utcnow().isoformat()}",
             import_source={"type": "jsonl", "filename": file.filename or ""},
         )
         response = {"sample_set_id": sample_set_id, "imported_count": len(records)}
