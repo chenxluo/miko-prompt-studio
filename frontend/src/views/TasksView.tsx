@@ -16,28 +16,51 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 
 import {
+  createTaskGroup,
   deleteTask,
+  deleteTaskGroup,
+  deleteTaskVersion,
+  exportTaskDoc,
   forkTask,
   getTask,
   getTaskInputSpec,
   listResultSnapshots,
+  listTaskGroups,
   listTaskVersionSnapshots,
   listTasks,
   updateResultSnapshot,
+  updateTask,
+  updateTaskGroup,
 } from '../api/client';
+import { TaskGroupFilter } from '../components/tasks/TaskGroupFilter';
+import { TaskGroupManager } from '../components/tasks/TaskGroupManager';
+import { TaskListCard } from '../components/tasks/TaskListCard';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
-import type { ResultSnapshot, Task, TaskInputSpec, TaskVersion, TaskVersionSnapshot } from '../types';
+import type {
+  ResultSnapshot,
+  Task,
+  TaskGroup,
+  TaskInputSpec,
+  TaskVersion,
+  OutputContract,
+  TaskVersionSnapshot,
+} from '../types';
 
 export function TasksView() {
   const { t } = useI18n();
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [groups, setGroups] = useState<TaskGroup[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [detail, setDetail] = useState<(Task & { versions: TaskVersion[] }) | null>(null);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null | 'ungrouped'>(null);
+  const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const [groupSaving, setGroupSaving] = useState(false);
 
   const providerConfigs = useLabStore((state) => state.providerConfigs);
   const loadProviderConfigs = useLabStore((state) => state.loadProviderConfigs);
@@ -49,6 +72,7 @@ export function TasksView() {
 
   useEffect(() => {
     void refreshTasks();
+    void refreshGroups();
   }, []);
 
   useEffect(() => {
@@ -69,15 +93,29 @@ export function TasksView() {
     [providerConfigs],
   );
 
-  async function refreshTasks() {
+  const filteredTasks = useMemo(() => {
+    if (selectedGroupId === null) return tasks;
+    if (selectedGroupId === 'ungrouped') return tasks.filter((task) => !task.group_id);
+    return tasks.filter((task) => task.group_id === selectedGroupId);
+  }, [tasks, selectedGroupId]);
+
+  async function refreshTasks(groupId?: string | null) {
     setIsLoading(true);
     setError(null);
     try {
-      setTasks(await listTasks());
+      setTasks(await listTasks(groupId));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('task.loadFailed'));
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function refreshGroups() {
+    try {
+      setGroups(await listTaskGroups());
+    } catch {
+      // Non-fatal: tasks still usable without groups.
     }
   }
 
@@ -97,6 +135,59 @@ export function TasksView() {
     }
   }
 
+  async function handleMoveTask(task: Task, groupId: string | null) {
+    try {
+      await updateTask(task.task_id, { group_id: groupId });
+      setTasks((current) =>
+        current.map((item) => (item.task_id === task.task_id ? { ...item, group_id: groupId } : item)),
+      );
+      if (selectedTask?.task_id === task.task_id) {
+        setSelectedTask((current) => (current ? { ...current, group_id: groupId } : current));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('task.saveFailed'));
+    }
+  }
+
+  async function handleSaveGroup(payload: {
+    group_id?: string;
+    name: string;
+    description?: string;
+    color?: string;
+    sort_order?: number;
+  }) {
+    setGroupSaving(true);
+    setGroupError(null);
+    try {
+      if (payload.group_id) {
+        await updateTaskGroup(payload.group_id, payload);
+      } else {
+        await createTaskGroup(payload);
+      }
+      await refreshGroups();
+      setIsGroupManagerOpen(false);
+    } catch (err) {
+      setGroupError(err instanceof Error ? err.message : t('task.saveFailed'));
+    } finally {
+      setGroupSaving(false);
+    }
+  }
+
+  async function handleDeleteGroup(groupId: string) {
+    if (!window.confirm(t('task.deleteGroupConfirm'))) return;
+    setGroupError(null);
+    try {
+      await deleteTaskGroup(groupId);
+      if (selectedGroupId === groupId) {
+        setSelectedGroupId(null);
+      }
+      await refreshGroups();
+      await refreshTasks(selectedGroupId === groupId ? null : selectedGroupId);
+    } catch (err) {
+      setGroupError(err instanceof Error ? err.message : t('task.deleteFailed'));
+    }
+  }
+
   async function handleLoad(task: Task, version?: TaskVersion) {
     await loadTask(task, version);
     window.dispatchEvent(new CustomEvent('miko:navigate', { detail: 'lab' }));
@@ -111,7 +202,23 @@ export function TasksView() {
           </h1>
           <p className="mt-1 text-xs text-ink-dim">{t('task.description')}</p>
         </div>
+        <button
+          type="button"
+          onClick={() => setIsGroupManagerOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted transition-colors hover:bg-surface-800 hover:text-ink"
+        >
+          <Tag size={14} />
+          {t('task.manageGroups')}
+        </button>
       </header>
+
+      <TaskGroupFilter
+        groups={groups}
+        selectedGroupId={selectedGroupId}
+        onSelect={setSelectedGroupId}
+        allLabel={t('common.all')}
+        ungroupedLabel={t('task.noGroup')}
+      />
 
       <section className="flex-1 overflow-auto p-6">
         {error && (
@@ -125,21 +232,23 @@ export function TasksView() {
             <Loader2 size={16} className="mr-2 animate-spin" />
             {t('task.loading')}
           </div>
-        ) : tasks.length === 0 ? (
+        ) : filteredTasks.length === 0 ? (
           <div className="panel flex h-48 items-center justify-center text-sm text-ink-dim">
             {t('task.empty')}
           </div>
         ) : (
           <div className="grid gap-3">
-            {tasks.map((task) => (
+            {filteredTasks.map((task) => (
               <TaskListCard
                 key={task.task_id}
                 task={task}
+                groups={groups}
                 providerNames={providerNames}
                 isDeleting={deletingId === task.task_id}
                 onClick={() => setSelectedTask(task)}
                 onDelete={() => void handleDelete(task)}
                 onLoad={() => void handleLoad(task, task.current_version ?? undefined)}
+                onMoveGroup={(groupId) => void handleMoveTask(task, groupId)}
               />
             ))}
           </div>
@@ -152,111 +261,65 @@ export function TasksView() {
           detail={detail}
           isLoading={isDetailLoading}
           providerNames={providerNames}
+          groups={groups}
           onClose={() => setSelectedTask(null)}
           onLoad={(version) => void handleLoad(selectedTask, version)}
           onDelete={() => void handleDelete(selectedTask)}
-          onForkNavigate={(newTask) => setSelectedTask(newTask)}
+          onForkNavigate={(newTask) => {
+            setSelectedTask(newTask);
+            void refreshTasks();
+          }}
+          onMoveGroup={(groupId) => void handleMoveTask(selectedTask, groupId)}
+          onVersionDeleted={() => {
+            getTask(selectedTask.task_id)
+              .then(setDetail)
+              .catch((err) => setError(err instanceof Error ? err.message : t('task.detailFailed')));
+          }}
+        />
+      )}
+
+      {isGroupManagerOpen && (
+        <TaskGroupManager
+          groups={groups}
+          error={groupError}
+          saving={groupSaving}
+          onClose={() => {
+            setIsGroupManagerOpen(false);
+            setGroupError(null);
+          }}
+          onSave={handleSaveGroup}
+          onDelete={handleDeleteGroup}
         />
       )}
     </div>
   );
 }
 
-function TaskListCard({
-  task,
-  providerNames,
-  isDeleting,
-  onClick,
-  onDelete,
-  onLoad,
-}: {
-  task: Task;
-  providerNames: Map<string, string>;
-  isDeleting: boolean;
-  onClick: () => void;
-  onDelete: () => void;
-  onLoad: () => void;
-}) {
-  const { t } = useI18n();
-  const version = task.current_version;
-  const providerName = version?.provider_config_id
-    ? providerNames.get(version.provider_config_id) ?? version.provider_config_id
-    : task.provider_config_id
-      ? providerNames.get(task.provider_config_id) ?? task.provider_config_id
-      : '—';
-  const modelId = version?.model_id ?? task.model_id ?? '—';
-  const versionLabel = version?.version_label ?? '—';
-
-  return (
-    <article
-      className="panel cursor-pointer p-4 transition-colors hover:border-surface-600"
-      onClick={onClick}
-    >
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <BookOpen size={14} className="text-accent" />
-            <h2 className="truncate text-sm font-semibold text-ink">{task.name}</h2>
-            {versionLabel && versionLabel !== '—' && (
-              <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-ink-muted">
-                {versionLabel}
-              </span>
-            )}
-          </div>
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-dim">
-            <span>
-              {t('task.model')}: {modelId}
-            </span>
-            <span>
-              {t('task.providerConfig')}: {providerName}
-            </span>
-            <span>
-              {t('task.updatedAt')}: {formatTime(task.updated_at)}
-            </span>
-          </div>
-          {task.description && (
-            <p className="mt-2 line-clamp-2 text-xs text-ink-muted">{task.description}</p>
-          )}
-        </div>
-
-        <div className="flex shrink-0 gap-2" onClick={(event) => event.stopPropagation()}>
-          <button type="button" onClick={onLoad} className="btn-primary px-3 py-2 text-xs">
-            <Upload size={14} />
-            {t('task.load')}
-          </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={isDeleting}
-            className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted hover:border-danger/50 hover:text-danger disabled:opacity-50"
-          >
-            {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-            {t('task.delete')}
-          </button>
-        </div>
-      </div>
-    </article>
-  );
-}
 
 function TaskDetailDrawer({
   task,
   detail,
   isLoading,
   providerNames,
+  groups,
   onClose,
   onLoad,
   onDelete,
   onForkNavigate,
+  onMoveGroup,
+  onVersionDeleted,
 }: {
   task: Task;
   detail: (Task & { versions: TaskVersion[] }) | null;
   isLoading: boolean;
   providerNames: Map<string, string>;
+  groups: TaskGroup[];
   onClose: () => void;
   onLoad: (version: TaskVersion) => void;
   onDelete: () => void;
   onForkNavigate: (task: Task) => void;
+  onMoveGroup: (groupId: string | null) => void;
+  onVersionDeleted: () => void;
 }) {
   const { t } = useI18n();
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
@@ -273,12 +336,29 @@ function TaskDetailDrawer({
   const [isForking, setIsForking] = useState(false);
   const [forkName, setForkName] = useState('');
   const [forkError, setForkError] = useState<string | null>(null);
+  const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
+  const [showMoveMenu, setShowMoveMenu] = useState(false);
+  const [versionDeleteError, setVersionDeleteError] = useState<string | null>(null);
+  const [isExportingDoc, setIsExportingDoc] = useState(false);
+  const [exportDocError, setExportDocError] = useState<string | null>(null);
 
   const versions = detail?.versions ?? [];
   const selectedVersion =
     versions.find((version) => version.task_version_id === selectedVersionId) ??
     task.current_version ??
     versions[0];
+  const handleExportDoc = async () => {
+    if (!selectedVersion) return;
+    setIsExportingDoc(true);
+    setExportDocError(null);
+    try {
+      await exportTaskDoc(task.task_id, selectedVersion.task_version_id);
+    } catch (err) {
+      setExportDocError(err instanceof Error ? err.message : t('task.exportDocFailed'));
+    } finally {
+      setIsExportingDoc(false);
+    }
+  };
 
   useEffect(() => {
     setSelectedVersionId(task.current_version_id ?? task.current_version?.task_version_id ?? null);
@@ -286,6 +366,9 @@ function TaskDetailDrawer({
     setInputSpec(null);
     setSpecError(null);
     setIsSpecLoading(false);
+    setDeletingVersionId(null);
+    setShowMoveMenu(false);
+    setVersionDeleteError(null);
   }, [task]);
 
   async function handleSelectVersion(version: TaskVersion) {
@@ -309,6 +392,28 @@ function TaskDetailDrawer({
     } finally {
       setIsSpecLoading(false);
       setIsLoadingExamples(false);
+    }
+  }
+
+  async function handleDeleteVersion(version: TaskVersion) {
+    if (!window.confirm(t('task.versionDeleteConfirm'))) return;
+    setDeletingVersionId(version.task_version_id);
+    setVersionDeleteError(null);
+    try {
+      await deleteTaskVersion(task.task_id, version.task_version_id);
+      onVersionDeleted();
+      if (task.current_version_id === version.task_version_id) {
+        const remaining = detail?.versions.filter(
+          (v) => v.task_version_id !== version.task_version_id,
+        );
+        if (remaining && remaining.length > 0) {
+          setSelectedVersionId(remaining[remaining.length - 1].task_version_id);
+        }
+      }
+    } catch (err) {
+      setVersionDeleteError(err instanceof Error ? err.message : t('task.versionDeleteFailed'));
+    } finally {
+      setDeletingVersionId(null);
     }
   }
 
@@ -451,6 +556,62 @@ function TaskDetailDrawer({
                 text={formatFullDocument(inputSpec, task.name, selectedVersion.version_label ?? '')}
               />
             )}
+            {viewLevel === 'version' && !selectedExample && selectedVersion && (
+              <button
+                type="button"
+                onClick={() => void handleExportDoc()}
+                disabled={isExportingDoc}
+                className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-2 py-1.5 text-xs text-ink-muted hover:bg-surface-800 hover:text-ink disabled:opacity-50"
+                title={t('task.exportDoc')}
+              >
+                {isExportingDoc ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />}
+                {t('task.exportDoc')}
+              </button>
+            )}
+            {exportDocError && (
+              <span className="text-xs text-danger">{exportDocError}</span>
+            )}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowMoveMenu((prev) => !prev)}
+                className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-2 py-1.5 text-xs text-ink-muted hover:bg-surface-800 hover:text-ink"
+              >
+                <Tag size={12} />
+                {groups.find((g) => g.group_id === task.group_id)?.name ?? t('task.noGroup')}
+              </button>
+              {showMoveMenu && (
+                <div className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border border-surface-700 bg-surface-900 py-1 shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onMoveGroup(null);
+                      setShowMoveMenu(false);
+                    }}
+                    className={`w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-800 ${
+                      !task.group_id ? 'text-accent' : 'text-ink-muted'
+                    }`}
+                  >
+                    {t('task.noGroup')}
+                  </button>
+                  {groups.map((group) => (
+                    <button
+                      key={group.group_id}
+                      type="button"
+                      onClick={() => {
+                        onMoveGroup(group.group_id);
+                        setShowMoveMenu(false);
+                      }}
+                      className={`w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-800 ${
+                        task.group_id === group.group_id ? 'text-accent' : 'text-ink-muted'
+                      }`}
+                    >
+                      <span className="truncate">{group.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               type="button"
               onClick={onClose}
@@ -484,6 +645,11 @@ function TaskDetailDrawer({
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
                   {t('task.versions')}
                 </h3>
+                {versionDeleteError && (
+                  <div className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+                    {versionDeleteError}
+                  </div>
+                )}
                 {isLoading ? (
                   <div className="flex h-24 items-center justify-center text-xs text-ink-muted">
                     <Loader2 size={14} className="mr-2 animate-spin" />
@@ -516,11 +682,31 @@ function TaskDetailDrawer({
                               </span>
                             )}
                           </div>
-                          {version.notes && (
-                            <span className="truncate text-right text-[10px] text-ink-dim" title={version.notes}>
-                              {version.notes}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {version.notes && (
+                              <span className="truncate text-right text-[10px] text-ink-dim" title={version.notes}>
+                                {version.notes}
+                              </span>
+                            )}
+                            {versions.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleDeleteVersion(version);
+                                }}
+                                disabled={deletingVersionId === version.task_version_id}
+                                className="inline-flex items-center justify-center rounded p-1 text-ink-dim transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+                                title={t('task.versionDelete')}
+                              >
+                                {deletingVersionId === version.task_version_id ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <Trash2 size={12} />
+                                )}
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-ink-dim">
                           <span>
@@ -967,6 +1153,15 @@ function ModelParametersView({
   );
 }
 
+function readOutputContractSectionNames(contract: OutputContract): string[] {
+  if (contract.mode !== 'soft_sections') return [];
+  const options = contract.parser?.options;
+  if (!options) return [];
+  const raw = options.section_names ?? options.sections;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((name): name is string => typeof name === 'string');
+}
+
 function OutputContractView({ contract }: { contract?: TaskVersion['output_contract'] }) {
   const { t } = useI18n();
 
@@ -974,12 +1169,26 @@ function OutputContractView({ contract }: { contract?: TaskVersion['output_contr
     return <p className="text-xs text-ink-dim">—</p>;
   }
 
+  const sectionNames = readOutputContractSectionNames(contract);
+
   return (
     <div className="space-y-2 text-xs">
       <div className="flex justify-between border-b border-surface-800 py-1.5">
         <span className="text-ink-muted">{t('prompt.outputMode')}</span>
         <span className="text-ink">{contract.mode ?? '—'}</span>
       </div>
+      {sectionNames.length > 0 && (
+        <div className="space-y-1">
+          <span className="text-ink-muted">{t('task.outputContractSectionNames')}</span>
+          <div className="flex flex-wrap gap-1">
+            {sectionNames.map((name) => (
+              <code key={name} className="rounded bg-surface-800 px-1.5 py-0.5 text-ink">
+                {name}
+              </code>
+            ))}
+          </div>
+        </div>
+      )}
       {contract.json_schema && (
         <div className="space-y-1">
           <span className="text-ink-muted">{t('prompt.jsonSchema')}</span>

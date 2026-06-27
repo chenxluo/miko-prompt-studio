@@ -59,3 +59,36 @@ def test_soft_sections_falls_back_to_heuristics_without_section_names() -> None:
 
     assert parsed.parse_status == ParseStatus.PARSED
     assert parsed.parsed == {"任意标题": "内容"}
+
+
+def test_soft_sections_parses_bracket_delimiters_without_splitting_body_colons() -> None:
+    """Regression: bracket delimiters like [[TC]] must not be confused with the
+    ``name: value`` heuristic. Body lines that themselves contain a fullwidth
+    colon (e.g. ``1. 服装：...``) must stay inside their section."""
+    raw_text = (
+        "[[TC]]\n这是一张室内人像照片。\n\n"
+        "[[CS]]\n近景（CU）、平拍视角\n\n"
+        "[[DS]]\n1. 服装：深蓝色高领；2. 姿势：双手举着小番茄；3. 风格：日常休闲风"
+    )
+    parsed = parse_response(raw_text, _soft_contract(["[[TC]]", "[[CS]]", "[[DS]]"]))
+
+    assert parsed.parse_status == ParseStatus.PARSED
+    assert parsed.parsed == {
+        "[[TC]]": "这是一张室内人像照片。",
+        "[[CS]]": "近景（CU）、平拍视角",
+        "[[DS]]": "1. 服装：深蓝色高领；2. 姿势：双手举着小番茄；3. 风格：日常休闲风",
+    }
+    assert "1. 服装" not in (parsed.parsed or {})
+
+
+def test_soft_sections_reads_legacy_sections_option_key() -> None:
+    """Older clients stored section names under the ``sections`` option key and
+    used parser type ``sections``. Those stored contracts must still parse."""
+    contract = OutputContract(
+        mode=OutputMode.SOFT_SECTIONS,
+        parser=ParserConfig(type="sections", options={"sections": ["分类", "理由"]}),
+    )
+    parsed = parse_response("分类: 拼接图\n\n理由\n两张独立照片", contract)
+
+    assert parsed.parse_status == ParseStatus.PARSED
+    assert parsed.parsed == {"分类": "拼接图", "理由": "两张独立照片"}

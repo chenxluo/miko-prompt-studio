@@ -231,6 +231,7 @@ export interface Task extends Timestamps {
   name: string;
   description?: string;
   current_version_id?: string | null;
+  group_id?: string | null;
   tags?: string[];
   current_version?: TaskVersion | null;
 
@@ -248,6 +249,14 @@ export interface Task extends Timestamps {
   image_resolution_target?: number;
   sample_set_id?: string | null;
   notes?: string;
+}
+
+export interface TaskGroup extends Timestamps {
+  group_id: string;
+  name: string;
+  description?: string;
+  color?: string;
+  sort_order?: number;
 }
 
 export interface ProviderCapability {
@@ -739,6 +748,7 @@ export interface UploadImageResponse {
   filename: string | null;
   mime_type: string;
   size: number;
+  sha256?: string;
 }
 
 export interface ApiErrorBody {

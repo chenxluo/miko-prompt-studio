@@ -94,10 +94,18 @@ class Task(TimestampedModel):
     name: str
     description: str = ""
     current_version_id: str | None = None
+    group_id: str | None = None
     tags: list[str] = Field(default_factory=list)
     current_version: TaskVersion | None = None
     versions: list[TaskVersion] | None = None
 
+
+class TaskGroup(TimestampedModel):
+    group_id: str
+    name: str
+    description: str = ""
+    color: str = ""
+    sort_order: int = 0
 
 class TaskSnapshot(BaseModel):
     task_id: str | None = None

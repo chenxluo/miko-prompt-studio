@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Plus, Trash2, AlertCircle, Check, Server, RefreshCw, Loader2 } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, Check, Server, RefreshCw, Loader2, Pencil, X } from 'lucide-react';
 
 import { useI18n } from '../i18n';
 import * as api from '../api/client';
@@ -22,6 +22,18 @@ export function SettingsView() {
   const [newConfigBaseUrl, setNewConfigBaseUrl] = useState('');
   const [newConfigApiKey, setNewConfigApiKey] = useState('');
   const [newConfigNotes, setNewConfigNotes] = useState('');
+
+  // Inline edit state
+  const [editingConfigId, setEditingConfigId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editBaseUrl, setEditBaseUrl] = useState('');
+  const [editApiKey, setEditApiKey] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+
+  // Manual model-add state (per config)
+  const [manualModelInput, setManualModelInput] = useState<Record<string, string>>({});
+  const [manualModelSavingId, setManualModelSavingId] = useState<string | null>(null);
 
   // Pricing
   const [pricingRows, setPricingRows] = useState<PricingListItem[]>([]);
@@ -235,6 +247,82 @@ export function SettingsView() {
     [configSelectedModels, loadProviderConfigs],
   );
 
+  const startEdit = useCallback((config: ProviderConfig) => {
+    setEditingConfigId(config.provider_config_id);
+    setEditName(config.name);
+    setEditBaseUrl(config.base_url ?? '');
+    setEditApiKey('');
+    setEditNotes(config.notes ?? '');
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    setEditingConfigId(null);
+    setEditName('');
+    setEditBaseUrl('');
+    setEditApiKey('');
+    setEditNotes('');
+  }, []);
+
+  const handleSaveEdit = useCallback(
+    async (config: ProviderConfig) => {
+      const name = editName.trim();
+      if (!name) return;
+      const meta = providers.find((p) => p.adapter_id === config.adapter_id);
+      const requiresUrl = meta?.requires_base_url ?? false;
+      if (requiresUrl && !editBaseUrl.trim()) return;
+
+      setEditSaving(true);
+      setConfigError(null);
+      try {
+        await api.saveProviderConfig({
+          provider_config_id: config.provider_config_id,
+          name,
+          adapter_id: config.adapter_id,
+          base_url: editBaseUrl.trim() || null,
+          api_key: editApiKey.trim() || null,
+          selected_models: config.selected_models ?? [],
+          notes: editNotes.trim(),
+        });
+        cancelEdit();
+        await loadProviderConfigs();
+      } catch (err) {
+        setConfigError(err instanceof Error ? err.message : 'Failed to save provider config');
+      } finally {
+        setEditSaving(false);
+      }
+    },
+    [editName, editBaseUrl, editApiKey, editNotes, providers, cancelEdit, loadProviderConfigs],
+  );
+
+  const handleAddModel = useCallback(
+    async (config: ProviderConfig) => {
+      const raw = (manualModelInput[config.provider_config_id] ?? '').trim();
+      if (!raw) return;
+      const merged = Array.from(new Set([...(config.cached_models ?? []), raw]));
+      setManualModelSavingId(config.provider_config_id);
+      setConfigError(null);
+      try {
+        await api.saveProviderConfig({
+          provider_config_id: config.provider_config_id,
+          name: config.name,
+          adapter_id: config.adapter_id,
+          base_url: config.base_url,
+          api_key: null,
+          selected_models: config.selected_models ?? [],
+          notes: config.notes,
+          cached_models: merged,
+        });
+        setManualModelInput((prev) => ({ ...prev, [config.provider_config_id]: '' }));
+        await loadProviderConfigs();
+      } catch (err) {
+        setConfigError(err instanceof Error ? err.message : 'Failed to add model');
+      } finally {
+        setManualModelSavingId(null);
+      }
+    },
+    [manualModelInput, loadProviderConfigs],
+  );
+
   const handleSavePricing = useCallback(async () => {
     if (!pricingProviderConfigId || !pricingModelId.trim()) return;
     const selected = providerConfigs.find((c) => c.provider_config_id === pricingProviderConfigId);
@@ -313,7 +401,8 @@ export function SettingsView() {
           </div>
         ) : (
           providerConfigs.map((config) => (
-            <div key={config.provider_config_id} className="flex items-center gap-3 px-4 py-3">
+            <div key={config.provider_config_id} className="px-4 py-3">
+              <div className="flex items-center gap-3">
               <Server size={16} className="text-accent" />
               <div className="flex flex-1 flex-col gap-2">
                 <span className="text-sm font-medium text-ink">{config.name}</span>
@@ -388,7 +477,34 @@ export function SettingsView() {
                     </div>
                   </div>
                 )}
+                {/* Manual model addition */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder={t('settings.addModelPlaceholder')}
+                    value={manualModelInput[config.provider_config_id] ?? ''}
+                    onChange={(e) => setManualModelInput((prev) => ({ ...prev, [config.provider_config_id]: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void handleAddModel(config); }}
+                    className="flex-1 rounded-md border border-surface-700 bg-surface-800 px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleAddModel(config)}
+                    disabled={manualModelSavingId === config.provider_config_id || !(manualModelInput[config.provider_config_id] ?? '').trim()}
+                    className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-2.5 py-1.5 text-xs text-ink-muted transition-colors hover:border-accent/50 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {manualModelSavingId === config.provider_config_id ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                    {t('settings.addModelBtn')}
+                  </button>
+                </div>
               </div>
+              <button
+                onClick={() => startEdit(config)}
+                className="rounded p-1.5 text-ink-dim transition-colors hover:bg-surface-800 hover:text-accent"
+                title={t('settings.edit')}
+              >
+                <Pencil size={15} />
+              </button>
               <button
                 onClick={() => void handleRefreshModels(config.provider_config_id)}
                 disabled={refreshingConfigId === config.provider_config_id}
@@ -409,6 +525,68 @@ export function SettingsView() {
               >
                 <Trash2 size={15} />
               </button>
+              </div>
+              {editingConfigId === config.provider_config_id && (
+                <div className="mt-3 space-y-3 rounded-md border border-accent/30 bg-surface-900/40 p-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
+                    {t('settings.editProviderConfig')}
+                  </h4>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <input
+                      type="text"
+                      placeholder={t('settings.configName')}
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                    />
+                    <input
+                      type="text"
+                      placeholder={
+                        providers.find((p) => p.adapter_id === config.adapter_id)?.requires_base_url
+                          ? t('model.baseUrlRequired')
+                          : t('model.baseUrlOptional')
+                      }
+                      value={editBaseUrl}
+                      onChange={(e) => setEditBaseUrl(e.target.value)}
+                      className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                    />
+                    <input
+                      type="password"
+                      placeholder={config.api_key_set ? `${t('settings.apiKey')} (${t('settings.apiKeyKeep')})` : t('settings.apiKey')}
+                      value={editApiKey}
+                      onChange={(e) => setEditApiKey(e.target.value)}
+                      className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                    />
+                    <input
+                      type="text"
+                      placeholder={t('settings.notes') ?? 'Notes'}
+                      value={editNotes}
+                      onChange={(e) => setEditNotes(e.target.value)}
+                      className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveEdit(config)}
+                      disabled={editSaving || !editName.trim()}
+                      className="btn-primary disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {editSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                      {t('settings.save')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelEdit}
+                      disabled={editSaving}
+                      className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-3 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-800 hover:text-ink disabled:opacity-40"
+                    >
+                      <X size={14} />
+                      {t('settings.cancelEdit')}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           ))
         )}

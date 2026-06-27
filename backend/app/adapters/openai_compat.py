@@ -43,6 +43,15 @@ class OpenAICompatAdapter(BaseAdapter):
 
         return []
 
+    def _build_headers(self, api_key: str | None) -> dict[str, str]:
+        """Build request headers. Omits ``Authorization`` when no key is set
+        so local no-auth endpoints (e.g. LM Studio, Ollama) work."""
+
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
     async def fetch_models(
         self,
         api_key: str,
@@ -56,7 +65,7 @@ class OpenAICompatAdapter(BaseAdapter):
             raise ValueError("base_url is required for the openai_compat adapter.")
 
         url = f"{resolved_base}/models"
-        headers = {"Authorization": f"Bearer {api_key}"}
+        headers = self._build_headers(api_key)
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             response = await client.get(url, headers=headers)
 
@@ -148,10 +157,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 "Provide it in the model config or run request."
             )
         url = f"{resolved}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._build_headers(api_key)
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             return await client.post(url, headers=headers, json=provider_request)
 
@@ -179,10 +185,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 "Provide it in the model config or run request."
             )
         url = f"{resolved}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._build_headers(api_key)
         payload = dict(provider_request)
         payload["stream"] = True
         payload.setdefault("stream_options", {"include_usage": True})

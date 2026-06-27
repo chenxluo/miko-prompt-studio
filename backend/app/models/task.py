@@ -11,6 +11,24 @@ from app.database import Base
 from app.schemas.common import utc_now
 
 
+class TaskGroupORM(Base):
+    __tablename__ = "task_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    color: Mapped[str] = mapped_column(String, default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())
+    updated_at: Mapped[str] = mapped_column(
+        String,
+        default=lambda: utc_now().isoformat(),
+        onupdate=lambda: utc_now().isoformat(),
+    )
+
+
+
 class TaskORM(Base):
     __tablename__ = "tasks"
 
@@ -19,6 +37,7 @@ class TaskORM(Base):
     name: Mapped[str] = mapped_column(String, default="")
     description: Mapped[str] = mapped_column(Text, default="")
     current_version_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    group_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())
     updated_at: Mapped[str] = mapped_column(

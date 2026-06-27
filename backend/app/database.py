@@ -71,6 +71,7 @@ async def init_db() -> None:
         await _migrate_provider_config_cache_columns(conn)
         await _migrate_pricing_provider_config_column(conn)
         await _migrate_run_items_latency_ms(conn)
+        await _migrate_task_groups(conn)
         await _migrate_task_image_resolution_columns(conn)
         await _migrate_tasks_to_versions(conn)
         await _recreate_tasks_table_without_legacy_columns(conn)
@@ -82,8 +83,39 @@ async def init_db() -> None:
         await _migrate_task_version_prompt_inline(conn)
         await _migrate_prompt_snippets(conn)
         await _recreate_prompts_table_without_legacy_columns(conn)
-        await _recreate_task_versions_table_without_legacy_columns(conn)
         await _migrate_pricing_profiles_to_per_million_tokens(conn)
+
+
+async def _migrate_task_groups(conn) -> None:
+    """Create task_groups table and add group_id column to tasks."""
+    await conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS task_groups ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "group_id VARCHAR NOT NULL UNIQUE, "
+            "name VARCHAR DEFAULT '', "
+            "description TEXT DEFAULT '', "
+            "color VARCHAR DEFAULT '', "
+            "sort_order INTEGER DEFAULT 0, "
+            "created_at VARCHAR, "
+            "updated_at VARCHAR"
+            ")"
+        )
+    )
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_task_groups_group_id ON task_groups (group_id)")
+    )
+
+    result = await conn.execute(text("PRAGMA table_info(tasks)"))
+    columns = {row[1] for row in result.fetchall()}
+    if "group_id" not in columns:
+        await conn.execute(text("ALTER TABLE tasks ADD COLUMN group_id VARCHAR"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_group_id ON tasks (group_id)"))
+    if "updated_at" not in columns:
+        await conn.execute(text("ALTER TABLE tasks ADD COLUMN updated_at VARCHAR"))
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_tasks_updated_at ON tasks (updated_at)")
+        )
 
 
 async def _migrate_prompt_version_library_columns(conn) -> None:
@@ -181,10 +213,14 @@ async def _migrate_prompt_specs_to_task_versions(conn) -> None:
     await conn.execute(text("DROP TABLE prompt_versions"))
     await conn.execute(text("ALTER TABLE prompt_versions_new RENAME TO prompt_versions"))
     await conn.execute(
-        text("CREATE UNIQUE INDEX IF NOT EXISTS ix_prompt_versions_prompt_version_id ON prompt_versions (prompt_version_id)")
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_prompt_versions_prompt_version_id ON prompt_versions (prompt_version_id)"
+        )
     )
     await conn.execute(
-        text("CREATE INDEX IF NOT EXISTS ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)")
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)"
+        )
     )
 
 
@@ -197,10 +233,14 @@ async def _migrate_task_version_prompt_inline(conn) -> None:
         return
 
     if "system_prompt" not in columns:
-        await conn.execute(text("ALTER TABLE task_versions ADD COLUMN system_prompt TEXT DEFAULT ''"))
+        await conn.execute(
+            text("ALTER TABLE task_versions ADD COLUMN system_prompt TEXT DEFAULT ''")
+        )
         columns.add("system_prompt")
     if "user_template" not in columns:
-        await conn.execute(text("ALTER TABLE task_versions ADD COLUMN user_template TEXT DEFAULT ''"))
+        await conn.execute(
+            text("ALTER TABLE task_versions ADD COLUMN user_template TEXT DEFAULT ''")
+        )
         columns.add("user_template")
 
     prompt_result = await conn.execute(text("PRAGMA table_info(prompt_versions)"))
@@ -229,9 +269,7 @@ async def _migrate_task_version_prompt_inline(conn) -> None:
             legacy_extra = row["legacy_extra"] or ""
             if legacy_extra:
                 system_prompt = (
-                    f"{system_prompt.rstrip()}\n\n{legacy_extra}"
-                    if system_prompt
-                    else legacy_extra
+                    f"{system_prompt.rstrip()}\n\n{legacy_extra}" if system_prompt else legacy_extra
                 )
             await conn.execute(
                 text(
@@ -280,7 +318,9 @@ async def _migrate_task_version_prompt_inline(conn) -> None:
                 )
             )
             await conn.execute(
-                text("CREATE INDEX IF NOT EXISTS ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)")
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)"
+                )
             )
 
 
@@ -382,7 +422,9 @@ async def _recreate_prompts_table_without_legacy_columns(conn) -> None:
     )
     await conn.execute(text("DROP TABLE prompts"))
     await conn.execute(text("ALTER TABLE prompts_new RENAME TO prompts"))
-    await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_prompts_prompt_id ON prompts (prompt_id)"))
+    await conn.execute(
+        text("CREATE UNIQUE INDEX IF NOT EXISTS ix_prompts_prompt_id ON prompts (prompt_id)")
+    )
 
 
 async def _recreate_task_versions_table_without_legacy_columns(conn) -> None:
@@ -450,11 +492,21 @@ async def _recreate_task_versions_table_without_legacy_columns(conn) -> None:
     await conn.execute(text("DROP TABLE task_versions"))
     await conn.execute(text("ALTER TABLE task_versions_new RENAME TO task_versions"))
     await conn.execute(
-        text("CREATE UNIQUE INDEX IF NOT EXISTS ix_task_versions_task_version_id ON task_versions (task_version_id)")
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_task_versions_task_version_id ON task_versions (task_version_id)"
+        )
     )
-    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_versions_task_id ON task_versions (task_id)"))
-    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_versions_prompt_id ON task_versions (prompt_id)"))
-    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_versions_prompt_version_id ON task_versions (prompt_version_id)"))
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_task_versions_task_id ON task_versions (task_id)")
+    )
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_task_versions_prompt_id ON task_versions (prompt_id)")
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_task_versions_prompt_version_id ON task_versions (prompt_version_id)"
+        )
+    )
 
 
 async def _migrate_result_snapshot_full_snapshot_columns(conn) -> None:
@@ -468,13 +520,9 @@ async def _migrate_result_snapshot_full_snapshot_columns(conn) -> None:
             text("ALTER TABLE result_snapshots ADD COLUMN internal_request_snapshot JSON")
         )
     if "config_snapshot" not in existing_columns:
-        await conn.execute(
-            text("ALTER TABLE result_snapshots ADD COLUMN config_snapshot JSON")
-        )
+        await conn.execute(text("ALTER TABLE result_snapshots ADD COLUMN config_snapshot JSON"))
     if "image_dir" not in existing_columns:
-        await conn.execute(
-            text("ALTER TABLE result_snapshots ADD COLUMN image_dir VARCHAR")
-        )
+        await conn.execute(text("ALTER TABLE result_snapshots ADD COLUMN image_dir VARCHAR"))
 
 
 async def _migrate_snapshot_linked_task_version(conn) -> None:
@@ -493,6 +541,7 @@ async def _migrate_snapshot_linked_task_version(conn) -> None:
                 "ON result_snapshots (linked_task_version_id)"
             )
         )
+
 
 async def _migrate_provider_config_cache_columns(conn) -> None:
     """Add model-cache columns for existing SQLite databases."""
@@ -540,9 +589,7 @@ async def _migrate_run_items_latency_ms(conn) -> None:
     existing_columns = {row[1] for row in result.fetchall()}
 
     if "latency_ms" not in existing_columns:
-        await conn.execute(
-            text("ALTER TABLE run_items ADD COLUMN latency_ms INTEGER")
-        )
+        await conn.execute(text("ALTER TABLE run_items ADD COLUMN latency_ms INTEGER"))
 
 
 async def _migrate_pricing_profiles_to_per_million_tokens(conn) -> None:
@@ -629,8 +676,10 @@ async def _migrate_tasks_to_versions(conn) -> None:
         return
 
     rows = (
-        await conn.execute(text("SELECT * FROM tasks WHERE current_version_id IS NULL"))
-    ).mappings().all()
+        (await conn.execute(text("SELECT * FROM tasks WHERE current_version_id IS NULL")))
+        .mappings()
+        .all()
+    )
     for row in rows:
         task_id = row["task_id"]
         existing = await conn.execute(
@@ -839,20 +888,28 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
 
     # Copy non-legacy data
     copy_cols = []
-    for col in ("task_id", "name", "description", "current_version_id", "tags", "created_at", "updated_at"):
+    for col in (
+        "task_id",
+        "name",
+        "description",
+        "current_version_id",
+        "tags",
+        "created_at",
+        "updated_at",
+    ):
         if col in columns:
             copy_cols.append(col)
     col_list = ", ".join(copy_cols)
-    await conn.execute(
-        text(f"INSERT INTO tasks_new ({col_list}) SELECT {col_list} FROM tasks")
-    )
+    await conn.execute(text(f"INSERT INTO tasks_new ({col_list}) SELECT {col_list} FROM tasks"))
 
     await conn.execute(text("DROP TABLE tasks"))
     await conn.execute(text("ALTER TABLE tasks_new RENAME TO tasks"))
 
     # Recreate indexes
     await conn.execute(text("CREATE UNIQUE INDEX ix_tasks_task_id ON tasks (task_id)"))
-    await conn.execute(text("CREATE INDEX ix_tasks_current_version_id ON tasks (current_version_id)"))
+    await conn.execute(
+        text("CREATE INDEX ix_tasks_current_version_id ON tasks (current_version_id)")
+    )
 
 
 async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
@@ -1021,6 +1078,7 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
             "description TEXT DEFAULT '', "
             "current_version_id VARCHAR, "
             "tags JSON DEFAULT '[]', "
+            "group_id VARCHAR, "
             "created_at VARCHAR, "
             "updated_at VARCHAR"
             ")"
@@ -1029,11 +1087,12 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
     await conn.execute(
         text(
             "INSERT INTO tasks_new "
-            "(task_id, name, description, current_version_id, tags, created_at, updated_at) "
+            "(task_id, name, description, current_version_id, tags, group_id, created_at, updated_at) "
             "SELECT task_id, name, "
             "COALESCE(description, ''), "
             "current_version_id, "
             "COALESCE(tags, '[]'), "
+            "group_id, "
             "created_at, updated_at "
             "FROM tasks"
         )

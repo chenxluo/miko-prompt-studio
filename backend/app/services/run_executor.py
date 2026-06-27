@@ -135,11 +135,6 @@ async def execute_lab_run(
         pricing=request.pricing,
         preprocess_config=preprocess_config,
     )
-    print(
-        f"[run_executor] sample_id={request.sample.sample_id} "
-        f"sample_images={len(request.sample.images)} "
-        f"internal_request_images={len(internal_request.images)}"
-    )
 
     # 2. Prepare snapshots for the Run Session --------------------------------
     prompt_snapshot = _make_prompt_snapshot(
@@ -216,17 +211,10 @@ async def execute_lab_run(
         api_key = await get_api_key(db, request.model_config.provider_id)
 
     if not api_key:
-        await _fail_item(
-            db,
-            item_orm,
-            session_orm,
-            attempt_id,
-            ErrorType.AUTH_ERROR,
-            f"No API key stored for provider '{request.model_config.provider_id}'.",
-            internal_request,
-            request.model_config,
-        )
-        return _to_session(session_orm)
+        # No key resolved (e.g. local no-auth endpoints like LM Studio/Ollama).
+        # Allow the request to proceed; the remote will return 401 if a key is
+        # actually required, which normalize_error surfaces as AUTH_ERROR.
+        api_key = ""
 
     should_stream = request.model_config.parameters.stream is True
     if should_stream:

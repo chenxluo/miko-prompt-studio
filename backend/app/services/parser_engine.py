@@ -32,7 +32,7 @@ def parse_response(raw_text: str, contract: OutputContract) -> ParsedResponse:
         return _parse_json(raw_text, strict=True)
     if mode == OutputMode.CUSTOM and contract.parser:
         parser_type = contract.parser.type
-        if parser_type in {"section_parser", "soft_sections"}:
+        if parser_type in {"section_parser", "soft_sections", "sections"}:
             return _parse_soft_sections(raw_text, contract)
         if parser_type in {"json", "json_repair_parser", "strict_json_parser"}:
             return _parse_json(raw_text, strict=parser_type == "strict_json_parser")
@@ -149,8 +149,11 @@ def _clean_section_name(name: str) -> str:
 
 def _expected_sections(contract: OutputContract) -> list[str]:
     options = contract.parser.options if contract.parser else {}
-    section_names = options.get("section_names", [])
-    return [str(name) for name in section_names if str(name)]
+    raw_names = options.get("section_names")
+    if raw_names is None:
+        # Backward compatibility: older clients stored the list under "sections".
+        raw_names = options.get("sections", [])
+    return [str(name) for name in raw_names if str(name)]
 
 
 def _parse_json(raw_text: str, strict: bool) -> ParsedResponse:

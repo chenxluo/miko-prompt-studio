@@ -232,6 +232,24 @@ function hasSlotCapacity(spec: ImageSlotSpec, images: ImageRef[]): boolean {
   return count < max;
 }
 
+// Stable identity key for an image, used to detect duplicates regardless of
+// how the image entered the store (fresh upload vs. snapshot restore). Falls
+// back through the most specific identifiers available.
+function imageIdentityKey(image: ImageRef): string {
+  const meta = image.metadata as Record<string, unknown> | undefined;
+  const sha = typeof meta?.sha256 === 'string' ? meta.sha256 : '';
+  if (sha) return `sha:${sha}`;
+  if (image.path) return `path:${image.path}`;
+  if (image.uri) return `uri:${image.uri}`;
+  return '';
+}
+
+function isDuplicateImage(existing: ImageRef[], image: ImageRef): boolean {
+  const key = imageIdentityKey(image);
+  if (!key) return false;
+  return existing.some((img) => imageIdentityKey(img) === key);
+}
+
 function findSlotWithCapacity(
   specs: ImageSlotSpec[],
   images: ImageRef[],
@@ -246,9 +264,17 @@ function migrateImagesToSlots(
   let nextSpecs = [...specs];
   const migrated: ImageRef[] = [];
   for (const img of images) {
+    // Skip exact-content duplicates (e.g. the same file re-added to the lab).
+    if (isDuplicateImage(migrated, img)) continue;
     if (img.slot_id && nextSpecs.some((s) => s.slot_id === img.slot_id)) {
-      migrated.push(img);
-      continue;
+      const presetSpec = nextSpecs.find((s) => s.slot_id === img.slot_id)!;
+      // Honour capacity even for pre-assigned slots; otherwise fall through to
+      // the normal assignment so the image lands somewhere valid instead of
+      // overflowing a max_count=1 slot.
+      if (hasSlotCapacity(presetSpec, migrated)) {
+        migrated.push(img);
+        continue;
+      }
     }
     let targetSpec: ImageSlotSpec | undefined;
     if (img.role) {
@@ -465,11 +491,12 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
 
   addImage: (image) =>
     set((state) => {
+      if (isDuplicateImage(state.images, image)) return state;
       let spec = image.slot_id
         ? state.templateImageSlotSpecs.find((s) => s.slot_id === image.slot_id)
         : undefined;
       let nextSpecs = state.templateImageSlotSpecs;
-      if (!spec) {
+      if (!spec || !hasSlotCapacity(spec, state.images)) {
         spec = findSlotWithCapacity(nextSpecs, state.images);
       }
       if (!spec) {
@@ -492,6 +519,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
 
   addImageToSlot: (image, slotId) =>
     set((state) => {
+      if (isDuplicateImage(state.images, image)) return state;
       const spec = state.templateImageSlotSpecs.find((s) => s.slot_id === slotId);
       if (!spec) return state;
       if (!hasSlotCapacity(spec, state.images)) return state;
@@ -653,6 +681,11 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         activePromptId: null,
         activePromptVersionId: null,
         availableModels: selectedConfig ? getExposedModels(selectedConfig) : state.availableModels,
+        // Clear stale images/slots: the new task has its own slot layout, so any
+        // previously loaded image (which references an old slot_id) must not
+        // linger as a phantom that gets sent on the next run.
+        images: [],
+        imageSlots: [],
         error: null,
       });
 
@@ -691,6 +724,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
       activePromptId: null,
       activePromptVersionId: null,
       availableModels: selectedConfig ? getExposedModels(selectedConfig) : state.availableModels,
+      images: [],
       error: null,
     });
   },
@@ -702,6 +736,9 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         systemPrompt: prompt.system_prompt ?? '',
         userPrompt: parsed.text,
         imageSlots: parsed.slots,
+        // Prompt defines its own slot layout; drop any images loaded under a
+        // different prompt/task so they don't persist as phantom images.
+        images: [],
         activePromptId: prompt.prompt_id,
         activePromptVersionId: null,
         activeTaskId: null,
@@ -759,10 +796,17 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
     }
 
     const sampleId = `lab_${Date.now()}`;
+    // Defense-in-depth: drop any duplicate images (same path/uri/sha256) that
+    // may have slipped into the store before persisting a run. This guarantees
+    // a run item / snapshot can never carry a phantom duplicate image.
+    const dedupedImages: ImageRef[] = [];
+    for (const img of state.images) {
+      if (!isDuplicateImage(dedupedImages, img)) dedupedImages.push(img);
+    }
     const sample: SampleRecord = {
       sample_id: sampleId,
-      sample_type: state.images.length > 1 ? 'multi_image' : 'single_image',
-      images: state.images,
+      sample_type: dedupedImages.length > 1 ? 'multi_image' : 'single_image',
+      images: dedupedImages,
       vars: state.variables,
       metadata: { source: 'lab_manual' },
     };

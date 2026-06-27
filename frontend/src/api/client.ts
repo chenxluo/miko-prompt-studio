@@ -13,6 +13,7 @@ import type {
   RunSession,
   SampleRecord,
   Task,
+  TaskGroup,
   TaskInputSpec,
   TaskVersion,
   TaskVersionSnapshot,
@@ -202,6 +203,7 @@ export interface SaveProviderConfigPayload {
   selected_models?: string[];
   notes?: string;
   provider_config_id?: string | null;
+  cached_models?: string[] | null;
 }
 
 export async function listProviderConfigs(): Promise<ProviderConfig[]> {
@@ -340,9 +342,61 @@ export async function runLabStream(
 // ---------------------------------------------------------------------------
 
 export type { Task, TaskVersion };
+export type { TaskGroup };
 
-export async function listTasks(): Promise<Task[]> {
-  return request<Task[]>('GET', '/api/tasks');
+export async function listTasks(groupId?: string | null): Promise<Task[]> {
+  const query = groupId !== undefined && groupId !== null ? `?group_id=${encodeURIComponent(groupId)}` : '';
+  return request<Task[]>('GET', `/api/tasks${query}`);
+}
+
+export async function deleteTaskVersion(
+  taskId: string,
+  versionId: string,
+): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(
+    'DELETE',
+    `/api/tasks/${encodeURIComponent(taskId)}/versions/${encodeURIComponent(versionId)}`,
+  );
+}
+
+export async function listTaskGroups(): Promise<TaskGroup[]> {
+  return request<TaskGroup[]>('GET', '/api/task-groups');
+}
+
+export interface CreateTaskGroupPayload {
+  name: string;
+  description?: string;
+  color?: string;
+  sort_order?: number;
+}
+
+export interface UpdateTaskGroupPayload {
+  name?: string;
+  description?: string;
+  color?: string;
+  sort_order?: number;
+}
+
+export async function createTaskGroup(payload: CreateTaskGroupPayload): Promise<TaskGroup> {
+  return request<TaskGroup>('POST', '/api/task-groups', payload);
+}
+
+export async function updateTaskGroup(
+  groupId: string,
+  payload: UpdateTaskGroupPayload,
+): Promise<TaskGroup> {
+  return request<TaskGroup>(
+    'PUT',
+    `/api/task-groups/${encodeURIComponent(groupId)}`,
+    payload,
+  );
+}
+
+export async function deleteTaskGroup(groupId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(
+    'DELETE',
+    `/api/task-groups/${encodeURIComponent(groupId)}`,
+  );
 }
 
 export async function getTask(
@@ -517,6 +571,29 @@ export async function exportRunCsv(runId: string): Promise<Blob> {
   }
   const blob = await response.blob();
   triggerDownload(blob, `${runId}.csv`, 'text/csv');
+  return blob;
+}
+
+export async function exportTaskDoc(
+  taskId: string,
+  versionId: string,
+  options?: { examples?: boolean },
+): Promise<Blob> {
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+  const query = options?.examples === false ? '?examples=false' : '';
+  const response = await fetch(
+    `${baseUrl}/api/tasks/${encodeURIComponent(taskId)}/versions/${encodeURIComponent(versionId)}/export/markdown${query}`,
+  );
+  if (!response.ok) {
+    const errorBody = await parseErrorBody(response);
+    const message =
+      typeof errorBody?.detail === 'string'
+        ? errorBody.detail
+        : `GET /api/tasks/${taskId}/versions/${versionId}/export/markdown failed with status ${response.status}`;
+    throw new ApiError(message, response.status, errorBody);
+  }
+  const blob = await response.blob();
+  triggerDownload(blob, `${taskId}_${versionId}.md`, 'text/markdown');
   return blob;
 }
 

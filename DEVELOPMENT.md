@@ -1,8 +1,8 @@
 # Miko Prompt Studio — 开发文档
 
-> 随开发进度持续更新的配套文档。最后更新：2026-06-25
+> 随开发进度持续更新的配套文档。最后更新：2026-06-26
 
-**版本：0.4.0**
+**版本：0.5.0**
 
 ## 1. 项目定位
 
@@ -80,6 +80,7 @@ miko_prompt_studio/
 │           ├── compare_executor.py   # Compare 矩阵运行执行器（samples × task_versions）
 │           ├── contract_validation.py # 输入契约校验（image slots + variables）
 │           ├── input_spec_generator.py # 生成 TaskVersion 输入说明文档
+│           ├── task_doc_generator.py  # 生成 TaskVersion 可复现说明文档（Markdown 导出）
 │           └── importer.py           # CSV/JSONL 导入 + 智能列映射 + URL/本地路径识别
 │
 ├── frontend/                   # React + TypeScript 前端
@@ -227,6 +228,7 @@ run_executor.execute_lab_run()
 | GET | `/api/tasks/{id}/versions/{vid}/input-spec` | 生成 TaskVersion 输入说明文档 |
 | GET | `/api/tasks/{id}/versions/{vid}/snapshots` | 列出关联到此版本的快照 |
 | GET | `/api/tasks/{id}/versions/{vid}/cost-stats` | 获取 TaskVersion 成本统计（历史均价） |
+| GET | `/api/tasks/{id}/versions/{vid}/export/markdown` | 导出 TaskVersion 可复现说明文档（Markdown） |
 | POST | `/api/batch-runs` | 创建 Batch 运行（Task + SampleSet） |
 | GET | `/api/batch-runs/{id}/status` | 查询 Batch 运行状态 |
 | POST | `/api/batch-runs/{id}/cancel` | 取消 Batch 运行 |
@@ -310,6 +312,18 @@ run_executor.execute_lab_run()
 
 #### 审阅系统清理
 - [x] **删除 BUILTIN_REVIEW_LABELS**：移除未使用的 12 个预设标签；Review schema 移除 labels 字段；审阅只保留 accepted + rating + notes
+
+### Phase 4（v0.5.0 — Task 复现说明文档导出）
+
+面向生产标注：把在 Lab 中调试好的 Task 导出为自包含 Markdown 文档，让外部团队/工程师脱离本工具即可复现标注请求，用于大批量标注。
+
+- [x] **导出 Task 说明文档**：`task_doc_generator.py` 生成自包含 Markdown（任务说明 / 模型配置参考 / System+User prompt 原文 / 输入槽位表 / 输出合约 / 消耗统计 / few-shot 复现示例）；`GET /api/tasks/{id}/versions/{vid}/export/markdown` 端点；TasksView 版本详情"导出说明文档"按钮
+- [x] **输出合约渲染**：strict_json 的 JSON Schema 递归展平为字段表（含数组 `[]` 展开）；soft_sections 展示配置的 section_names 节标记
+- [x] **消耗统计聚合**：导出文档附平均 input/output/total tokens + 平均成本（复用 cost-stats 的 version 过滤口径，样本 <10 标注仅供参考）
+- [x] **few-shot 复现示例**：从关联快照提取纯文本示例（变量值 → 填实 prompt → 模型输出 → 解析结果），不嵌图片
+- [x] **敏感信息隔离**：导出文档不含 base_url / api_key，模型/提供商信息仅作参考
+- [x] **详情页输出合约补全**：TasksView 的 OutputContractView 在 soft_sections 模式展示 section_names（按 mode 过滤，避免切换模式后残留）
+- [x] **修复**：SaveTaskDialog 缺失 i18n key（task.saveTo 等）；SampleRecord 导入缺失致 LabRunPayload 未定义；导出 Content-Disposition 中文文件名 latin-1 编码崩溃（RFC 6266 filename*）；占位符说明勘误（vars / 条件块 / {{image:N}}，移除未设计的 sample/metadata）
 
 ### 待实现
 - [ ] 批量运行并发控制 + 重试分流
@@ -413,3 +427,4 @@ npm run dev    # 项目根目录，concurrently 启动后端+前端+Electron
 | 图像槽位模型 | 槽位即角色 | 消除独立 role 手填 |
 | 快照-Task 关联 | `linked_task_version_id` 1:1 | 简单够用 |
 | 模型参数持久化 | `exclude_none=True` + 前端合并默认值 | null 不入库 |
+| Task 复现文档 | 自包含 Markdown 导出（脱离工具可复现） | 面向外部规模化标注；敏感信息隔离（不含 base_url/key） |

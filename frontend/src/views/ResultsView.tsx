@@ -20,6 +20,8 @@ import { resolveImageSrc } from '../components/lab/ImagePanel';
 import { CollapsibleSection } from '../components/results/CollapsibleSection';
 import { ParsedOutputView } from '../components/results/ParsedOutputView';
 import { ReasoningBlock } from '../components/results/ReasoningBlock';
+import { RunSelector } from '../components/results/RunSelector';
+import type { I18n } from '../i18n';
 import { useI18n } from '../i18n';
 import type { ImageRef, RequestImage, RunItemSummary } from '../types';
 
@@ -256,19 +258,13 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
 
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center">
-            <select
-              value={selectedRunId ?? ''}
-              onChange={(event) => setSelectedRunId(event.target.value || null)}
+            <RunSelector
+              runs={runs}
+              selectedRunId={selectedRunId}
+              onSelect={setSelectedRunId}
               disabled={loadingRuns}
-              className="min-w-[16rem] rounded-md border border-surface-700 bg-surface-900 px-3 py-2 text-xs text-ink focus:border-accent focus:outline-none disabled:opacity-50"
-            >
-              <option value="">{t('results.selectRun')}</option>
-              {runs.map((run) => (
-                <option key={run.run_id} value={run.run_id}>
-                  {formatRunOptionLabel(run, t)}
-                </option>
-              ))}
-            </select>
+              t={t}
+            />
 
             <div className="flex items-center gap-1 rounded-md border border-surface-700 bg-surface-900 p-1">
               {(['all', 'succeeded', 'failed'] as StatusFilter[]).map((filter) => (
@@ -527,7 +523,7 @@ interface DetailOverlayProps {
   onAccepted: (item: RunItemSummary, value: boolean | null) => void;
   onRating: (item: RunItemSummary, value: number) => void;
   onNotesBlur: (item: RunItemSummary, value: string) => void;
-  t: ReturnType<typeof useI18n>['t'];
+  t: I18n['t'];
 }
 
 function DetailOverlay({
@@ -840,7 +836,7 @@ interface CompareOverlayProps {
   onAccepted: (item: RunItemSummary, value: boolean | null) => void;
   onRating: (item: RunItemSummary, value: number) => void;
   onClose: () => void;
-  t: ReturnType<typeof useI18n>['t'];
+  t: I18n['t'];
 }
 
 function CompareOverlay({
@@ -1165,10 +1161,3 @@ function formatLatency(ms: number | null): string {
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
-function formatRunOptionLabel(run: api.RunListItem, t: ReturnType<typeof useI18n>['t']): string {
-  const summary = run.summary ?? {};
-  const total = typeof summary.total_items === 'number' ? summary.total_items : 0;
-  const date = run.created_at ? new Date(run.created_at).toLocaleString() : '';
-  const name = run.name || run.run_id;
-  return `${name} · ${run.run_type} · ${total} ${t('results.total').toLowerCase()} · ${date}`;
-}

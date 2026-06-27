@@ -1,6 +1,6 @@
 [project]
 name = "miko-prompt-studio-backend"
-version = "0.3.0"
+version = "0.5.0"
 description = "Image annotation lab backend - API, provider adapters, cost engine"
 requires-python = ">=3.10"
 dependencies = [

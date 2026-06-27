@@ -16,12 +16,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -40,7 +41,7 @@ from app.models.prompt import PromptORM
 from app.models.result_snapshot import ResultSnapshotORM
 from app.models.run import AttemptORM, RunItemORM, RunSessionORM
 from app.models.sample import SampleRecordORM, SampleSetORM
-from app.models.task import TaskORM, TaskVersionORM
+from app.models.task import TaskGroupORM, TaskORM, TaskVersionORM
 from app.schemas.common import RunItemType, RunSessionStatus, RunType, utc_now
 from app.schemas.model_config import ModelConfig, ModelParameters
 from app.schemas.output_contract import OutputContract, OutputMode
@@ -51,10 +52,11 @@ from app.schemas.prompt import (
     VariableSpec,
 )
 from app.schemas.result_snapshot import ResultSnapshot as ResultSnapshotSchema
-from app.schemas.sample_record import ImageRef, SampleRecord
 from app.schemas.run_record import ConfigSnapshot, RunSource, StreamEvent, Usage
+from app.schemas.sample_record import SampleRecord
 from app.schemas.task import (
     Task,
+    TaskGroup,
     TaskInputSpec,
     TaskVersion,
     TaskVersionData as TaskVersionDataSchema,
@@ -70,6 +72,7 @@ from app.services.contract_validation import (
     validate_records_against_contract,
 )
 from app.services.input_spec_generator import generate_input_spec_for_task_version
+from app.services.task_doc_generator import generate_task_doc
 from app.services.importer import (
     ColumnMapping,
     detect_columns,
@@ -92,6 +95,7 @@ from app.services.request_builder import _pricing_snapshot
 # ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -119,6 +123,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Request / response DTOs
 # ---------------------------------------------------------------------------
+
 
 class LabRunPayload(BaseModel):
     """Payload for POST /api/lab/run."""
@@ -261,6 +266,7 @@ class CreateTaskPayload(BaseModel):
     name: str
     description: str = ""
     tags: list[str] = Field(default_factory=list)
+    group_id: str | None = None
     version: TaskVersionDataSchema
 
 
@@ -273,11 +279,13 @@ class UpdateTaskPayload(BaseModel):
     description: str | None = None
     tags: list[str] | None = None
     current_version_id: str | None = None
+    group_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
+
 
 @app.get("/api/health")
 async def health():
@@ -287,6 +295,7 @@ async def health():
 # ---------------------------------------------------------------------------
 # Providers & model discovery
 # ---------------------------------------------------------------------------
+
 
 @app.get("/api/providers")
 async def list_providers():
@@ -377,6 +386,7 @@ async def fetch_provider_models(payload: FetchModelsPayload, db: AsyncSession = 
 # ---------------------------------------------------------------------------
 # Lab run
 # ---------------------------------------------------------------------------
+
 
 @app.post("/api/lab/run")
 async def lab_run(payload: LabRunPayload, db: AsyncSession = Depends(get_db)):
@@ -506,6 +516,7 @@ async def _stream_lab_run(db: AsyncSession, run_request: LabRunRequest):
 # ---------------------------------------------------------------------------
 # Batch runs
 # ---------------------------------------------------------------------------
+
 
 async def _resolve_task_version_for_payload(
     payload: BatchRunPayload,
@@ -740,6 +751,7 @@ def _payload_from_session_snapshot(session: RunSessionORM) -> BatchRunPayload:
 # Compare runs
 # ---------------------------------------------------------------------------
 
+
 async def _resolve_compare_variants(
     payload: CompareRunPayload,
     db: AsyncSession,
@@ -755,9 +767,7 @@ async def _resolve_compare_variants(
         task, task_version = await _resolve_task_version_for_payload(batch_payload, db)
         template = await _resolve_batch_template(batch_payload, db)
         label = (
-            variant.label
-            or f"{task.name} {task_version.version_label}"
-            or f"Variant {index + 1}"
+            variant.label or f"{task.name} {task_version.version_label}" or f"Variant {index + 1}"
         )
         variants.append(
             VariantSpec(
@@ -886,6 +896,7 @@ def _compare_matrix(items: list[dict[str, Any]]) -> dict[str, Any]:
 # Tasks
 # ---------------------------------------------------------------------------
 
+
 def _task_version_to_schema(row: TaskVersionORM) -> TaskVersion:
     return TaskVersion(
         task_version_id=row.task_version_id,
@@ -932,9 +943,13 @@ def _task_to_schema(
         name=row.name,
         description=row.description or "",
         current_version_id=row.current_version_id,
-        tags=row.tags or [],
+        group_id=row.group_id,
         current_version=_task_version_to_schema(current_version) if current_version else None,
-        versions=[_task_version_to_schema(version) for version in versions] if versions is not None else None,
+        versions=(
+            [_task_version_to_schema(version) for version in versions]
+            if versions is not None
+            else None
+        ),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -1018,8 +1033,15 @@ async def _current_task_version(row: TaskORM, db: AsyncSession) -> TaskVersionOR
 
 
 @app.get("/api/tasks")
-async def list_tasks(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(TaskORM).order_by(TaskORM.updated_at.desc()))
+async def list_tasks(group_id: str | None = None, db: AsyncSession = Depends(get_db)):
+    stmt = select(TaskORM)
+    if group_id is not None:
+        if group_id == "":
+            stmt = stmt.where(TaskORM.group_id.is_(None))
+        else:
+            stmt = stmt.where(TaskORM.group_id == group_id)
+    stmt = stmt.order_by(TaskORM.updated_at.desc())
+    result = await db.execute(stmt)
     rows = result.scalars().all()
     current_ids = [row.current_version_id for row in rows if row.current_version_id]
     versions: dict[str, TaskVersionORM] = {}
@@ -1038,11 +1060,18 @@ async def list_tasks(db: AsyncSession = Depends(get_db)):
 
 @app.post("/api/tasks")
 async def create_task(payload: CreateTaskPayload, db: AsyncSession = Depends(get_db)):
+    if payload.group_id is not None:
+        group = await db.execute(
+            select(TaskGroupORM).where(TaskGroupORM.group_id == payload.group_id)
+        )
+        if group.scalar_one_or_none() is None:
+            raise HTTPException(404, f"Task group '{payload.group_id}' not found")
     row = TaskORM(
         task_id=f"task_{uuid4().hex[:12]}",
         name=payload.name,
         description=payload.description,
         tags=payload.tags,
+        group_id=payload.group_id,
     )
     db.add(row)
     await db.flush()
@@ -1105,9 +1134,7 @@ async def get_task_input_spec(
 ):
     task = await _get_task_or_404(task_id, db)
     task_version = await _get_task_version_or_404(task_id, task_version_id, db)
-    return generate_input_spec_for_task_version(task, task_version).model_dump(
-        mode="json"
-    )
+    return generate_input_spec_for_task_version(task, task_version).model_dump(mode="json")
 
 
 @app.get("/api/tasks/{task_id}/versions/{task_version_id}/snapshots")
@@ -1245,6 +1272,33 @@ async def get_task_version_cost_stats(
     }
 
 
+@app.get("/api/tasks/{task_id}/versions/{task_version_id}/export/markdown")
+async def export_task_version_markdown(
+    task_id: str,
+    task_version_id: str,
+    examples: bool = True,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export a self-contained Markdown reproduction document for a task version."""
+    task = await _get_task_or_404(task_id, db)
+    task_version = await _get_task_version_or_404(task_id, task_version_id, db)
+    document = await generate_task_doc(
+        task, task_version, db, include_examples=examples
+    )
+    safe_name = (task.name or task_id).replace("/", "_").replace(" ", "_")
+    ascii_fallback = f"{task_id}_{task_version.version_label}.md"
+    display_name = f"{safe_name}_{task_version.version_label}.md"
+    content_disposition = (
+        f"attachment; filename=\"{ascii_fallback}\"; "
+        f"filename*=UTF-8''{quote(display_name, safe='')}"
+    )
+    return Response(
+        content=document,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": content_disposition},
+    )
+
+
 @app.put("/api/tasks/{task_id}")
 async def update_task(task_id: str, payload: UpdateTaskPayload, db: AsyncSession = Depends(get_db)):
     row = await _get_task_or_404(task_id, db)
@@ -1257,6 +1311,14 @@ async def update_task(task_id: str, payload: UpdateTaskPayload, db: AsyncSession
         row.description = payload.description
     if payload.tags is not None:
         row.tags = payload.tags
+    if "group_id" in payload.model_fields_set:
+        if payload.group_id:
+            group = await db.execute(
+                select(TaskGroupORM).where(TaskGroupORM.group_id == payload.group_id)
+            )
+            if group.scalar_one_or_none() is None:
+                raise HTTPException(404, f"Task group '{payload.group_id}' not found")
+        row.group_id = payload.group_id if payload.group_id else None
     row.updated_at = utc_now().isoformat()
     await db.commit()
     current = await _current_task_version(row, db)
@@ -1327,10 +1389,130 @@ async def delete_task(task_id: str, db: AsyncSession = Depends(get_db)):
     return {"deleted": True}
 
 
+@app.delete("/api/tasks/{task_id}/versions/{task_version_id}")
+async def delete_task_version(
+    task_id: str,
+    task_version_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _get_task_or_404(task_id, db)
+    await _get_task_version_or_404(task_id, task_version_id, db)
+
+    remaining_result = await db.execute(
+        select(TaskVersionORM).where(
+            TaskVersionORM.task_id == task_id,
+            TaskVersionORM.task_version_id != task_version_id,
+        )
+    )
+    remaining = list(remaining_result.scalars().all())
+    if not remaining:
+        raise HTTPException(400, "Cannot delete the only version of a task.")
+
+    await db.execute(
+        update(ResultSnapshotORM)
+        .where(ResultSnapshotORM.linked_task_version_id == task_version_id)
+        .values(linked_task_version_id=None)
+    )
+
+    await db.execute(
+        delete(TaskVersionORM).where(TaskVersionORM.task_version_id == task_version_id)
+    )
+
+    if task.current_version_id == task_version_id:
+        task.current_version_id = remaining[-1].task_version_id
+
+    task.updated_at = utc_now().isoformat()
+    await db.commit()
+    return {"deleted": True}
+
+
+class CreateTaskGroupPayload(BaseModel):
+    name: str
+    description: str = ""
+    color: str = ""
+    sort_order: int = 0
+
+
+class UpdateTaskGroupPayload(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    color: str | None = None
+    sort_order: int | None = None
+
+
+def _task_group_to_schema(row: TaskGroupORM) -> TaskGroup:
+    return TaskGroup(
+        group_id=row.group_id,
+        name=row.name,
+        description=row.description or "",
+        color=row.color or "",
+        sort_order=row.sort_order or 0,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@app.get("/api/task-groups")
+async def list_task_groups(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(TaskGroupORM).order_by(TaskGroupORM.sort_order.asc(), TaskGroupORM.created_at.asc())
+    )
+    rows = result.scalars().all()
+    return [_task_group_to_schema(row).model_dump(mode="json") for row in rows]
+
+
+@app.post("/api/task-groups")
+async def create_task_group(payload: CreateTaskGroupPayload, db: AsyncSession = Depends(get_db)):
+    row = TaskGroupORM(
+        group_id=f"tg_{uuid4().hex[:12]}",
+        name=payload.name,
+        description=payload.description,
+        color=payload.color,
+        sort_order=payload.sort_order,
+    )
+    db.add(row)
+    await db.commit()
+    return _task_group_to_schema(row).model_dump(mode="json")
+
+
+@app.put("/api/task-groups/{group_id}")
+async def update_task_group(
+    group_id: str,
+    payload: UpdateTaskGroupPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(TaskGroupORM).where(TaskGroupORM.group_id == group_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, f"Task group '{group_id}' not found")
+    if payload.name is not None:
+        row.name = payload.name
+    if payload.description is not None:
+        row.description = payload.description
+    if payload.color is not None:
+        row.color = payload.color
+    if payload.sort_order is not None:
+        row.sort_order = payload.sort_order
+    row.updated_at = utc_now().isoformat()
+    await db.commit()
+    return _task_group_to_schema(row).model_dump(mode="json")
+
+
+@app.delete("/api/task-groups/{group_id}")
+async def delete_task_group(group_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(TaskGroupORM).where(TaskGroupORM.group_id == group_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, f"Task group '{group_id}' not found")
+    await db.execute(update(TaskORM).where(TaskORM.group_id == group_id).values(group_id=None))
+    await db.delete(row)
+    await db.commit()
+    return {"deleted": True}
+
+
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
-
 def _dict_get(data: dict[str, Any] | None, *keys: str) -> Any:
     current: Any = data or {}
     for key in keys:
@@ -1508,12 +1690,16 @@ async def create_result_snapshot(
 
     session_model_snapshot = _dict_get(run_session.config_snapshot, "model_config_snapshot") or {}
     item_model_snapshot = run_item.model_config_snapshot if run_item else None
-    provider_id = (run_item.provider_id if run_item else None) or _dict_get(
-        item_model_snapshot, "provider_id"
-    ) or _dict_get(session_model_snapshot, "provider_id")
-    model_id = (run_item.model_id if run_item else None) or _dict_get(
-        item_model_snapshot, "model_id"
-    ) or _dict_get(session_model_snapshot, "model_id")
+    provider_id = (
+        (run_item.provider_id if run_item else None)
+        or _dict_get(item_model_snapshot, "provider_id")
+        or _dict_get(session_model_snapshot, "provider_id")
+    )
+    model_id = (
+        (run_item.model_id if run_item else None)
+        or _dict_get(item_model_snapshot, "model_id")
+        or _dict_get(session_model_snapshot, "model_id")
+    )
     prompt_version_id = _dict_get(
         run_session.config_snapshot, "prompt_version", "prompt_version_id"
     )
@@ -1559,25 +1745,11 @@ async def create_result_snapshot(
     snapshot_dir = settings.snapshots_dir / snapshot_id
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-    request_snapshot = (
-        run_item.internal_request_snapshot if run_item is not None else None
-    ) or {}
+    request_snapshot = (run_item.internal_request_snapshot if run_item is not None else None) or {}
     images = request_snapshot.get("images") or []
-    print(
-        f"[snapshot] run_item_id={payload.run_item_id} "
-        f"images_in_run_item={len(images)}"
-    )
     persisted_images = persist_request_images(images, snapshot_dir)
-    print(
-        f"[snapshot] after persist_request_images: "
-        f"persisted_count={len(persisted_images)}"
-    )
     served_images = rewrite_image_uris(
         persisted_images, f"/api/result-snapshots/{snapshot_id}/images"
-    )
-    print(
-        f"[snapshot] after rewrite_image_uris: "
-        f"served_count={len(served_images)}"
     )
     request_snapshot = {**request_snapshot, "images": served_images}
 
@@ -1622,8 +1794,7 @@ async def list_result_snapshots(
     stmt = stmt.order_by(ResultSnapshotORM.created_at.desc()).limit(limit)
     result = await db.execute(stmt)
     return [
-        _result_snapshot_to_schema(row).model_dump(mode="json")
-        for row in result.scalars().all()
+        _result_snapshot_to_schema(row).model_dump(mode="json") for row in result.scalars().all()
     ]
 
 
@@ -1760,10 +1931,7 @@ async def list_runs(
 
     total_stmt = select(func.count()).select_from(RunSessionORM)
     stmt = (
-        select(RunSessionORM)
-        .order_by(RunSessionORM.created_at.desc())
-        .limit(limit)
-        .offset(offset)
+        select(RunSessionORM).order_by(RunSessionORM.created_at.desc()).limit(limit).offset(offset)
     )
     if filters:
         total_stmt = total_stmt.where(*filters)
@@ -1833,9 +2001,9 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
                 "started_at": i.started_at,
                 "completed_at": i.completed_at,
                 "prompt_snapshot": i.prompt_snapshot,
+                "internal_request_snapshot": i.internal_request_snapshot,
                 "model_config_snapshot": i.model_config_snapshot,
                 "output_contract_snapshot": i.output_contract_snapshot,
-                "pricing_snapshot": i.pricing_snapshot,
                 "final_attempt_id": i.final_attempt_id,
                 "response": i.response,
                 "usage": i.usage,
@@ -1881,15 +2049,17 @@ async def export_run_jsonl(run_id: str, db: AsyncSession = Depends(get_db)):
             if not isinstance(img, dict):
                 continue
             resolved = img.get("resolved") or {}
-            input_images.append({
-                "request_image_id": img.get("request_image_id"),
-                "source_image_id": img.get("source_image_id"),
-                "role": img.get("role"),
-                "path": img.get("path"),
-                "mime_type": resolved.get("mime_type") or img.get("mime_type"),
-                "display_name": img.get("display_name"),
-                "order": img.get("order"),
-            })
+            input_images.append(
+                {
+                    "request_image_id": img.get("request_image_id"),
+                    "source_image_id": img.get("source_image_id"),
+                    "role": img.get("role"),
+                    "path": img.get("path"),
+                    "mime_type": resolved.get("mime_type") or img.get("mime_type"),
+                    "display_name": img.get("display_name"),
+                    "order": img.get("order"),
+                }
+            )
         prompt_spec = req_snap.get("prompt") or {}
         render_context = prompt_spec.get("render_context") or {}
         lines.append(
@@ -2088,6 +2258,7 @@ async def update_review(
 # Samples
 # ---------------------------------------------------------------------------
 
+
 def _sample_set_to_dict(row: SampleSetORM) -> dict[str, Any]:
     return {
         "sample_set_id": row.sample_set_id,
@@ -2213,7 +2384,9 @@ async def list_sample_sets(db: AsyncSession = Depends(get_db)):
 
 @app.get("/api/sample-sets/{sample_set_id}")
 async def get_sample_set(sample_set_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(SampleSetORM).where(SampleSetORM.sample_set_id == sample_set_id))
+    result = await db.execute(
+        select(SampleSetORM).where(SampleSetORM.sample_set_id == sample_set_id)
+    )
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "Sample set not found")
@@ -2222,7 +2395,9 @@ async def get_sample_set(sample_set_id: str, db: AsyncSession = Depends(get_db))
 
 @app.delete("/api/sample-sets/{sample_set_id}")
 async def delete_sample_set(sample_set_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(SampleSetORM).where(SampleSetORM.sample_set_id == sample_set_id))
+    result = await db.execute(
+        select(SampleSetORM).where(SampleSetORM.sample_set_id == sample_set_id)
+    )
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "Sample set not found")
@@ -2234,7 +2409,9 @@ async def delete_sample_set(sample_set_id: str, db: AsyncSession = Depends(get_d
 
 @app.put("/api/sample-sets/{sample_set_id}")
 async def update_sample_set(sample_set_id: str, payload: dict, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(SampleSetORM).where(SampleSetORM.sample_set_id == sample_set_id))
+    result = await db.execute(
+        select(SampleSetORM).where(SampleSetORM.sample_set_id == sample_set_id)
+    )
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "Sample set not found")
@@ -2251,6 +2428,7 @@ async def update_sample_set(sample_set_id: str, payload: dict, db: AsyncSession 
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
+
 
 def _prompt_to_dict(prompt: PromptORM) -> dict[str, Any]:
     return {
@@ -2331,11 +2509,10 @@ async def delete_prompt(prompt_id: str, db: AsyncSession = Depends(get_db)):
 # Model configs
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/model-configs")
 async def list_model_configs(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(ModelConfigORM).order_by(ModelConfigORM.created_at.desc())
-    )
+    result = await db.execute(select(ModelConfigORM).order_by(ModelConfigORM.created_at.desc()))
     return [
         {
             "model_config_id": r.model_config_id,
@@ -2373,6 +2550,7 @@ async def save_model_config(payload: CreateModelConfigPayload, db: AsyncSession 
 # ---------------------------------------------------------------------------
 # Pricing
 # ---------------------------------------------------------------------------
+
 
 @app.get("/api/pricing")
 async def list_pricing(
@@ -2458,6 +2636,7 @@ async def delete_pricing(pricing_profile_id: str, db: AsyncSession = Depends(get
 # API keys
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/settings/api-keys")
 async def list_api_keys(db: AsyncSession = Depends(get_db)):
     providers = await list_api_key_providers(db)
@@ -2465,9 +2644,7 @@ async def list_api_keys(db: AsyncSession = Depends(get_db)):
 
 
 @app.put("/api/settings/api-keys/{provider_id}")
-async def set_api_key(
-    provider_id: str, payload: ApiKeyPayload, db: AsyncSession = Depends(get_db)
-):
+async def set_api_key(provider_id: str, payload: ApiKeyPayload, db: AsyncSession = Depends(get_db)):
     await store_api_key(db, provider_id, payload.api_key)
     await db.commit()
     return {"provider_id": provider_id, "masked": mask_api_key(payload.api_key)}
@@ -2486,6 +2663,7 @@ async def remove_api_key(provider_id: str, db: AsyncSession = Depends(get_db)):
 # Image upload
 # ---------------------------------------------------------------------------
 
+
 @app.post("/api/upload/image")
 async def upload_image(file: UploadFile = File(...)):
     import mimetypes
@@ -2501,11 +2679,14 @@ async def upload_image(file: UploadFile = File(...)):
 
     mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "image/png"
 
+    import hashlib as _hashlib
+
     return {
         "path": str(saved_path),
         "filename": file.filename,
         "mime_type": mime,
         "size": len(content),
+        "sha256": _hashlib.sha256(content).hexdigest(),
         "url": f"/api/uploads/{saved_name}",
     }
 
@@ -2552,7 +2733,11 @@ async def serve_sample_image(path: str):
 # ---------------------------------------------------------------------------
 
 from app.models.provider_config import ProviderConfigORM as _PCORM
-from app.core.security import encrypt_value as _encrypt, decrypt_value as _decrypt, mask_api_key as _mask
+from app.core.security import (
+    encrypt_value as _encrypt,
+    decrypt_value as _decrypt,
+    mask_api_key as _mask,
+)
 
 
 @app.get("/api/provider-configs")
@@ -2587,11 +2772,17 @@ class SaveProviderConfigPayload(BaseModel):
     selected_models: list[str] = Field(default_factory=list)
     notes: str = ""
     provider_config_id: str | None = None  # None = create new
+    cached_models: list[str] | None = (
+        None  # None = keep existing; set to merge manually-added models
+    )
 
 
 @app.post("/api/provider-configs")
-async def save_provider_config(payload: SaveProviderConfigPayload, db: AsyncSession = Depends(get_db)):
+async def save_provider_config(
+    payload: SaveProviderConfigPayload, db: AsyncSession = Depends(get_db)
+):
     """Create or update a provider config."""
+
     from app.adapters.registry import get_adapter_metadata
 
     # Validate adapter
@@ -2615,6 +2806,8 @@ async def save_provider_config(payload: SaveProviderConfigPayload, db: AsyncSess
         row.notes = payload.notes
         if payload.api_key is not None:
             row.api_key_encrypted = _encrypt(payload.api_key)
+        if payload.cached_models is not None:
+            row.cached_models = payload.cached_models
     else:
         # Create new
         config_id = f"pc_{uuid4().hex[:12]}"
@@ -2659,6 +2852,7 @@ async def delete_provider_config(config_id: str, db: AsyncSession = Depends(get_
 # ---------------------------------------------------------------------------
 # CSV import
 # ---------------------------------------------------------------------------
+
 
 @app.post("/api/import/csv/preview")
 async def csv_preview(payload: dict):
@@ -2761,7 +2955,9 @@ async def csv_import_file(
         effective_task_version_id = task_version_id or parsed_mapping.task_version_id
         report = await _validation_report_for_records(records, effective_task_version_id, db)
         if validate_only:
-            return (report or ImportValidationReport(valid_count=len(records))).model_dump(mode="json")
+            return (report or ImportValidationReport(valid_count=len(records))).model_dump(
+                mode="json"
+            )
         sample_set_id = await _persist_sample_records(
             db,
             records,
@@ -2793,7 +2989,9 @@ async def jsonl_import_file(
         _dedupe_record_ids(records)
         report = await _validation_report_for_records(records, task_version_id, db)
         if validate_only:
-            return (report or ImportValidationReport(valid_count=len(records))).model_dump(mode="json")
+            return (report or ImportValidationReport(valid_count=len(records))).model_dump(
+                mode="json"
+            )
         sample_set_id = await _persist_sample_records(
             db,
             records,
@@ -2811,6 +3009,7 @@ async def jsonl_import_file(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _get_pricing(
     db: AsyncSession,

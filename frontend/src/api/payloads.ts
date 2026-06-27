@@ -58,6 +58,7 @@ export interface CreateTaskPayload {
   name: string;
   description?: string;
   tags?: string[];
+  group_id?: string | null;
   version: CreateTaskVersionPayload;
 }
 
@@ -66,6 +67,7 @@ export interface UpdateTaskPayload {
   description?: string;
   tags?: string[];
   current_version_id?: string | null;
+  group_id?: string | null;
 }
 
 export interface CreateResultSnapshotPayload {

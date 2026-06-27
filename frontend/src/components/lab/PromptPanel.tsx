@@ -357,7 +357,7 @@ export function PromptPanel() {
         .filter(Boolean);
       const parser =
         sections.length > 0
-          ? { type: 'sections', options: { sections } }
+          ? { type: 'soft_sections', options: { section_names: sections } }
           : null;
       setOutputContract({
         ...outputContract,
@@ -1180,10 +1180,16 @@ function escapeHtml(value: string): string {
 
 function extractSectionNames(contract: OutputContract): string {
   const parser = contract.parser;
-  if (!parser || parser.type !== 'sections') return '';
-  const sections = parser.options?.sections;
-  if (Array.isArray(sections)) {
-    return sections
+  if (!parser || (parser.type !== 'soft_sections' && parser.type !== 'sections')) {
+    return '';
+  }
+  const options = parser.options ?? {};
+  // Prefer the canonical "section_names" key; fall back to the legacy
+  // "sections" key used by older stored contracts.
+  const raw =
+    (options.section_names as unknown) ?? (options.sections as unknown);
+  if (Array.isArray(raw)) {
+    return raw
       .filter((section): section is string => typeof section === 'string')
       .join(', ');
   }

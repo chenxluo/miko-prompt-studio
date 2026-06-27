@@ -101,6 +101,7 @@ export function ImagePanel() {
                 display_name: uploaded.filename ?? file.name,
                 metadata: {
                   file_size: uploaded.size,
+                  sha256: uploaded.sha256,
                 },
               };
               const state = useLabStore.getState();
@@ -1009,7 +1010,9 @@ export function resolveImageSrc(image: ImageRef): string {
   if (image.path.startsWith('/api/')) {
     return `${api.getBaseUrl()}${image.path}`;
   }
-  return ''; // Don't try to use filesystem paths — they won't work in the browser
+  // Local filesystem path — route through the backend image proxy so the
+  // browser can display it (file:// is blocked by browser security).
+  return `${api.getBaseUrl()}/api/sample-images?path=${encodeURIComponent(image.path)}`;
 }
 
 function getSlotLabel(
