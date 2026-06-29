@@ -9,7 +9,7 @@ later phase (see 设计文档 section 13).
 
 from __future__ import annotations
 
-import base64
+import contextlib
 import secrets
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.settings import SettingORM
-
 
 # ---------------------------------------------------------------------------
 # Master key management
@@ -37,10 +36,8 @@ def _load_or_create_master_key() -> bytes:
     key_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.write_bytes(key)
     # On POSIX, restrict permissions. On Windows the file inherits user perms.
-    try:
+    with contextlib.suppress(OSError):
         key_path.chmod(0o600)
-    except OSError:
-        pass
     return key
 
 

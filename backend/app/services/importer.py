@@ -54,7 +54,9 @@ def _resolve_path(base_dir: str | None, path: str) -> str:
     return str(Path(base_dir) / path)
 
 
-def _image_ref_from_value(value: str, role: str, order: int, base_dir: str | None = None) -> ImageRef:
+def _image_ref_from_value(
+    value: str, role: str, order: int, base_dir: str | None = None
+) -> ImageRef:
     """Create an ImageRef, preserving URL-like values as uri and resolving local paths."""
     if _is_uri(value):
         display_name = None
@@ -143,7 +145,9 @@ def suggest_column_mapping(
     variable_specs: list[VariableSpec] | None = None,
 ) -> ColumnMapping:
     """Suggest a loose import mapping from column names and an optional prompt contract."""
-    id_column = next((col for col in columns if col.lower() in {"id", "sample_id", "image_id"}), "id")
+    id_column = next(
+        (col for col in columns if col.lower() in {"id", "sample_id", "image_id"}), "id"
+    )
     used = {id_column} if id_column in columns else set()
 
     image_columns: list[dict[str, str]] = []

@@ -245,7 +245,9 @@ async def _migrate_prompt_specs_to_task_versions(conn) -> None:
     await conn.execute(text("ALTER TABLE prompt_versions_new RENAME TO prompt_versions"))
     await conn.execute(
         text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ix_prompt_versions_prompt_version_id ON prompt_versions (prompt_version_id)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "ix_prompt_versions_prompt_version_id "
+            "ON prompt_versions (prompt_version_id)"
         )
     )
     await conn.execute(
@@ -350,7 +352,8 @@ async def _migrate_task_version_prompt_inline(conn) -> None:
             )
             await conn.execute(
                 text(
-                    "CREATE INDEX IF NOT EXISTS ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)"
+                    "CREATE INDEX IF NOT EXISTS "
+                    "ix_prompt_versions_prompt_id ON prompt_versions (prompt_id)"
                 )
             )
 
@@ -524,7 +527,9 @@ async def _recreate_task_versions_table_without_legacy_columns(conn) -> None:
     await conn.execute(text("ALTER TABLE task_versions_new RENAME TO task_versions"))
     await conn.execute(
         text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ix_task_versions_task_version_id ON task_versions (task_version_id)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "ix_task_versions_task_version_id "
+            "ON task_versions (task_version_id)"
         )
     )
     await conn.execute(
@@ -535,7 +540,9 @@ async def _recreate_task_versions_table_without_legacy_columns(conn) -> None:
     )
     await conn.execute(
         text(
-            "CREATE INDEX IF NOT EXISTS ix_task_versions_prompt_version_id ON task_versions (prompt_version_id)"
+            "CREATE INDEX IF NOT EXISTS "
+            "ix_task_versions_prompt_version_id "
+            "ON task_versions (prompt_version_id)"
         )
     )
 
@@ -1118,7 +1125,7 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
     await conn.execute(
         text(
             "INSERT INTO tasks_new "
-            "(task_id, name, description, current_version_id, tags, group_id, created_at, updated_at) "
+            "(task_id, name, description, current_version_id, tags, group_id, created_at, updated_at) "  # noqa: E501
             "SELECT task_id, name, "
             "COALESCE(description, ''), "
             "current_version_id, "

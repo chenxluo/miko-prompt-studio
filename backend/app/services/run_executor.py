@@ -14,7 +14,6 @@ Flow::
 
 from __future__ import annotations
 
-import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from uuid import uuid4
@@ -25,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.adapters.registry import get_adapter
 from app.core.security import get_api_key
 from app.models.run import AttemptORM, RunItemORM, RunSessionORM
-from app.models.sample import SampleRecordORM
 from app.schemas.common import (
     AttemptStatus,
     ErrorType,
@@ -46,12 +44,7 @@ from app.schemas.prompt import (
     VariableSpec,
 )
 from app.schemas.run_record import (
-    AdapterInfo,
-    Attempt,
     ConfigSnapshot,
-    ParsedResponse,
-    Review,
-    RunItem,
     RunSession,
     RunSource,
     RunSummary,
@@ -62,7 +55,6 @@ from app.schemas.sample_record import SampleRecord
 from app.services.cost_engine import calculate_cost
 from app.services.parser_engine import parse_response
 from app.services.request_builder import build_internal_request
-
 
 # ---------------------------------------------------------------------------
 # Lab run request DTO (used by the API layer)
@@ -196,8 +188,8 @@ async def execute_lab_run(
     # Resolve API key: prefer provider_config_id, fall back to provider_id
     api_key = None
     if request.provider_config_id:
-        from app.models.provider_config import ProviderConfigORM
         from app.core.security import decrypt_value as _decrypt
+        from app.models.provider_config import ProviderConfigORM
 
         pc_stmt = select(ProviderConfigORM).where(
             ProviderConfigORM.provider_config_id == request.provider_config_id

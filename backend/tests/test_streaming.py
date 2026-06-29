@@ -21,7 +21,7 @@ def test_openai_compat_sse_parser_yields_reasoning_content_usage_and_done() -> N
         "data: "
         + json.dumps({"choices": [{"delta": {"reasoning_content": "think "}}]}),
         "data: " + json.dumps({"choices": [{"delta": {"content": "hello"}}]}),
-        "data: " + json.dumps({"usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}, "choices": []}),
+        "data: " + json.dumps({"usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}, "choices": []}),  # noqa: E501
         "data: [DONE]",
     ]
 
@@ -56,7 +56,7 @@ def test_openai_compat_stream_to_result_accumulates_adapter_result() -> None:
         "data: " + json.dumps({"choices": [{"delta": {"reasoning_content": "b"}}]}),
         "data: " + json.dumps({"choices": [{"delta": {"content": "he"}}]}),
         "data: " + json.dumps({"choices": [{"delta": {"content": "llo"}}]}),
-        "data: " + json.dumps({"usage": {"prompt_tokens": 4, "completion_tokens": 5, "total_tokens": 9}, "choices": []}),
+        "data: " + json.dumps({"usage": {"prompt_tokens": 4, "completion_tokens": 5, "total_tokens": 9}, "choices": []}),  # noqa: E501
         "data: [DONE]",
     ]
 

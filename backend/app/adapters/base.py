@@ -241,7 +241,11 @@ class BaseAdapter(ABC):
             error=stream_error,
             latency_ms=self._elapsed_ms(started) if started is not None else None,
             provider_request_snapshot=provider_request_snapshot,
-            provider_response_raw={"stream": True, "usage": raw_usage, "finish_reason": finish_reason},
+            provider_response_raw={
+                "stream": True,
+                "usage": raw_usage,
+                "finish_reason": finish_reason,
+            },
         )
 
     def _usage_from_stream(

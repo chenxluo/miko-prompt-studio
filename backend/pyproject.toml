@@ -31,6 +31,7 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]  # FastAPI Depends()/Field() in argument defaults is idiomatic
 
 [tool.ruff.lint.per-file-ignores]
 # ponytail: html_export embeds minified CSS/JS string literals; line length is

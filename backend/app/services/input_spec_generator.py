@@ -9,7 +9,6 @@ from app.schemas.prompt import ImageSlotSpec, VariableSpec
 from app.schemas.task import (
     TaskInputExpectedColumn,
     TaskInputImageSlot,
-    TaskInputPromptSummary,
     TaskInputSpec,
     TaskInputVariableSlot,
 )

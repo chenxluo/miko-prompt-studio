@@ -15,8 +15,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,61 +28,52 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.core.security import (
+    decrypt_value as _decrypt,
+)
+from app.core.security import (
     delete_api_key,
     get_api_key,
     list_api_key_providers,
     mask_api_key,
     store_api_key,
 )
+from app.core.security import (
+    encrypt_value as _encrypt,
+)
+from app.core.security import (
+    mask_api_key as _mask,
+)
 from app.database import get_db, init_db
 from app.models.model_config import ModelConfigORM
 from app.models.pricing import PricingProfileORM
 from app.models.prompt import PromptORM
+from app.models.provider_config import ProviderConfigORM as _PCORM
 from app.models.result_snapshot import ResultSnapshotORM
 from app.models.run import AttemptORM, RunItemORM, RunSessionORM
 from app.models.sample import SampleRecordORM, SampleSetORM
 from app.models.task import TaskGroupORM, TaskORM, TaskVersionORM
 from app.schemas.common import RunItemType, RunSessionStatus, RunType, utc_now
 from app.schemas.model_config import ModelConfig, ModelParameters
-from app.schemas.output_contract import OutputContract, OutputMode
-from app.schemas.pricing import PricingProfile, PricingSnapshot
+from app.schemas.output_contract import OutputContract
+from app.schemas.pricing import PricingProfile
 from app.schemas.prompt import (
     ImageSlotSpec,
     PromptVersionData,
     VariableSpec,
 )
 from app.schemas.result_snapshot import ResultSnapshot as ResultSnapshotSchema
-from app.schemas.run_record import ConfigSnapshot, RunSource, StreamEvent, Usage
+from app.schemas.run_record import RunSource, StreamEvent
 from app.schemas.sample_record import SampleRecord
 from app.schemas.task import (
     Task,
     TaskGroup,
     TaskInputSpec,
     TaskVersion,
-    TaskVersionData as TaskVersionDataSchema,
     TaskVersionSummary,
 )
-from app.services.cost_engine import calculate_cost
-from app.services.image_persist import (
-    persist_request_images,
-    rewrite_image_uris,
+from app.schemas.task import (
+    TaskVersionData as TaskVersionDataSchema,
 )
-from app.services.contract_validation import (
-    InvalidRow,
-    validate_records_against_contract,
-)
-from app.services.input_spec_generator import generate_input_spec_for_task_version
-from app.services.task_doc_generator import generate_task_doc
-from app.services.html_export import render_run_html
-from app.services.importer import (
-    ColumnMapping,
-    detect_columns,
-    import_csv,
-    import_jsonl,
-    preview_csv,
-    suggest_column_mapping,
-)
-from app.services.run_executor import LabRunRequest, execute_lab_run
 from app.services.batch_executor import (
     MAX_CONCURRENCY,
     MAX_RETRIES,
@@ -96,8 +87,26 @@ from app.services.compare_executor import (
     request_compare_cancel,
     start_compare_run,
 )
-from app.services.request_builder import _pricing_snapshot
-
+from app.services.contract_validation import (
+    InvalidRow,
+    validate_records_against_contract,
+)
+from app.services.html_export import render_run_html
+from app.services.image_persist import (
+    persist_request_images,
+    rewrite_image_uris,
+)
+from app.services.importer import (
+    ColumnMapping,
+    detect_columns,
+    import_csv,
+    import_jsonl,
+    preview_csv,
+    suggest_column_mapping,
+)
+from app.services.input_spec_generator import generate_input_spec_for_task_version
+from app.services.run_executor import LabRunRequest, execute_lab_run
+from app.services.task_doc_generator import generate_task_doc
 
 # ---------------------------------------------------------------------------
 # App lifecycle
@@ -401,7 +410,6 @@ async def lab_run(payload: LabRunPayload, db: AsyncSession = Depends(get_db)):
     """Execute a single Lab run."""
 
     from app.adapters.registry import get_adapter_metadata
-    from app.core.security import decrypt_value
     from app.models.provider_config import ProviderConfigORM
 
     # Resolve provider config → adapter_id, base_url, api_key
@@ -1832,19 +1840,7 @@ async def list_result_snapshots(
 async def serve_snapshot_image(snapshot_id: str, filename: str):
     """Serve a persisted image stored inside a result snapshot."""
     from pathlib import Path
-    from fastapi.responses import FileResponse
 
-    safe_name = Path(filename).name
-    settings = get_settings()
-    file_path = settings.snapshots_dir / snapshot_id / safe_name
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(404, "File not found")
-    return FileResponse(file_path)
-
-
-@app.get("/api/result-snapshots/{snapshot_id}/images/{filename}")
-async def serve_snapshot_image(snapshot_id: str, filename: str):
-    """Serve a persisted image stored inside a result snapshot."""
     from fastapi.responses import FileResponse
 
     safe_name = Path(filename).name
@@ -2185,7 +2181,6 @@ async def export_run_csv(run_id: str, db: AsyncSession = Depends(get_db)):
         for img in req_snap.get("images") or []:
             if not isinstance(img, dict):
                 continue
-            resolved = img.get("resolved") or {}
             path = img.get("path") or ""
             role = img.get("role") or ""
             input_images.append(f"{role}:{path}")
@@ -2321,7 +2316,7 @@ def _dedupe_record_ids(records: list[SampleRecord]) -> None:
             seen.add(sample_id)
             continue
 
-        digest_source = f"{sample_id}:{index}:{record.model_dump_json()}".encode("utf-8")
+        digest_source = f"{sample_id}:{index}:{record.model_dump_json()}".encode()
         suffix = hashlib.sha1(digest_source).hexdigest()[:6]
         candidate = f"{sample_id}_{suffix}"
         counter = 1
@@ -2738,6 +2733,7 @@ async def upload_image(file: UploadFile = File(...)):
 async def serve_upload(filename: str):
     """Serve an uploaded image file."""
     from pathlib import Path
+
     from fastapi.responses import FileResponse
 
     # Prevent path traversal
@@ -2758,6 +2754,7 @@ async def serve_sample_image(path: str):
     ``file://`` URLs due to browser security restrictions.
     """
     from pathlib import Path
+
     from fastapi.responses import FileResponse
 
     file_path = Path(path).expanduser()
@@ -2775,12 +2772,6 @@ async def serve_sample_image(path: str):
 # Provider configs (bundle adapter + base_url + api_key)
 # ---------------------------------------------------------------------------
 
-from app.models.provider_config import ProviderConfigORM as _PCORM
-from app.core.security import (
-    encrypt_value as _encrypt,
-    decrypt_value as _decrypt,
-    mask_api_key as _mask,
-)
 
 
 @app.get("/api/provider-configs")

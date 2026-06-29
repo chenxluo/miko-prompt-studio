@@ -7,13 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import tempfile
-from pathlib import Path
 from uuid import uuid4
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session_factory, init_db
 from app.main import app
@@ -23,7 +20,9 @@ from app.models.run import RunItemORM, RunSessionORM
 
 async def run_tests():
     await init_db()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         await _test_prompt_save(client)
         await _test_result_snapshot_with_image(client)
 
@@ -61,7 +60,9 @@ async def _test_result_snapshot_with_image(client: httpx.AsyncClient) -> None:
                 name="test-run",
                 status="completed",
                 source={},
-                config_snapshot={"prompt_version": {"system_prompt": "sys", "user_template": "user"}},
+                config_snapshot={
+                    "prompt_version": {"system_prompt": "sys", "user_template": "user"}
+                },
                 summary={},
             )
         )
@@ -107,7 +108,6 @@ async def _test_result_snapshot_with_image(client: httpx.AsyncClient) -> None:
     print(f"[OK] snapshot created -> {snapshot_id}, image uri -> {uri}")
 
     # Verify serving endpoint.
-    filename = Path(uri).name
     serve_resp = await client.get(uri)
     assert serve_resp.status_code == 200, f"serve snapshot image failed: {serve_resp.status_code}"
     print("[OK] snapshot image served")

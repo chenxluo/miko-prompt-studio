@@ -39,7 +39,8 @@ def validate_sample_against_specs(
         count = sum(1 for image in sample.images if image.role == role)
         if count < slot.min_count:
             errors.append(
-                f"Required image slot '{role}' needs at least {slot.min_count} image(s), found {count}."
+                f"Required image slot '{role}' needs at least "
+                f"{slot.min_count} image(s), found {count}."
             )
 
     for spec in variable_specs:

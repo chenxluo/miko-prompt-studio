@@ -26,10 +26,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.model_config import ModelConfigSnapshot, ModelParameters
+from app.schemas.model_config import ModelParameters
 from app.schemas.output_contract import OutputContract
 from app.schemas.pricing import PricingSnapshot
-from app.schemas.sample_record import ImageMetadata
 
 
 class RenderContext(BaseModel):
@@ -66,7 +65,9 @@ class ImagePreprocessConfig(BaseModel):
     affects image token cost, bbox coordinates, and output quality.
     """
 
-    mode: str = "original"  # original | resize_long_edge | resize_short_edge | fit_within_box | center_crop | convert_format | limit_total_pixels
+    # original | resize_long_edge | resize_short_edge | fit_within_box
+    # | center_crop | convert_format | limit_total_pixels
+    mode: str = "original"
     long_edge: int | None = None
     short_edge: int | None = None
     box_width: int | None = None

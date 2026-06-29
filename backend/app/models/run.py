@@ -33,7 +33,9 @@ class RunSessionORM(Base):
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     notes: Mapped[str] = mapped_column(Text, default="")
 
-    created_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat(), index=True)
+    created_at: Mapped[str] = mapped_column(
+        String, default=lambda: utc_now().isoformat(), index=True
+    )
     updated_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())
 
 
@@ -72,7 +74,9 @@ class RunItemORM(Base):
     rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
     accepted: Mapped[bool | None] = mapped_column(Integer, nullable=True)  # 0/1/NULL
 
-    created_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat(), index=True)
+    created_at: Mapped[str] = mapped_column(
+        String, default=lambda: utc_now().isoformat(), index=True
+    )
     updated_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())
 
 

@@ -42,11 +42,11 @@ from app.schemas.pricing import (
     PricingSnapshot,
 )
 from app.schemas.prompt import (
+    ImageSlotSpec,
     Prompt,
     PromptSnapshot,
     PromptVersion,
     PromptVersionData,
-    ImageSlotSpec,
     VariableSpec,
 )
 from app.schemas.run_record import (

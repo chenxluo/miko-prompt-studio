@@ -229,9 +229,8 @@ def _render_output_contract(contract: OutputContract) -> str:
                 lines.append(_fence(json.dumps(schema, ensure_ascii=False, indent=2), "json"))
         else:
             lines.append("- 未提供 JSON Schema。")
-    elif mode == OutputMode.CUSTOM:
-        if contract.parser and contract.parser.type:
-            lines.append(f"- 自定义解析器: `{contract.parser.type}`")
+    elif mode == OutputMode.CUSTOM and contract.parser and contract.parser.type:
+        lines.append(f"- 自定义解析器: `{contract.parser.type}`")
 
     return "\n".join(lines)
 
