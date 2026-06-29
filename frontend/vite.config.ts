@@ -16,5 +16,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        // Split vendor deps into a stable chunk for better long-term caching
+        // and to keep each entry under the 500 kB chunk-size warning.
+        manualChunks(id) {
+          if (id.includes('node_modules')) return 'vendor';
+          return undefined;
+        },
+      },
+    },
   },
 });

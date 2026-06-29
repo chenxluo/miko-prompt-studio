@@ -351,11 +351,12 @@ run_executor.execute_lab_run()
 - [x] **修复 Lab 单请求崩溃**：撤销 v0.6.0 误删的 `LabRunPayload` 字段（`image_resolution_enabled` / `image_resolution_target` / `run_name` 实为 `LabRunRequest` 下游在用，误判为未用字段导致 `lab_run` 端点 `AttributeError`）；补回归测试 `test_lab_run.py`
 - [x] **ResultsView 小修**：列表拉满 `limit=1000`；header 提升 z-index，避免下拉被遮挡
 - [x] **BatchView 切页恢复运行视图**：mount 时查询运行中的 batch run 并恢复 phase/polling（此前切页致组件卸载、丢失运行追踪，切回后回不到运行中页）
+- [x] **修复 compare 取消的 SQLite 写锁竞态**：cancel 清理原在主 session 的 `async with` 内开第二连接，WAL 下死锁致 `database is locked`、运行卡在 running；改为 session 释放后再清理（对齐 batch 模式）
+- [x] **前端 bundle 拆分**：vite `manualChunks` 拆出独立 vendor chunk，各 entry <500kB（vendor 290kB / app 412kB），消除 chunk-size 警告
 
 ### 待实现
 - [ ] Python Import Script
 - [ ] 更多原生 adapter（Google Vertex、阿里百炼）
-- [ ] 代码分割（前端 bundle >500kB）
 - [ ] 系统 keychain 集成
 - [ ] Electron 打包分发
 
@@ -420,7 +421,7 @@ npm run dev    # 项目根目录，concurrently 启动后端+前端+Electron
 
 1. **Python 环境**：使用 `backend/.venv` 虚拟环境，`package.json` 的 `dev:backend` 脚本指定 `.venv\Scripts\python`，不依赖系统 PATH。
 
-2. **前端 bundle 体积**：当前 >500kB，有 code splitting 警告。待优化。
+2. **前端 bundle 体积**：已通过 vite `manualChunks` 拆出独立 vendor chunk，各 entry 降到 500kB 以下（vendor 290kB gzip 88kB / app 412kB gzip 83kB），chunk-size 警告消除。
 
 3. **数据库迁移**：使用 `Base.metadata.create_all` + 启动时 ad-hoc `ALTER TABLE` / recreate-table 迁移，无 Alembic。`database.py` 中的 `_migrate_*` / `_recreate_*` 函数按顺序执行。
 
