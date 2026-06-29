@@ -348,8 +348,9 @@ run_executor.execute_lab_run()
 - [x] **thinking 关闭时抑制 effort 参数**：OpenAI 兼容 adapter 在 thinking 关闭/默认时不发送 `thinking_budget` / `reasoning_effort`（修复 Qwen3 把 `reasoning_effort` 当作隐式 thinking 开启、产生非预期思维链并击穿 max_tokens）
 - [x] **前端同步清除 effort/budget**：ModelBar 在 thinking 关闭/重置时清除残留的 effort/budget 参数
 - [x] **成本聚合口径修正**：cost-stats / task_doc 统计纳入 `COMPLETED_WITH_ERRORS` 运行（其成功项仍带真实成本，item 级过滤已排除失败项）
-- [x] **清理 LabRunPayload 未用字段**：移除 `image_resolution_enabled` / `image_resolution_target` / `run_name`
+- [x] **修复 Lab 单请求崩溃**：撤销 v0.6.0 误删的 `LabRunPayload` 字段（`image_resolution_enabled` / `image_resolution_target` / `run_name` 实为 `LabRunRequest` 下游在用，误判为未用字段导致 `lab_run` 端点 `AttributeError`）；补回归测试 `test_lab_run.py`
 - [x] **ResultsView 小修**：列表拉满 `limit=1000`；header 提升 z-index，避免下拉被遮挡
+- [x] **BatchView 切页恢复运行视图**：mount 时查询运行中的 batch run 并恢复 phase/polling（此前切页致组件卸载、丢失运行追踪，切回后回不到运行中页）
 
 ### 待实现
 - [ ] Python Import Script

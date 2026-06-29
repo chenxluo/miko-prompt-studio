@@ -158,6 +158,9 @@ class LabRunPayload(BaseModel):
     image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
     variable_specs: list[VariableSpec] = Field(default_factory=list)
     pricing_profile_id: str | None = None
+    image_resolution_enabled: bool = False
+    image_resolution_target: int = 1024
+    run_name: str = ""
 
 
 class BatchRunPayload(BaseModel):

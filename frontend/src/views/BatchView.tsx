@@ -108,6 +108,30 @@ export function BatchView() {
     return set?.name;
   }, [sampleSets, selectedSetId]);
 
+  // Resume an in-flight batch run when this view mounts — e.g. after the user
+  // navigates to another page and back. The backend keeps executing; without
+  // this the running view is unrecoverable until the run finishes.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listRuns({ run_type: 'batch', status: 'running', limit: 1 })
+      .then(({ runs }) => {
+        if (cancelled || runs.length === 0) return;
+        const run = runs[0];
+        setRunId(run.run_id);
+        setSession(run);
+        setItems([]);
+        setRunStartedAt(run.started_at ? new Date(run.started_at).getTime() : Date.now());
+        setPhase('running');
+      })
+      .catch(() => {
+        // Ignore — fall back to the default setup phase.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Load tasks and sample sets on mount.
   useEffect(() => {
     setIsLoadingTasks(true);
