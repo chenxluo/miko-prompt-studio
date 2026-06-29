@@ -1,5 +1,4 @@
 import asyncio
-import importlib
 import json
 import time
 
@@ -11,30 +10,6 @@ from app.schemas.prompt import ImageSlotSpec
 from app.schemas.run_record import AdapterResult, NormalizedResponse, Usage
 from app.schemas.sample_record import ImageRef, SampleRecord
 from app.services.batch_executor import map_sample_images_to_prompt_slots
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("MIKO_DATA_DIR", str(tmp_path))
-
-    import app.config as config
-    import app.database as database
-
-    config._settings = None
-    database._engine = None
-    database._session_factory = None
-
-    import app.main as main
-
-    main = importlib.reload(main)
-    with TestClient(main.app) as test_client:
-        yield test_client
-
-    engine = database.get_engine()
-    asyncio.run(engine.dispose())
-    database._engine = None
-    database._session_factory = None
-    config._settings = None
 
 
 class FakeAdapter:
