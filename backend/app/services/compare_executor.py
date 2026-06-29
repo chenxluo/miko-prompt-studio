@@ -138,6 +138,7 @@ async def _run_compare_worker(spec: CompareRunSpec, cancel_event: asyncio.Event)
         for variant in spec.variants
     ]
     factory = get_session_factory()
+    need_cancel_cleanup = False
     async with factory() as db:
         try:
             for index, cell in enumerate(cells):
@@ -159,17 +160,11 @@ async def _run_compare_worker(spec: CompareRunSpec, cancel_event: asyncio.Event)
                     await _refresh_session_summary(db, spec.run_id)
                     await db.commit()
                 except asyncio.CancelledError:
+                    # Defer finalization to after this session is released, so
+                    # the cleanup write doesn't race the still-open session's
+                    # SQLite write lock ("database is locked" under WAL).
                     cancel_event.set()
-                    await db.rollback()
-                    async with factory() as cancel_db:
-                        await _cancel_unfinished(cancel_db, spec.run_id, cells[index:])
-                        await _refresh_session_summary(
-                            cancel_db,
-                            spec.run_id,
-                            final_status=RunSessionStatus.CANCELLED.value,
-                        )
-                        await cancel_db.commit()
-                    return
+                    raise
                 except Exception as exc:
                     await db.rollback()
                     async with factory() as error_db:
@@ -190,14 +185,21 @@ async def _run_compare_worker(spec: CompareRunSpec, cancel_event: asyncio.Event)
             await _refresh_session_summary(db, spec.run_id, completed=True)
             await db.commit()
         except asyncio.CancelledError:
-            async with factory() as cancel_db:
-                await _cancel_unfinished(cancel_db, spec.run_id, cells)
-                await _refresh_session_summary(
-                    cancel_db,
-                    spec.run_id,
-                    final_status=RunSessionStatus.CANCELLED.value,
-                )
-                await cancel_db.commit()
+            # Don't finalize inside `async with db`: opening a second session
+            # here deadlocks SQLite. Let the session close (rolling back the
+            # in-flight transaction), then finalize with a fresh connection.
+            cancel_event.set()
+            need_cancel_cleanup = True
+
+    if need_cancel_cleanup:
+        async with factory() as cancel_db:
+            await _cancel_unfinished(cancel_db, spec.run_id, cells)
+            await _refresh_session_summary(
+                cancel_db,
+                spec.run_id,
+                final_status=RunSessionStatus.CANCELLED.value,
+            )
+            await cancel_db.commit()
 
 
 async def _create_pending_item(
