@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  Code,
   Eye,
   FileDown,
   History,
@@ -377,7 +378,7 @@ function RunDetailDrawer({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<RunItemSummary | null>(null);
-  const [exportingFormat, setExportingFormat] = useState<'jsonl' | 'csv' | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<'jsonl' | 'csv' | 'html' | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -401,11 +402,13 @@ function RunDetailDrawer({
     };
   }, [runId, t]);
 
-  async function handleExport(format: 'jsonl' | 'csv') {
+  async function handleExport(format: 'jsonl' | 'csv' | 'html') {
     setExportingFormat(format);
     try {
       if (format === 'jsonl') {
         await api.exportRunJsonl(runId);
+      } else if (format === 'html') {
+        await api.exportRunHtml(runId);
       } else {
         await api.exportRunCsv(runId);
       }
@@ -573,6 +576,19 @@ function RunDetailDrawer({
                         <Download size={12} />
                       )}
                       {t('history.exportCsv')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleExport('html')}
+                      disabled={exportingFormat === 'html'}
+                      className="btn-secondary px-2.5 py-1.5 text-xs disabled:opacity-50"
+                    >
+                      {exportingFormat === 'html' ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Code size={12} />
+                      )}
+                      {t('history.exportHtml')}
                     </button>
                   </div>
                 </div>

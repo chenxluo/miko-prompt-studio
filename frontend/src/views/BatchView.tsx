@@ -7,6 +7,7 @@ import {
   Clock,
   Coins,
   Download,
+  Code,
   Eye,
   FileDown,
   ImageIcon,
@@ -28,6 +29,8 @@ import type { ImageRef, RequestImage, RunItemSummary, Task, TaskVersion } from '
 
 type Phase = 'setup' | 'running' | 'results';
 type LimitOption = 10 | 50 | 'all';
+type ConcurrencyOption = 1 | 2 | 4 | 8;
+type RetryOption = 0 | 1 | 3;
 
 const POLL_INTERVAL_MS = 2000;
 const TERMINAL_STATES = new Set([
@@ -60,9 +63,10 @@ export function BatchView() {
   const [taskDetail, setTaskDetail] = useState<(Task & { versions: TaskVersion[] }) | null>(null);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
-
-  const [selectedSetId, setSelectedSetId] = useState<string>('');
   const [limit, setLimit] = useState<LimitOption>(10);
+  const [concurrency, setConcurrency] = useState<ConcurrencyOption>(1);
+  const [maxRetries, setMaxRetries] = useState<RetryOption>(0);
+  const [selectedSetId, setSelectedSetId] = useState<string>('');
 
   const [runId, setRunId] = useState<string | null>(null);
   const [session, setSession] = useState<api.RunListItem | null>(null);
@@ -72,7 +76,7 @@ export function BatchView() {
   const [isStarting, setIsStarting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
-  const [exportingFormat, setExportingFormat] = useState<'jsonl' | 'csv' | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<'jsonl' | 'csv' | 'html' | null>(null);
 
   const [selectedItem, setSelectedItem] = useState<RunItemSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -226,6 +230,8 @@ export function BatchView() {
       sample_set_id: selectedSetId,
       task_version_id: selectedVersion?.task_version_id ?? selectedTask?.current_version_id ?? null,
       limit: limit === 'all' ? null : limit,
+      max_concurrency: concurrency,
+      max_retries: maxRetries,
     };
   }
 
@@ -294,12 +300,14 @@ export function BatchView() {
     }
   }
 
-  async function handleExport(format: 'jsonl' | 'csv') {
+  async function handleExport(format: 'jsonl' | 'csv' | 'html') {
     if (!runId) return;
     setExportingFormat(format);
     try {
       if (format === 'jsonl') {
         await api.exportRunJsonl(runId);
+      } else if (format === 'html') {
+        await api.exportRunHtml(runId);
       } else {
         await api.exportRunCsv(runId);
       }
@@ -366,6 +374,10 @@ export function BatchView() {
             onSelectSet={setSelectedSetId}
             limit={limit}
             onChangeLimit={setLimit}
+            concurrency={concurrency}
+            onChangeConcurrency={setConcurrency}
+            maxRetries={maxRetries}
+            onChangeMaxRetries={setMaxRetries}
             providerNames={providerNames}
             selectedSetName={selectedSetName}
             onStart={handleStart}
@@ -424,6 +436,10 @@ interface SetupPanelProps {
   onSelectSet: (id: string) => void;
   limit: LimitOption;
   onChangeLimit: (value: LimitOption) => void;
+  concurrency: ConcurrencyOption;
+  onChangeConcurrency: (value: ConcurrencyOption) => void;
+  maxRetries: RetryOption;
+  onChangeMaxRetries: (value: RetryOption) => void;
   providerNames: Map<string, string>;
   selectedSetName?: string;
   onStart: () => void;
@@ -446,6 +462,10 @@ function SetupPanel({
   onSelectSet,
   limit,
   onChangeLimit,
+  concurrency,
+  onChangeConcurrency,
+  maxRetries,
+  onChangeMaxRetries,
   providerNames,
   selectedSetName,
   onStart,
@@ -459,6 +479,9 @@ function SetupPanel({
     { value: 50, labelKey: 'batch.limit50' },
     { value: 'all', labelKey: 'batch.limitAll' },
   ];
+
+  const concurrencyOptions: ConcurrencyOption[] = [1, 2, 4, 8];
+  const retryOptions: RetryOption[] = [0, 1, 3];
 
   const selectedTask = tasks.find((task) => task.task_id === selectedTaskId);
   const versions = taskDetail?.versions ?? [];
@@ -626,6 +649,62 @@ function SetupPanel({
                 ))}
               </div>
             </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs text-ink-muted">
+                {t('batch.concurrency')}
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {concurrencyOptions.map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => onChangeConcurrency(value)}
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs transition-colors ${
+                      concurrency === value
+                        ? 'border-accent/50 bg-accent/10 text-accent'
+                        : 'border-surface-700 text-ink-muted hover:bg-surface-800 hover:text-ink'
+                    }`}
+                  >
+                    {concurrency === value ? (
+                      <CheckCircle2 size={12} className="text-accent" />
+                    ) : (
+                      <Square size={12} />
+                    )}
+                    {value}×
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[10px] text-ink-dim">{t('batch.concurrencyHint')}</p>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs text-ink-muted">
+                {t('batch.retries')}
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {retryOptions.map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => onChangeMaxRetries(value)}
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs transition-colors ${
+                      maxRetries === value
+                        ? 'border-accent/50 bg-accent/10 text-accent'
+                        : 'border-surface-700 text-ink-muted hover:bg-surface-800 hover:text-ink'
+                    }`}
+                  >
+                    {maxRetries === value ? (
+                      <CheckCircle2 size={12} className="text-accent" />
+                    ) : (
+                      <Square size={12} />
+                    )}
+                    {value === 0 ? t('batch.none') : `×${value}`}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[10px] text-ink-dim">{t('batch.retriesHint')}</p>
+            </div>
           </div>
         )}
       </section>
@@ -769,8 +848,8 @@ interface ResultsPanelProps {
   onRetry: () => void;
   isRetrying: boolean;
   onViewItem: (item: RunItemSummary) => void;
-  onExport?: (format: 'jsonl' | 'csv') => void;
-  exportingFormat?: 'jsonl' | 'csv' | null;
+  onExport?: (format: 'jsonl' | 'csv' | 'html') => void;
+  exportingFormat?: 'jsonl' | 'csv' | 'html' | null;
 }
 
 function ResultsPanel({
@@ -833,6 +912,19 @@ function ResultsPanel({
                 <Download size={12} />
               )}
               {t('batch.exportCsv')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onExport?.('html')}
+              disabled={exportingFormat !== null}
+              className="btn-secondary inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs disabled:opacity-50"
+            >
+              {exportingFormat === 'html' ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Code size={12} />
+              )}
+              {t('batch.exportHtml')}
             </button>
             <button
               type="button"

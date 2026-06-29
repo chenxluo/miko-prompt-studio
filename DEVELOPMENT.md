@@ -1,8 +1,8 @@
 # Miko Prompt Studio — 开发文档
 
-> 随开发进度持续更新的配套文档。最后更新：2026-06-26
+> 随开发进度持续更新的配套文档。最后更新：2026-06-28
 
-**版本：0.5.0**
+**版本：0.6.0**
 
 ## 1. 项目定位
 
@@ -81,6 +81,7 @@ miko_prompt_studio/
 │           ├── contract_validation.py # 输入契约校验（image slots + variables）
 │           ├── input_spec_generator.py # 生成 TaskVersion 输入说明文档
 │           ├── task_doc_generator.py  # 生成 TaskVersion 可复现说明文档（Markdown 导出）
+│           ├── html_export.py        # 运行结果导出为自包含 HTML 可视化（内联图片 + 卡片网格）
 │           └── importer.py           # CSV/JSONL 导入 + 智能列映射 + URL/本地路径识别
 │
 ├── frontend/                   # React + TypeScript 前端
@@ -241,6 +242,7 @@ run_executor.execute_lab_run()
 | GET | `/api/sample-images?path=...` | 代理服务任意路径的图片文件 |
 | GET | `/api/runs/{id}/export/jsonl` | 导出运行结果为 JSONL |
 | GET | `/api/runs/{id}/export/csv` | 导出运行结果为 CSV |
+| GET | `/api/runs/{id}/export/html` | 导出运行结果为自包含 HTML 可视化 |
 | POST | `/api/import/csv/preview` | 预览 CSV |
 | POST | `/api/import/csv` | 导入 CSV 为 Sample Set |
 
@@ -325,8 +327,31 @@ run_executor.execute_lab_run()
 - [x] **详情页输出合约补全**：TasksView 的 OutputContractView 在 soft_sections 模式展示 section_names（按 mode 过滤，避免切换模式后残留）
 - [x] **修复**：SaveTaskDialog 缺失 i18n key（task.saveTo 等）；SampleRecord 导入缺失致 LabRunPayload 未定义；导出 Content-Disposition 中文文件名 latin-1 编码崩溃（RFC 6266 filename*）；占位符说明勘误（vars / 条件块 / {{image:N}}，移除未设计的 sample/metadata）
 
+### Phase 5（v0.6.0 — 批量并发重试 + 运行中断 + HTML 导出）
+
+#### 批量运行并发 + 重试分流
+- [x] **有界并发执行**：`batch_executor.py` 从顺序执行改为 `asyncio.Semaphore` 控制的并发池（`max_concurrency` 上限 16）；批量项预创建后并发扇出，进度/统计从首次轮询即反映全集
+- [x] **瞬时错误重试**：限流/超时/网络类错误按指数退避 + 抖动重试（`max_retries` 上限 10）；非瞬时错误直接判失败
+- [x] **SQLite 并发支持**：开启 WAL + `busy_timeout`，连接池扩容（pool_size=20, max_overflow=10）；Lab 运行在网络调用前 commit，避免长事务跨慢请求串行化写锁
+- [x] **重试继承策略**：`retry-failed` 端点继承原运行的并发/重试配置，重跑行为与原运行一致
+- [x] **BatchView 配置 UI**：并发数（1/2/4/8）+ 重试次数（0/1/3）选择器，附限流/超时提示
+
+#### Lab 运行中断
+- [x] **AbortSignal 贯通**：`runLab` / `runLabStream` 支持 AbortSignal；流式与非流式运行均可在进行中中断
+- [x] **中断按钮**：ModelBar 运行中按钮切换为"中断"，触发 `abortRun` 中止当前请求
+
+#### 运行结果 HTML 导出
+- [x] **自包含 HTML 可视化**：`html_export.py` 服务端渲染卡片网格 + 统计条，本地图片内联为 base64，单文件即可分发查看
+- [x] **导出端点**：`GET /api/runs/{id}/export/html`；RunHistory 详情抽屉 + BatchView 完成后均可导出
+
+#### 修复与清理
+- [x] **thinking 关闭时抑制 effort 参数**：OpenAI 兼容 adapter 在 thinking 关闭/默认时不发送 `thinking_budget` / `reasoning_effort`（修复 Qwen3 把 `reasoning_effort` 当作隐式 thinking 开启、产生非预期思维链并击穿 max_tokens）
+- [x] **前端同步清除 effort/budget**：ModelBar 在 thinking 关闭/重置时清除残留的 effort/budget 参数
+- [x] **成本聚合口径修正**：cost-stats / task_doc 统计纳入 `COMPLETED_WITH_ERRORS` 运行（其成功项仍带真实成本，item 级过滤已排除失败项）
+- [x] **清理 LabRunPayload 未用字段**：移除 `image_resolution_enabled` / `image_resolution_target` / `run_name`
+- [x] **ResultsView 小修**：列表拉满 `limit=1000`；header 提升 z-index，避免下拉被遮挡
+
 ### 待实现
-- [ ] 批量运行并发控制 + 重试分流
 - [ ] Python Import Script
 - [ ] 更多原生 adapter（Google Vertex、阿里百炼）
 - [ ] 代码分割（前端 bundle >500kB）
@@ -428,3 +453,7 @@ npm run dev    # 项目根目录，concurrently 启动后端+前端+Electron
 | 快照-Task 关联 | `linked_task_version_id` 1:1 | 简单够用 |
 | 模型参数持久化 | `exclude_none=True` + 前端合并默认值 | null 不入库 |
 | Task 复现文档 | 自包含 Markdown 导出（脱离工具可复现） | 面向外部规模化标注；敏感信息隔离（不含 base_url/key） |
+| 批量执行模型 | 进程内有界并发池 + 瞬时错误重试 | 单机本地工具，无需 Celery/队列；Semaphore + 退避覆盖限流/超时 |
+| SQLite 并发 | WAL + busy_timeout + 扩容连接池 | 默认 rollback journal 在并发写时立即 "database is locked"；WAL 让读写并行 |
+| 运行中断 | 前端 AbortSignal 中止 HTTP 请求 | 无服务端任务状态机；Lab 单次运行靠取消 fetch 即够，不引入取消令牌 |
+| 结果分发格式 | 自包含 HTML（本地图片内联 base64） | 单文件可邮件/离线分发，比 JSONL/CSV 更直观，比 Markdown 保留图文排版 |

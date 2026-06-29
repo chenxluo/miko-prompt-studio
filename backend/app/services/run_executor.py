@@ -216,6 +216,11 @@ async def execute_lab_run(
         # actually required, which normalize_error surfaces as AUTH_ERROR.
         api_key = ""
 
+    # Commit the "running" session/item before the network call. SQLite (even in
+    # WAL) allows only one writer at a time, so holding the uncommitted write
+    # transaction across the slow adapter call would serialize concurrent batch
+    # items. Subsequent writes below autobegin a fresh transaction.
+    await db.commit()
     should_stream = request.model_config.parameters.stream is True
     if should_stream:
         async def forward_stream_event(event: StreamEvent) -> None:

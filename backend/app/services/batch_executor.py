@@ -1,23 +1,55 @@
-"""Sequential in-process executor for Batch Test runs."""
+"""In-process executor for Batch Test runs with bounded concurrency + retry."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import random
 from dataclasses import dataclass
 from uuid import uuid4
 
 from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_session_factory
 from app.models.run import AttemptORM, RunItemORM, RunSessionORM
-from app.schemas.common import RunItemType, RunSessionStatus, RunType, utc_now
+from app.schemas.common import (
+    RETRYABLE_ERROR_TYPES,
+    RunItemType,
+    RunSessionStatus,
+    RunType,
+    utc_now,
+)
 from app.schemas.model_config import ModelConfigSnapshot
 from app.schemas.prompt import ImageSlotSpec
 from app.schemas.run_record import ConfigSnapshot, RunSource, RunSummary
 from app.schemas.sample_record import SampleRecord
 from app.services.request_builder import _pricing_snapshot
 from app.services.run_executor import LabRunRequest, _make_prompt_snapshot, execute_lab_run
+
+# Concurrency ceilings (clamped again at payload time).
+MAX_CONCURRENCY = 16
+MAX_RETRIES = 10
+
+# Transient provider/network errors worth retrying with backoff.
+_RETRYABLE_ERROR_TYPES = frozenset(error_type.value for error_type in RETRYABLE_ERROR_TYPES)
+_BACKOFF_BASE_SECONDS: dict[str, float] = {
+    "rate_limit": 5.0,
+    "timeout": 2.0,
+    "network_error": 2.0,
+}
+_BACKOFF_MAX_SECONDS = 60.0
+_BACKOFF_JITTER_SECONDS = 0.5
+
+# Item statuses that mean an item is finished and must not be re-executed.
+# NOTE: FAILED is intentionally excluded — a failed attempt may be retried.
+_DONE_ITEM_STATUSES = frozenset(
+    {
+        RunItemType.SUCCEEDED.value,
+        RunItemType.CANCELLED.value,
+        RunItemType.SKIPPED.value,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +59,8 @@ class BatchRunSpec:
     source: RunSource | dict
     samples: list[SampleRecord]
     request_template: LabRunRequest
+    max_concurrency: int = 1
+    max_retries: int = 0
 
 
 _running_tasks: dict[str, asyncio.Task] = {}
@@ -108,66 +142,155 @@ async def _create_session(db: AsyncSession, spec: BatchRunSpec) -> None:
 
 async def _run_batch_worker(spec: BatchRunSpec, cancel_event: asyncio.Event) -> None:
     factory = get_session_factory()
-    async with factory() as db:
-        try:
-            for index, sample in enumerate(spec.samples):
-                if cancel_event.is_set():
-                    await _mark_remaining_cancelled(db, spec.run_id, spec.samples[index:])
-                    await _refresh_session_summary(
-                        db,
-                        spec.run_id,
-                        final_status=RunSessionStatus.CANCELLED.value,
-                    )
-                    await db.commit()
-                    return
+    max_concurrency = max(1, min(spec.max_concurrency, MAX_CONCURRENCY))
+    max_attempts = max(1, spec.max_retries + 1)
+    summary_lock = asyncio.Lock()
 
+    # 1. Pre-create every pending item up front so the pool can fan out and
+    #    progress/summary reflects the full sample set from the first poll.
+    item_ids: dict[str, str] = {}
+    try:
+        async with factory() as db:
+            for sample in spec.samples:
                 item = await _create_pending_item(db, spec.run_id, sample)
-                await db.commit()
+                item_ids[sample.sample_id] = item.run_item_id
+            await _refresh_session_summary(db, spec.run_id)
+            await db.commit()
+    except asyncio.CancelledError:
+        cancel_event.set()
+        await _finalize_worker(factory, spec, cancel_event)
+        return
 
-                try:
-                    await _execute_one_item(db, spec, sample, item)
+    # 2. Fan items out through a bounded pool. Each item owns its session
+    #    (AsyncSession is not concurrency-safe) and retries retryable errors.
+    semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def run_one(sample: SampleRecord) -> None:
+        async with semaphore:
+            if cancel_event.is_set():
+                return
+            run_item_id = item_ids.get(sample.sample_id)
+            if run_item_id is None:
+                return
+            await _execute_item_with_retry(
+                factory, spec, sample, run_item_id, cancel_event, max_attempts, summary_lock
+            )
+
+    try:
+        await asyncio.gather(
+            *(run_one(sample) for sample in spec.samples),
+            return_exceptions=True,
+        )
+    except asyncio.CancelledError:
+        cancel_event.set()
+
+    # 3. Finalize: cancel anything still pending/running, set terminal status.
+    await _finalize_worker(factory, spec, cancel_event)
+
+
+async def _finalize_worker(
+    factory: async_sessionmaker[AsyncSession],
+    spec: BatchRunSpec,
+    cancel_event: asyncio.Event,
+) -> None:
+    async with factory() as db:
+        if cancel_event.is_set():
+            await _cancel_unfinished(db, spec.run_id, spec.samples)
+            await _refresh_session_summary(
+                db, spec.run_id, final_status=RunSessionStatus.CANCELLED.value
+            )
+        else:
+            await _refresh_session_summary(db, spec.run_id, completed=True)
+        await db.commit()
+
+
+async def _execute_item_with_retry(
+    factory: async_sessionmaker[AsyncSession],
+    spec: BatchRunSpec,
+    sample: SampleRecord,
+    run_item_id: str,
+    cancel_event: asyncio.Event,
+    max_attempts: int,
+    summary_lock: asyncio.Lock,
+) -> None:
+    """Run one item, retrying transient (rate_limit/timeout/network) errors."""
+    for attempt in range(1, max_attempts + 1):
+        if cancel_event.is_set():
+            return
+        error_type: str | None = None
+        try:
+            async with factory() as db:
+                item_result = await db.execute(
+                    select(RunItemORM).where(RunItemORM.run_item_id == run_item_id)
+                )
+                item = item_result.scalar_one_or_none()
+                # Skip if a concurrent finalizer already terminalized it.
+                if item is None or item.status in _DONE_ITEM_STATUSES:
+                    return
+                await _execute_one_item(db, spec, sample, item)
+                succeeded = item.status == RunItemType.SUCCEEDED.value
+                error_type = _error_type(item.error)
+                # Serialize summary recompute + commit: SQLite has a single
+                # writer and session.summary must not lose a concurrent update.
+                async with summary_lock:
                     await _refresh_session_summary(db, spec.run_id)
                     await db.commit()
-                except asyncio.CancelledError:
-                    cancel_event.set()
-                    await db.rollback()
-                    async with factory() as cancel_db:
-                        await _cancel_unfinished(cancel_db, spec.run_id, spec.samples[index:])
-                        await _refresh_session_summary(
-                            cancel_db,
-                            spec.run_id,
-                            final_status=RunSessionStatus.CANCELLED.value,
-                        )
-                        await cancel_db.commit()
-                    return
-                except Exception as exc:
-                    await db.rollback()
-                    async with factory() as error_db:
-                        await _mark_item_failed(error_db, item.run_item_id, str(exc))
-                        await _refresh_session_summary(error_db, spec.run_id)
-                        await error_db.commit()
-
-                if cancel_event.is_set():
-                    await _mark_remaining_cancelled(db, spec.run_id, spec.samples[index + 1 :])
-                    await _refresh_session_summary(
-                        db,
-                        spec.run_id,
-                        final_status=RunSessionStatus.CANCELLED.value,
-                    )
-                    await db.commit()
-                    return
-
-            await _refresh_session_summary(db, spec.run_id, completed=True)
-            await db.commit()
         except asyncio.CancelledError:
-            async with factory() as cancel_db:
-                await _cancel_unfinished(cancel_db, spec.run_id, spec.samples)
-                await _refresh_session_summary(
-                    cancel_db,
-                    spec.run_id,
-                    final_status=RunSessionStatus.CANCELLED.value,
-                )
-                await cancel_db.commit()
+            raise
+        except Exception as exc:
+            # Unexpected infrastructural failure (not a provider error) —
+            # record it and stop; the batch layer does not retry these.
+            await _record_unexpected_failure(
+                factory, spec.run_id, run_item_id, repr(exc), summary_lock
+            )
+            return
+
+        if succeeded or not _is_retryable(error_type) or attempt >= max_attempts:
+            return
+
+        # Backoff is interruptible: cancellation wakes it immediately.
+        await _interruptible_backoff(attempt, error_type, cancel_event)
+
+
+def _error_type(error: dict | None) -> str | None:
+    if isinstance(error, dict):
+        value = error.get("type")
+        return str(value) if value else None
+    return None
+
+
+def _is_retryable(error_type: str | None) -> bool:
+    return error_type in _RETRYABLE_ERROR_TYPES
+
+
+async def _interruptible_backoff(
+    attempt: int,
+    error_type: str | None,
+    cancel_event: asyncio.Event,
+) -> None:
+    base = _BACKOFF_BASE_SECONDS.get(error_type or "", 1.0)
+    delay = min(base * (2 ** (attempt - 1)), _BACKOFF_MAX_SECONDS)
+    delay += random.uniform(0, _BACKOFF_JITTER_SECONDS)
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+
+
+async def _record_unexpected_failure(
+    factory: async_sessionmaker[AsyncSession],
+    run_id: str,
+    run_item_id: str,
+    message: str,
+    summary_lock: asyncio.Lock,
+) -> None:
+    try:
+        async with factory() as db:
+            await _mark_item_failed(db, run_item_id, message)
+            async with summary_lock:
+                await _refresh_session_summary(db, run_id)
+                await db.commit()
+    except Exception:
+        # Best-effort; the final recompute still accounts for this item.
+        return
 
 
 async def _create_pending_item(
@@ -330,15 +453,6 @@ async def _cancel_unfinished(
             item.completed_at = now
             item.updated_at = now
     await db.flush()
-
-
-async def _mark_remaining_cancelled(
-    db: AsyncSession,
-    run_id: str,
-    samples: list[SampleRecord],
-) -> None:
-    await _cancel_unfinished(db, run_id, samples)
-
 
 async def _refresh_session_summary(
     db: AsyncSession,

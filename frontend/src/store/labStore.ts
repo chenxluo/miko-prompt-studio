@@ -368,6 +368,7 @@ interface LabState {
   lastRunItem: RunItemSummary | null;
   runHistory: RunSession[];
   error: string | null;
+  abortController: AbortController | null;
 }
 
 interface LabActions {
@@ -405,6 +406,7 @@ interface LabActions {
   loadRunDetail: (runId: string) => Promise<api.RunDetail | null>;
   clearResults: () => void;
   clearError: () => void;
+  abortRun: () => void;
 }
 
 export const useLabStore = create<LabState & LabActions>((set, get) => ({
@@ -436,6 +438,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
   lastRunItem: null,
   runHistory: [],
   error: null,
+  abortController: null,
 
   setSystemPrompt: (value) => set({ systemPrompt: value }),
   setViewMode: (mode) => set({ viewMode: mode }),
@@ -812,9 +815,11 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
     };
 
     const isStreaming = state.modelParameters.stream === true;
+    const abortController = new AbortController();
     set({
       isRunning: true,
       error: null,
+      abortController,
       lastRunItem: isStreaming ? createStreamingRunItem(sampleId) : state.lastRunItem,
     });
     const effectiveUserPrompt = buildPromptWithImageSlots(
@@ -907,33 +912,51 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
                 : { ...response, reasoning_text: reasoningText + delta };
             return { lastRunItem: { ...prev.lastRunItem, response: nextResponse } };
           });
-        });
+        }, abortController.signal);
 
         const detail = persistedRunId ? await get().loadRunDetail(persistedRunId) : null;
         const runSession = detail ? (detail.session as unknown as RunSession) : null;
         set((prev) => ({
           isRunning: false,
+          abortController: null,
           lastResult: runSession,
           runHistory: runSession ? [runSession, ...prev.runHistory].slice(0, 50) : prev.runHistory,
         }));
         return runSession;
       }
 
-      const runSession = await api.runLab(payload);
+      const runSession = await api.runLab(payload, abortController.signal);
 
       // Fetch the full run detail to get the run item with response
       await get().loadRunDetail(runSession.run_id);
 
       set((prev) => ({
         isRunning: false,
+        abortController: null,
         lastResult: runSession,
         runHistory: [runSession, ...prev.runHistory].slice(0, 50),
       }));
       return runSession;
     } catch (err) {
+      const aborted = err instanceof Error && err.name === 'AbortError';
+      if (aborted) {
+        set((prev) => ({
+          isRunning: false,
+          abortController: null,
+          lastRunItem: prev.lastRunItem
+            ? {
+                ...prev.lastRunItem,
+                status: 'aborted',
+                completed_at: new Date().toISOString(),
+              }
+            : prev.lastRunItem,
+        }));
+        return null;
+      }
       const message = err instanceof Error ? err.message : 'Run failed';
       set((prev) => ({
         isRunning: false,
+        abortController: null,
         error: message,
         lastRunItem: prev.lastRunItem
           ? { ...prev.lastRunItem, status: 'failed', error: { type: 'unknown_error', message } }
@@ -966,4 +989,8 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
     }),
 
   clearError: () => set({ error: null }),
+
+  abortRun: () => {
+    get().abortController?.abort();
+  },
 }));

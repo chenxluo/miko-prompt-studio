@@ -293,7 +293,9 @@ async def _collect_usage_stats(
     sessions_result = await db.execute(
         select(RunSessionORM).where(
             RunSessionORM.run_type.in_([RunType.BATCH.value, RunType.LAB.value]),
-            RunSessionORM.status == RunSessionStatus.COMPLETED.value,
+            RunSessionORM.status.in_(
+                [RunSessionStatus.COMPLETED.value, RunSessionStatus.COMPLETED_WITH_ERRORS.value]
+            ),
         )
     )
     run_ids = [

@@ -65,7 +65,7 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
     setLoadingRuns(true);
     setError(null);
     api
-      .listRuns()
+      .listRuns({ limit: 1000 })
       .then((response) => {
         setRuns(response.runs);
       })
@@ -248,7 +248,7 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-surface-950">
-      <header className="flex flex-col gap-4 border-b border-surface-800 bg-surface-900/50 px-6 py-4 backdrop-blur">
+      <header className="relative z-20 flex flex-col gap-4 border-b border-surface-800 bg-surface-900/50 px-6 py-4 backdrop-blur">
         <div>
           <h1 className="text-sm font-semibold uppercase tracking-wider text-ink-muted">
             {t('results.title')}

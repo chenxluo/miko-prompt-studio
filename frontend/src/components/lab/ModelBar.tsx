@@ -4,10 +4,10 @@ import {
   ChevronUp,
   Coins,
   Cpu,
-  Loader2,
   Play,
   Settings,
   SlidersHorizontal,
+  Square,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
@@ -32,6 +32,7 @@ export function ModelBar() {
   const setModelId = useLabStore((s) => s.setModelId);
   const setModelParameters = useLabStore((s) => s.setModelParameters);
   const run = useLabStore((s) => s.run);
+  const abortRun = useLabStore((s) => s.abortRun);
   const loadProviderConfigs = useLabStore((s) => s.loadProviderConfigs);
   const loadActivePricing = useLabStore((s) => s.loadActivePricing);
 
@@ -268,14 +269,18 @@ export function ModelBar() {
 
           <button
             type="button"
-            onClick={() => void run()}
-            disabled={!canRun}
-            className="btn-primary min-w-[6rem] px-4 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={isRunning ? abortRun : () => void run()}
+            disabled={!isRunning && !canRun}
+            className={
+              isRunning
+                ? 'inline-flex min-w-[6rem] items-center justify-center gap-1.5 rounded-md border border-cost/50 bg-cost/15 px-4 py-2 text-xs font-medium text-cost transition-colors hover:bg-cost/25'
+                : 'btn-primary min-w-[6rem] px-4 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50'
+            }
           >
             {isRunning ? (
               <>
-                <Loader2 size={14} className="animate-spin" />
-                {t('lab.running')}
+                <Square size={13} className="fill-current" />
+                {t('lab.abort')}
               </>
             ) : (
               <>
@@ -441,12 +446,20 @@ export function ModelBar() {
                           <button
                             key={opt.label}
                             type="button"
-                            onClick={() =>
+                            onClick={() => {
+                              // When thinking is disabled or reset to default,
+                              // drop effort/budget so they don't linger as
+                              // contradictory params. Providers (e.g. Qwen3) treat
+                              // a stray reasoning_effort as an implicit thinking-on
+                              // signal that overrides enable_thinking=false.
+                              const thinkingOff = opt.value !== true;
                               setModelParameters({
                                 ...modelParameters,
                                 enable_thinking: opt.value,
-                              })
-                            }
+                                thinking_budget: thinkingOff ? null : modelParameters.thinking_budget,
+                                reasoning_effort: thinkingOff ? null : modelParameters.reasoning_effort,
+                              });
+                            }}
                             className={[
                               'flex-1 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors',
                               isActive

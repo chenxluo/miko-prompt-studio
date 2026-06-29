@@ -83,6 +83,7 @@ async function request<T>(
   path: string,
   body?: unknown,
   isFormData = false,
+  signal?: AbortSignal,
 ): Promise<T> {
   const baseUrl = getBaseUrl().replace(/\/$/, '');
   const url = `${baseUrl}${path}`;
@@ -93,6 +94,7 @@ async function request<T>(
   }
 
   const init: RequestInit = { method, headers };
+  if (signal) init.signal = signal;
 
   if (body !== undefined) {
     init.body = isFormData ? (body as FormData) : JSON.stringify(body);
@@ -102,6 +104,7 @@ async function request<T>(
   try {
     response = await fetch(url, init);
   } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') throw err;
     throw new ApiError(
       `Network error while calling ${method} ${path}`,
       0,
@@ -271,8 +274,8 @@ export interface LabRunPayload {
   variable_specs?: VariableSpec[];
 }
 
-export async function runLab(payload: LabRunPayload): Promise<RunSession> {
-  return request<RunSession>('POST', '/api/lab/run', payload);
+export async function runLab(payload: LabRunPayload, signal?: AbortSignal): Promise<RunSession> {
+  return request<RunSession>('POST', '/api/lab/run', payload, false, signal);
 }
 
 export interface LabStreamEvent {
@@ -286,12 +289,14 @@ export interface LabStreamEvent {
 export async function runLabStream(
   payload: LabRunPayload,
   onEvent: (event: LabStreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const baseUrl = getBaseUrl().replace(/\/$/, '');
   const response = await fetch(`${baseUrl}/api/lab/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal,
   });
 
   if (!response.ok) {
@@ -327,14 +332,20 @@ export async function runLabStream(
     }
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    flushBlocks();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      flushBlocks();
+    }
+    buffer += decoder.decode();
+    flushBlocks(true);
+  } finally {
+    // Release the reader lock on any exit (success, error, or abort) so an
+    // aborted stream does not leak its underlying connection.
+    await reader.cancel().catch(() => {});
   }
-  buffer += decoder.decode();
-  flushBlocks(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +585,22 @@ export async function exportRunCsv(runId: string): Promise<Blob> {
   return blob;
 }
 
+export async function exportRunHtml(runId: string): Promise<Blob> {
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+  const response = await fetch(`${baseUrl}/api/runs/${encodeURIComponent(runId)}/export/html`);
+  if (!response.ok) {
+    const errorBody = await parseErrorBody(response);
+    const message =
+      typeof errorBody?.detail === 'string'
+        ? errorBody.detail
+        : `GET /api/runs/${runId}/export/html failed with status ${response.status}`;
+    throw new ApiError(message, response.status, errorBody);
+  }
+  const blob = await response.blob();
+  triggerDownload(blob, `${runId}.html`, 'text/html');
+  return blob;
+}
+
 export async function exportTaskDoc(
   taskId: string,
   versionId: string,
@@ -641,6 +668,8 @@ export interface CreateBatchRunPayload {
   sample_set_id: string;
   task_version_id?: string | null;
   limit?: number | null;
+  max_concurrency?: number;
+  max_retries?: number;
 }
 
 export interface BatchRunCreationResponse {

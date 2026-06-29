@@ -73,6 +73,7 @@ from app.services.contract_validation import (
 )
 from app.services.input_spec_generator import generate_input_spec_for_task_version
 from app.services.task_doc_generator import generate_task_doc
+from app.services.html_export import render_run_html
 from app.services.importer import (
     ColumnMapping,
     detect_columns,
@@ -82,7 +83,13 @@ from app.services.importer import (
     suggest_column_mapping,
 )
 from app.services.run_executor import LabRunRequest, execute_lab_run
-from app.services.batch_executor import BatchRunSpec, request_cancel, start_batch_run
+from app.services.batch_executor import (
+    MAX_CONCURRENCY,
+    MAX_RETRIES,
+    BatchRunSpec,
+    request_cancel,
+    start_batch_run,
+)
 from app.services.compare_executor import (
     CompareRunSpec,
     VariantSpec,
@@ -151,10 +158,6 @@ class LabRunPayload(BaseModel):
     image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
     variable_specs: list[VariableSpec] = Field(default_factory=list)
     pricing_profile_id: str | None = None
-    image_resolution_enabled: bool = False
-    image_resolution_target: int = 1024
-
-    run_name: str = ""
 
 
 class BatchRunPayload(BaseModel):
@@ -164,6 +167,8 @@ class BatchRunPayload(BaseModel):
     sample_set_id: str
     task_version_id: str | None = None
     limit: int | None = None
+    max_concurrency: int = 1
+    max_retries: int = 0
 
 
 class CompareTaskVersion(BaseModel):
@@ -642,12 +647,18 @@ async def create_batch_run(payload: BatchRunPayload, db: AsyncSession = Depends(
     source["task_version_id"] = (
         payload.task_version_id or (await _get_task_or_404(payload.task_id, db)).current_version_id
     )
+    max_concurrency = max(1, min(payload.max_concurrency, MAX_CONCURRENCY))
+    max_retries = max(0, min(payload.max_retries, MAX_RETRIES))
+    source["max_concurrency"] = max_concurrency
+    source["max_retries"] = max_retries
     spec = BatchRunSpec(
         run_id=run_id,
         name=template.run_name,
         source=source,
         samples=samples,
         request_template=template,
+        max_concurrency=max_concurrency,
+        max_retries=max_retries,
     )
     await start_batch_run(spec)
     return await _batch_status_response(run_id, db)
@@ -697,6 +708,12 @@ async def retry_failed_batch_run(run_id: str, db: AsyncSession = Depends(get_db)
     ).model_dump(mode="json")
     retry_source["task_id"] = payload.task_id
     retry_source["task_version_id"] = payload.task_version_id
+    # Inherit the original run's concurrency/retry policy so a retry behaves
+    # like the run that produced the failures.
+    max_concurrency = max(1, min(int(source.get("max_concurrency") or 1), MAX_CONCURRENCY))
+    max_retries = max(0, min(int(source.get("max_retries") or 0), MAX_RETRIES))
+    retry_source["max_concurrency"] = max_concurrency
+    retry_source["max_retries"] = max_retries
     await start_batch_run(
         BatchRunSpec(
             run_id=new_run_id,
@@ -704,6 +721,8 @@ async def retry_failed_batch_run(run_id: str, db: AsyncSession = Depends(get_db)
             source=retry_source,
             samples=samples,
             request_template=template,
+            max_concurrency=max_concurrency,
+            max_retries=max_retries,
         )
     )
     return await _batch_status_response(new_run_id, db)
@@ -1219,7 +1238,15 @@ async def get_task_version_cost_stats(
     sessions_result = await db.execute(
         select(RunSessionORM).where(
             RunSessionORM.run_type.in_([RunType.BATCH.value, RunType.LAB.value]),
-            RunSessionORM.status == RunSessionStatus.COMPLETED.value,
+            # Include runs that finished with some failures: their succeeded
+            # items still carry real cost data, and the item filter below
+            # already excludes the failed ones.
+            RunSessionORM.status.in_(
+                [
+                    RunSessionStatus.COMPLETED.value,
+                    RunSessionStatus.COMPLETED_WITH_ERRORS.value,
+                ]
+            ),
         )
     )
     sessions = [
@@ -2191,6 +2218,19 @@ async def export_run_csv(run_id: str, db: AsyncSession = Depends(get_db)):
         content=buffer.getvalue(),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="run_{run_id}.csv"'},
+    )
+
+@app.get("/api/runs/{run_id}/export/html")
+async def export_run_html(run_id: str, db: AsyncSession = Depends(get_db)):
+    """Render a self-contained, distributable HTML visualization of a run."""
+    session, items = await _get_run_session_and_items_or_404(run_id, db)
+    session_data = _run_session_to_dict(session)
+    items_data = [_run_item_to_dict(item) for item in items]
+    content = render_run_html(session_data, items_data)
+    return Response(
+        content=content,
+        media_type="text/html",
+        headers={"Content-Disposition": f'attachment; filename="run_{run_id}.html"'},
     )
 
 

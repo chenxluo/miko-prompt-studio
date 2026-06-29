@@ -1,6 +1,6 @@
 [project]
 name = "miko-prompt-studio-backend"
-version = "0.5.0"
+version = "0.6.0"
 description = "Image annotation lab backend - API, provider adapters, cost engine"
 requires-python = ">=3.10"
 dependencies = [
@@ -31,6 +31,11 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# ponytail: html_export embeds minified CSS/JS string literals; line length is
+# dictated by web content, not Python readability.
+"app/services/html_export.py" = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

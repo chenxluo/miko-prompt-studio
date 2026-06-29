@@ -129,12 +129,19 @@ class OpenAICompatAdapter(BaseAdapter):
             payload["stop"] = params.stop
 
         # Thinking / reasoning parameters (DeepSeek, Qwen, OpenAI o-series, etc.)
+        # When thinking is explicitly disabled, suppress thinking-effort params
+        # (thinking_budget / reasoning_effort) too. Providers such as Qwen3 treat
+        # the mere presence of reasoning_effort as an implicit thinking-on signal
+        # that overrides enable_thinking=false, producing an unwanted reasoning
+        # chain and blowing past max_tokens. Only emit effort params when thinking
+        # is enabled or left to the provider default.
         if params.enable_thinking is not None:
             payload["enable_thinking"] = params.enable_thinking
-        if params.thinking_budget is not None:
-            payload["thinking_budget"] = params.thinking_budget
-        if params.reasoning_effort is not None:
-            payload["reasoning_effort"] = params.reasoning_effort
+        if params.enable_thinking is not False:
+            if params.thinking_budget is not None:
+                payload["thinking_budget"] = params.thinking_budget
+            if params.reasoning_effort is not None:
+                payload["reasoning_effort"] = params.reasoning_effort
 
         payload.update(request.model.provider_options)
         response_format = self._response_format(request)

@@ -235,3 +235,70 @@ def test_exporting_run_jsonl_and_csv(client: TestClient) -> None:
 
     assert client.get("/api/runs/missing/export/jsonl").status_code == 404
     assert client.get("/api/runs/missing/export/csv").status_code == 404
+
+
+def test_exporting_run_html(client: TestClient) -> None:
+    _seed()
+
+    response = client.get("/api/runs/run_lab_alpha/export/html")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="run_run_lab_alpha.html"'
+    )
+    body = response.text
+    assert "<!DOCTYPE html>" in body
+    assert 'id="run-data"' in body  # embedded JSON payload
+    assert 'class="card"' in body  # server-rendered card grid
+    assert "Alpha Lab" in body  # run name in the header
+    assert "item_alpha_1" in body  # run item id carried into the payload
+    assert "hello" in body  # response raw_text present
+
+    assert client.get("/api/runs/missing/export/html").status_code == 404
+
+
+def test_html_export_neutralises_script_close_tag() -> None:
+    """The embedded JSON payload must not be able to break out of its <script>."""
+    from app.services.html_export import render_run_html
+
+    session = {"run_id": "r1", "name": "T", "run_type": "lab", "summary": {}}
+    items = [
+        {
+            "run_item_id": "i1",
+            "sample_id": "s1",
+            "status": "succeeded",
+            "internal_request_snapshot": {},
+            "response": {"raw_text": "x </script><script>alert(1)</script> y"},
+            "usage": {},
+            "cost": {},
+            "review": {},
+        }
+    ]
+    html_doc = render_run_html(session, items)
+    # The guard rewrites "</" → "<\/" in the JSON blob, so a payload value
+    # containing </script> cannot close the embedding <script> element early.
+    assert "x </script>" not in html_doc
+    assert "alert(1)" in html_doc  # value still present, just neutralised
+
+
+def test_html_export_inlines_local_image_as_data_uri(tmp_path) -> None:
+    import base64
+
+    from app.services.html_export import _image_to_src
+
+    png = tmp_path / "t.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    src = _image_to_src({"path": str(png), "resolved": {"mime_type": "image/png"}})
+    assert src is not None
+    assert src.startswith("data:image/png;base64,")
+    decoded = base64.b64decode(src.split(",", 1)[1])
+    assert decoded.startswith(b"\x89PNG")
+
+
+def test_html_export_image_fallbacks() -> None:
+    from app.services.html_export import _image_to_src
+
+    assert _image_to_src({"path": "/nonexistent/x.png"}) is None  # missing file
+    assert _image_to_src({}) is None  # nothing to resolve
+    # Remote URL is kept as-is, never fetched at export time.
+    assert _image_to_src({"uri": "https://example.com/a.png"}) == "https://example.com/a.png"

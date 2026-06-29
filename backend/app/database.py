@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -35,7 +35,15 @@ def get_engine():
             settings.effective_database_url,
             echo=False,
             future=True,
+            # Batch runs execute many items concurrently, each holding its own
+            # session across the provider HTTP call. The default QueuePool
+            # (size 5) would exhaust under concurrency; size up so concurrent
+            # workers and the API poller never block on checkout.
+            pool_size=20,
+            max_overflow=10,
+            pool_timeout=30,
         )
+        _apply_sqlite_concurrency_pragmas(_engine)
     return _engine
 
 
@@ -48,6 +56,29 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
             expire_on_commit=False,
         )
     return _session_factory
+
+def _apply_sqlite_concurrency_pragmas(engine) -> None:
+    """Enable WAL + busy_timeout so concurrent batch workers don't deadlock.
+
+    Default SQLite (rollback journal, busy_timeout=0) fails immediately with
+    "database is locked" when two sessions commit at once. WAL lets readers
+    proceed alongside a writer; busy_timeout makes writers wait briefly for
+    the lock instead of erroring. Only applies to sqlite dialects.
+    """
+
+    dialect = engine.url.get_dialect().name
+    if dialect != "sqlite":
+        return
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, _connection_record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
 
 
 async def init_db() -> None:

@@ -165,6 +165,40 @@ def test_task_version_cost_stats_aggregates_completed_run_items(client: TestClie
                     pricing_snapshot={"currency": "USD"},
                 )
             )
+            # A run that finished with some failures must still contribute its
+            # succeeded items (regression: previously excluded entirely).
+            db.add(
+                RunSessionORM(
+                    run_id="run_cost_partial",
+                    run_type=RunType.BATCH.value,
+                    status=RunSessionStatus.COMPLETED_WITH_ERRORS.value,
+                    started_at=now,
+                    completed_at=now,
+                    source={"task_id": task_id, "task_version_id": version_id},
+                )
+            )
+            db.add(
+                RunItemORM(
+                    run_item_id="ritem_cost_partial_ok",
+                    run_id="run_cost_partial",
+                    sample_id="sample_partial",
+                    status=RunItemType.SUCCEEDED.value,
+                    completed_at=now,
+                    estimated_cost=0.40,
+                    pricing_snapshot={"currency": "CNY"},
+                )
+            )
+            db.add(
+                RunItemORM(
+                    run_item_id="ritem_cost_partial_fail",
+                    run_id="run_cost_partial",
+                    sample_id="sample_partial_fail",
+                    status=RunItemType.FAILED.value,
+                    completed_at=now,
+                    estimated_cost=9.99,
+                    pricing_snapshot={"currency": "CNY"},
+                )
+            )
             await db.commit()
 
     asyncio.run(seed_runs())
@@ -174,10 +208,10 @@ def test_task_version_cost_stats_aggregates_completed_run_items(client: TestClie
     stats = response.json()
     assert stats["task_id"] == task_id
     assert stats["task_version_id"] == version_id
-    assert stats["total_images"] == 3
-    assert stats["total_cost"] == pytest.approx(0.60)
-    assert stats["avg_cost_per_image"] == pytest.approx(0.20)
-    assert stats["run_count"] == 2
-    assert stats["sample_count"] == 2
+    assert stats["total_images"] == 4
+    assert stats["total_cost"] == pytest.approx(1.00)
+    assert stats["avg_cost_per_image"] == pytest.approx(0.25)
+    assert stats["run_count"] == 3
+    assert stats["sample_count"] == 3
     assert stats["currency"] == "CNY"
     assert stats["confidence"] == "low"
