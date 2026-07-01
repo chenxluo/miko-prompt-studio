@@ -536,6 +536,8 @@ export interface Usage {
   image_count?: number;
   image_tokens?: number | null;
   cached_input_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  billable_output_tokens?: number | null;
   provider_reported?: boolean;
   estimated?: boolean;
   raw_usage?: Record<string, unknown> | null;

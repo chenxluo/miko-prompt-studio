@@ -98,7 +98,7 @@ export default function App() {
         </nav>
 
         <div className="flex items-center justify-between border-t border-surface-800 px-4 py-3">
-          <span className="text-xs text-ink-dim">v0.1.0</span>
+          <span className="text-xs text-ink-dim">v1.0.0</span>
           <LocaleSwitch />
         </div>
       </aside>

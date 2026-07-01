@@ -122,7 +122,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Miko Prompt Studio",
     description="Image annotation lab backend",
-    version="0.1.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
@@ -306,7 +306,7 @@ class UpdateTaskPayload(BaseModel):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "1.0.0"}
 
 
 # ---------------------------------------------------------------------------

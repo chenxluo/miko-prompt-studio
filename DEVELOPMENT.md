@@ -1,8 +1,8 @@
 # Miko Prompt Studio — 开发文档
 
-> 随开发进度持续更新的配套文档。最后更新：2026-06-28
+> 随开发进度持续更新的配套文档。最后更新：2026-07-01
 
-**版本：0.6.0**
+**版本：1.0.0**
 
 ## 1. 项目定位
 
@@ -354,9 +354,24 @@ run_executor.execute_lab_run()
 - [x] **修复 compare 取消的 SQLite 写锁竞态**：cancel 清理原在主 session 的 `async with` 内开第二连接，WAL 下死锁致 `database is locked`、运行卡在 running；改为 session 释放后再清理（对齐 batch 模式）
 - [x] **前端 bundle 拆分**：vite `manualChunks` 拆出独立 vendor chunk，各 entry <500kB（vendor 290kB / app 412kB），消除 chunk-size 警告
 
+### Phase 6（v1.0.0 — Vertex 原生 adapter + CLI + 思维链 token 计费）
+
+#### Google Vertex AI 原生 adapter
+- [x] **`vertex.py`**：基于 service-account JSON 密钥的 Gemini 原生适配器，OAuth2 JWT-bearer 令牌自动获取与缓存；adapter id `vertex`，支持模型发现，`base_url` 复用为区域（如 `us-central1`）
+- [x] **SettingsView 适配**：Vertex 配置时 base_url 提示改为区域 hint，API key 输入改为 service-account JSON 粘贴（占位提示区分新建/编辑态）
+
+#### CLI 工具 `mps`
+- [x] **命令行入口**：`backend/app/cli.py` + pyproject `[project.scripts]` 注册 `mps`，进程内直连业务逻辑——无需启动 server，与桌面 GUI 共享同一 WAL 数据目录（可并存）；覆盖 task 查询/编辑/运行、数据导入、运行结果导出、横向对比，以及覆盖全部 `/api` 端点的 `api` 逃生舱
+- [x] **完整手册**：`plan/CLI手册.md`
+
+#### 思维链 token 计费修正
+- [x] **Usage 字段扩展**：`reasoning_tokens`（仅展示）+ `billable_output_tokens`（按输出价计费的 token 数）；OpenAI `completion_tokens` 已含 reasoning → billable 留空（不重复计费），Vertex `candidatesTokenCount` 不含 `thoughtsTokenCount` → billable = output + reasoning
+- [x] **cost_engine 计费**：思维链 token 按输出价计入；补 `test_cost_engine.py` 回归
+- [x] **前端展示**：ResultPanel / ResultsView / RunHistoryView / SnapshotsView 展示思维链 token；ModelBar reasoning_effort 新增 `minimal` 选项；labStore 流式 usage 映射补 Gemini 字段（`promptTokenCount` / `candidatesTokenCount`）
+
 ### 待实现
 - [ ] Python Import Script
-- [ ] 更多原生 adapter（Google Vertex、阿里百炼）
+- [ ] 更多原生 adapter（阿里百炼）
 - [ ] 系统 keychain 集成
 - [ ] Electron 打包分发
 
@@ -390,6 +405,19 @@ cd frontend && npm run dev    # Vite :5173，自动代理 /api 到后端
 
 # 方式二：一键启动全部（含 Electron）
 npm run dev    # 项目根目录，concurrently 启动后端+前端+Electron
+```
+
+### CLI 工具（`mps`）
+
+后端附带命令行入口 `mps`（`backend/app/cli.py`），进程内直连业务逻辑，便于外部 agent / 脚本调用——**无需启动 server**，与桌面 GUI 共享同一数据目录（WAL，可并存）。覆盖 task 查询/编辑/运行、数据导入、运行结果导出、横向对比，以及一个覆盖全部 `/api` 端点的 `api` 逃生舱。
+
+**完整命令手册：[`plan/CLI手册.md`](./plan/CLI手册.md)**（按需查阅，含编辑模型、导入、agent 工作流等说明）。
+
+```bash
+cd backend
+uv run mps task list                              # 列任务
+uv run mps task spec <task_id>                    # 看任务需要什么输入
+uv run mps task run <task_id> --sample-set <ss>   # 跑批量（阻塞到完成）
 ```
 
 ### 数据目录

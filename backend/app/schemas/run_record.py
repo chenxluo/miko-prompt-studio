@@ -115,6 +115,17 @@ class Usage(BaseModel):
     image_count: int = 0
     image_tokens: int | None = None
     cached_input_tokens: int | None = None
+    # Reasoning/thinking tokens (Gemini thoughtsTokenCount, OpenAI
+    # completion_tokens_details.reasoning_tokens, ...). DISPLAY-ONLY — whether
+    # they are billed depends on the provider: see ``billable_output_tokens``.
+    reasoning_tokens: int | None = None
+    # Tokens to bill at the OUTPUT price. None ⇒ use ``output_tokens``.
+    # Providers whose ``output_tokens`` EXCLUDES reasoning (e.g. Vertex, where
+    # candidatesTokenCount excludes thoughtsTokenCount) set this to
+    # output_tokens + reasoning_tokens so thinking is billed. Providers whose
+    # ``output_tokens`` already INCLUDES reasoning (e.g. OpenAI completion_tokens)
+    # leave it None to avoid double-billing.
+    billable_output_tokens: int | None = None
     provider_reported: bool = True
     estimated: bool = False
     raw_usage: dict[str, Any] | None = None

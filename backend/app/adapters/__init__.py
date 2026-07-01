@@ -9,11 +9,13 @@ from app.adapters.registry import (
     list_adapters,
     register_adapter,
 )
+from app.adapters.vertex import VertexAdapter
 
 __all__ = [
     "BaseAdapter",
     "OpenAICompatAdapter",
     "OpenAINativeAdapter",
+    "VertexAdapter",
     "get_adapter",
     "get_adapter_metadata",
     "list_adapter_metadata",

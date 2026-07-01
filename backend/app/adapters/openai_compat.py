@@ -345,12 +345,22 @@ class OpenAICompatAdapter(BaseAdapter):
             )
             cached_tokens = int(cached) if cached is not None else None
 
+        # Reasoning tokens (o-series). DISPLAY-ONLY: OpenAI's completion_tokens
+        # already INCLUDES these, so we do NOT set billable_output_tokens (that
+        # would double-bill). Vertex differs — it excludes thoughtsTokenCount.
+        reasoning_tokens = None
+        completion_details = usage.get("completion_tokens_details")
+        if isinstance(completion_details, dict):
+            rt = completion_details.get("reasoning_tokens")
+            reasoning_tokens = int(rt) if rt is not None else None
+
         return Usage(
             input_tokens=prompt_tokens,
             output_tokens=completion_tokens,
             total_tokens=total_tokens,
             image_count=0,
             cached_input_tokens=cached_tokens,
+            reasoning_tokens=reasoning_tokens,
             provider_reported=bool(usage),
             estimated=not bool(usage),
             raw_usage=usage or None,

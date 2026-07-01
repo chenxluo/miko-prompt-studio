@@ -542,21 +542,34 @@ export function SettingsView() {
                     <input
                       type="text"
                       placeholder={
-                        providers.find((p) => p.adapter_id === config.adapter_id)?.requires_base_url
-                          ? t('model.baseUrlRequired')
-                          : t('model.baseUrlOptional')
+                        config.adapter_id === 'vertex'
+                          ? t('model.regionHint')
+                          : providers.find((p) => p.adapter_id === config.adapter_id)?.requires_base_url
+                            ? t('model.baseUrlRequired')
+                            : t('model.baseUrlOptional')
                       }
                       value={editBaseUrl}
                       onChange={(e) => setEditBaseUrl(e.target.value)}
                       className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
                     />
-                    <input
-                      type="password"
-                      placeholder={config.api_key_set ? `${t('settings.apiKey')} (${t('settings.apiKeyKeep')})` : t('settings.apiKey')}
-                      value={editApiKey}
-                      onChange={(e) => setEditApiKey(e.target.value)}
-                      className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
-                    />
+                    {config.adapter_id === 'vertex' ? (
+                      <textarea
+                        rows={4}
+                        spellCheck={false}
+                        placeholder={t('settings.vertexKeyHintEdit')}
+                        value={editApiKey}
+                        onChange={(e) => setEditApiKey(e.target.value)}
+                        className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none sm:col-span-2"
+                      />
+                    ) : (
+                      <input
+                        type="password"
+                        placeholder={config.api_key_set ? `${t('settings.apiKey')} (${t('settings.apiKeyKeep')})` : t('settings.apiKey')}
+                        value={editApiKey}
+                        onChange={(e) => setEditApiKey(e.target.value)}
+                        className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                      />
+                    )}
                     <input
                       type="text"
                       placeholder={t('settings.notes') ?? 'Notes'}
@@ -619,7 +632,9 @@ export function SettingsView() {
           <input
             type="text"
             placeholder={
-              requiresBaseUrl ? t('model.baseUrlRequired') : t('model.baseUrlOptional')
+              newConfigAdapter === 'vertex'
+                ? t('model.regionHint')
+                : requiresBaseUrl ? t('model.baseUrlRequired') : t('model.baseUrlOptional')
             }
             value={newConfigBaseUrl}
             onChange={(e) => setNewConfigBaseUrl(e.target.value)}
@@ -629,13 +644,24 @@ export function SettingsView() {
                 : 'border-surface-700 focus:border-accent'
             }`}
           />
-          <input
-            type="password"
-            placeholder={t('settings.apiKey')}
-            value={newConfigApiKey}
-            onChange={(e) => setNewConfigApiKey(e.target.value)}
-            className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
-          />
+          {newConfigAdapter === 'vertex' ? (
+            <textarea
+              rows={4}
+              spellCheck={false}
+              placeholder={t('settings.vertexKeyHint')}
+              value={newConfigApiKey}
+              onChange={(e) => setNewConfigApiKey(e.target.value)}
+              className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none sm:col-span-2"
+            />
+          ) : (
+            <input
+              type="password"
+              placeholder={t('settings.apiKey')}
+              value={newConfigApiKey}
+              onChange={(e) => setNewConfigApiKey(e.target.value)}
+              className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+            />
+          )}
           <input
             type="text"
             placeholder={t('settings.notes') ?? 'Notes'}

@@ -564,6 +564,7 @@ function DetailOverlay({
   const outputTokens = getNumberField(item.usage, 'output_tokens');
   const totalTokens = getNumberField(item.usage, 'total_tokens');
   const imageCount = getNumberField(item.usage, 'image_count');
+  const reasoningTokens = getNumberField(item.usage, 'reasoning_tokens');
   const costCurrency = getStringField(item.cost, 'currency') ?? 'USD';
 
   const vars = extractVars(item.internal_request_snapshot);
@@ -711,7 +712,9 @@ function DetailOverlay({
                         if (!hasTokens) return '—';
                         const displayTotal =
                           totalTokens ?? (inputTokens ?? 0) + (outputTokens ?? 0);
-                        return `${displayTotal} (${inputTokens ?? 0} / ${outputTokens ?? 0})`;
+                        return (reasoningTokens ?? 0) > 0
+                          ? `${displayTotal} (${inputTokens ?? 0} / ${outputTokens ?? 0} / ${reasoningTokens} thinking)`
+                          : `${displayTotal} (${inputTokens ?? 0} / ${outputTokens ?? 0})`;
                       })()}
                     </dd>
 

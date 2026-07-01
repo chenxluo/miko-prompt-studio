@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.adapters.base import BaseAdapter
 from app.adapters.openai_compat import OpenAICompatAdapter, OpenAINativeAdapter
+from app.adapters.vertex import VertexAdapter
 
 _REGISTRY: dict[str, type[BaseAdapter]] = {}
 
@@ -22,6 +23,13 @@ _ADAPTER_METADATA: dict[str, dict[str, object]] = {
         "label": "OpenAI-Compatible (Custom Endpoint)",
         "requires_base_url": True,
         "default_base_url": None,
+        "supports_model_discovery": True,
+    },
+    "vertex": {
+        "adapter_id": "vertex",
+        "label": "Google Vertex AI (Gemini, JSON Key)",
+        "requires_base_url": True,
+        "default_base_url": "us-central1",
         "supports_model_discovery": True,
     },
 }
@@ -74,3 +82,4 @@ def get_adapter_metadata(adapter_id: str) -> dict[str, object] | None:
 # Register built-in adapters
 register_adapter(OpenAINativeAdapter)
 register_adapter(OpenAICompatAdapter)
+register_adapter(VertexAdapter)

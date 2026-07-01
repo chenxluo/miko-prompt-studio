@@ -451,8 +451,8 @@ wheels = [
 
 [[package]]
 name = "miko-prompt-studio-backend"
-version = "0.6.0"
-source = { virtual = "." }
+version = "1.0.0"
+source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiosqlite" },

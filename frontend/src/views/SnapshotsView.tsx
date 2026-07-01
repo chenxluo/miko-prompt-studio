@@ -936,6 +936,12 @@ function SnapshotResultDisplay({ item }: { item: RunItemSummary }) {
               value={typeof usage.image_count === 'number' ? usage.image_count : 0}
               icon={<ImageIcon size={12} className="text-ink-dim" />}
             />
+            {typeof usage.reasoning_tokens === 'number' && usage.reasoning_tokens > 0 && (
+              <SnapshotMetric
+                label={t('result.reasoningTokens')}
+                value={typeof usage.reasoning_tokens === 'number' ? usage.reasoning_tokens : 0}
+              />
+            )}
           </div>
         </div>
 

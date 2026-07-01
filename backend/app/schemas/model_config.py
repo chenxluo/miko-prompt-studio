@@ -33,7 +33,7 @@ class ModelParameters(BaseModel):
     # Thinking / reasoning parameters (supported by some OpenAI-compatible APIs)
     enable_thinking: bool | None = None
     thinking_budget: int | None = None
-    reasoning_effort: str | None = None  # "low" | "medium" | "high"
+    reasoning_effort: str | None = None  # "minimal" | "low" | "medium" | "high"
 
     # Streaming — UI placeholder, NOT yet sent to the provider API.
     stream: bool | None = None

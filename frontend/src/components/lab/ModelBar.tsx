@@ -510,6 +510,7 @@ export function ModelBar() {
                           className="rounded-md border border-surface-700 bg-surface-950 px-2.5 py-2 text-xs text-ink focus:border-accent focus:outline-none"
                         >
                           <option value="">—</option>
+                          <option value="minimal">Minimal</option>
                           <option value="low">Low</option>
                           <option value="medium">Medium</option>
                           <option value="high">High</option>

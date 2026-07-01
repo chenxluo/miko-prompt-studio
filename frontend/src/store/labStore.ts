@@ -103,19 +103,34 @@ function streamUsageToRunUsage(usage: Record<string, unknown>): Record<string, u
       ? usage.input_tokens
       : typeof usage.prompt_tokens === 'number'
         ? usage.prompt_tokens
-        : 0;
+        : typeof usage.promptTokenCount === 'number'
+          ? usage.promptTokenCount
+          : 0;
   const outputTokens =
     typeof usage.output_tokens === 'number'
       ? usage.output_tokens
       : typeof usage.completion_tokens === 'number'
         ? usage.completion_tokens
-        : 0;
+        : typeof usage.candidatesTokenCount === 'number'
+          ? usage.candidatesTokenCount
+          : 0;
+  const details = usage.completion_tokens_details as Record<string, unknown> | undefined;
+  const reasoningTokens =
+    typeof usage.reasoning_tokens === 'number' ? usage.reasoning_tokens
+    : typeof usage.thoughtsTokenCount === 'number' ? usage.thoughtsTokenCount
+    : (details && typeof details.reasoning_tokens === 'number') ? details.reasoning_tokens
+    : null;
   const totalTokens =
-    typeof usage.total_tokens === 'number' ? usage.total_tokens : inputTokens + outputTokens;
+    typeof usage.total_tokens === 'number'
+      ? usage.total_tokens
+      : typeof usage.totalTokenCount === 'number'
+        ? usage.totalTokenCount
+        : inputTokens + outputTokens;
   return {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     total_tokens: totalTokens,
+    reasoning_tokens: reasoningTokens,
     provider_reported: true,
     estimated: false,
     raw_usage: usage,

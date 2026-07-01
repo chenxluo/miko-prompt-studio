@@ -776,6 +776,9 @@ function RunItemModal({ item, onClose }: RunItemModalProps) {
                 <Metric label={t('result.outputTokens')} value={formatNumber(usage.output_tokens)} />
                 <Metric label={t('result.totalTokens')} value={formatNumber(usage.total_tokens)} />
                 <Metric label={t('result.image')} value={formatNumber(usage.image_count)} />
+                {typeof usage.reasoning_tokens === 'number' && usage.reasoning_tokens > 0 && (
+                  <Metric label={t('result.reasoningTokens')} value={formatNumber(usage.reasoning_tokens)} />
+                )}
               </div>
             </div>
 

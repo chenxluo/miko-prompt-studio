@@ -228,6 +228,8 @@ function UsageBlock({ usage }: { usage: Record<string, unknown> }) {
       : inputTokens + outputTokens;
   const imageCount =
     typeof usage.image_count === 'number' ? usage.image_count : 0;
+  const reasoningTokens =
+    typeof usage.reasoning_tokens === 'number' ? usage.reasoning_tokens : 0;
 
   return (
     <div className="rounded-md border border-surface-800 bg-surface-950 p-3">
@@ -244,6 +246,9 @@ function UsageBlock({ usage }: { usage: Record<string, unknown> }) {
           value={imageCount}
           icon={<ImageIcon size={12} className="text-ink-dim" />}
         />
+        {reasoningTokens > 0 && (
+          <UsageMetric label={t('result.reasoningTokens')} value={reasoningTokens} />
+        )}
       </div>
     </div>
   );

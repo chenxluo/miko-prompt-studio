@@ -14,7 +14,17 @@ def calculate_cost(usage: Usage, pricing: PricingSnapshot) -> CostEstimate:
     billable_input_tokens = max(usage.input_tokens - cached_tokens, 0)
 
     input_text = billable_input_tokens * pricing.input_token_price / 1_000_000
-    output_text = usage.output_tokens * pricing.output_token_price / 1_000_000
+    # Bill reasoning/thinking tokens at the OUTPUT price. Providers where
+    # output_tokens already includes reasoning (OpenAI completion_tokens) leave
+    # billable_output_tokens None (no double-bill); providers where reasoning
+    # is separate (Vertex: candidatesTokenCount excludes thoughtsTokenCount)
+    # set it to output_tokens + reasoning_tokens.
+    billable_output = (
+        usage.billable_output_tokens
+        if usage.billable_output_tokens is not None
+        else usage.output_tokens
+    )
+    output_text = billable_output * pricing.output_token_price / 1_000_000
     cached_price = pricing.cached_input_price or pricing.input_token_price
     cached_input = cached_tokens * cached_price / 1_000_000
     image_input = _image_cost(usage, pricing)

@@ -1,6 +1,6 @@
 {
   "name": "miko-prompt-studio",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "description": "Image annotation lab - prompt, API, cost, and result quality test bench",
   "main": "electron/dist-electron/main.js",
   "scripts": {
