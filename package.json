@@ -11,8 +11,10 @@
     "build:frontend": "cd frontend && npm run build",
     "build:electron": "tsc -p electron/tsconfig.json",
     "build": "npm run build:frontend && npm run build:electron",
+    "build:backend": "bash packaging/build_nuitka.sh",
     "start": "npm run build:electron && electron .",
-    "pack": "npm run build && electron-builder --dir"
+    "pack": "npm run build && npm run build:backend && electron-builder --dir",
+    "dist": "npm run build && npm run build:backend && electron-builder"
   },
   "author": "",
   "license": "MIT",
@@ -36,9 +38,12 @@
     ],
     "extraResources": [
       {
-        "from": "backend",
+        "from": "packaging/dist/backend",
         "to": "backend"
       }
-    ]
+    ],
+    "win": {
+      "signAndEditExecutable": false
+    }
   }
 }

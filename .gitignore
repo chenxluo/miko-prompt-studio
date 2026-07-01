@@ -39,4 +39,7 @@ frontend/dist/
 # Electron
 electron/dist-electron/
 
+# Packaging build outputs
+packaging/dist/
+packaging/*.log
 temp_research

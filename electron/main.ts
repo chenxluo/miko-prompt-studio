@@ -48,11 +48,14 @@ function getBackendCommand(): { command: string; args: string[]; cwd: string } {
     };
   }
 
-  // Packaged: the backend is bundled as extraResources
+  // Packaged: Nuitka-frozen backend bundled as extraResources/backend.
+  // The frozen exe reads host/port from env (MIKO_BACKEND_HOST/PORT) and binds
+  // directly — no uvicorn module args.
   const backendDir = join(process.resourcesPath, 'backend');
+  const exeName = process.platform === 'win32' ? 'miko-backend.exe' : 'miko-backend';
   return {
-    command: process.platform === 'win32' ? 'python' : 'python3',
-    args: ['-m', 'uvicorn', 'app.main:app', '--host', BACKEND_HOST, '--port', String(BACKEND_PORT)],
+    command: join(backendDir, exeName),
+    args: [],
     cwd: backendDir,
   };
 }
@@ -66,8 +69,16 @@ function startBackend(): Promise<void> {
       return;
     }
 
-    const env = { ...process.env, PYTHONUNBUFFERED: '1' };
-    backendProcess = spawn(command, args, { cwd, env, shell: false });
+    const env = {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+      MIKO_BACKEND_HOST: BACKEND_HOST,
+      MIKO_BACKEND_PORT: String(BACKEND_PORT),
+    };
+    // The Nuitka-frozen exe deadlocks if its stdout is piped; when packaged we
+    // run with stdio ignored (the launcher writes its own log file instead).
+    const stdio: 'ignore' | 'pipe' = app.isPackaged ? 'ignore' : 'pipe';
+    backendProcess = spawn(command, args, { cwd, env, shell: false, stdio });
 
     backendProcess.stdout?.on('data', (data: Buffer) => {
       const text = data.toString().trim();
