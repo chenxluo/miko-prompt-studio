@@ -2,6 +2,9 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  // Relative asset paths so the built index.html loads correctly under
+  // Electron's file:// loading (absolute "/assets/..." resolves to fs root).
+  base: './',
   plugins: [react()],
   server: {
     port: 5173,

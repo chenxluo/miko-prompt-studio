@@ -21,10 +21,11 @@ _BACKEND = os.path.normpath(os.path.join(_HERE, "..", "backend"))
 if os.path.isdir(os.path.join(_BACKEND, "app")):
     sys.path.insert(0, _BACKEND)
 
-# When frozen (Nuitka), Electron launches us with stdio:'ignore' because piped
-# stdout deadlocks the Nuitka bootstrap. Redirect our own stdout/stderr to a log
-# file in the data dir so probe output + uvicorn logs survive for debugging.
-if "__compiled__" in globals() or hasattr(sys, "frozen"):
+# Electron launches the frozen exe with stdio:'ignore' (piped stdout deadlocks
+# the Nuitka bootstrap) and sets MIKO_BACKEND_LOG so we tee stdout/stderr to a
+# file for debugging. Manual runs (no env var) keep console output — so
+# double-clicking miko-backend.exe still shows the probe + uvicorn logs.
+if os.environ.get("MIKO_BACKEND_LOG"):
     _data_dir = os.environ.get("MIKO_DATA_DIR") or os.path.join(os.path.expanduser("~"), ".miko_prompt_studio")
     os.makedirs(_data_dir, exist_ok=True)
     _logf = open(os.path.join(_data_dir, "backend.log"), "a", encoding="utf-8", buffering=1)

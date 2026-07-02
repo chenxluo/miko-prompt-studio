@@ -74,6 +74,9 @@ function startBackend(): Promise<void> {
       PYTHONUNBUFFERED: '1',
       MIKO_BACKEND_HOST: BACKEND_HOST,
       MIKO_BACKEND_PORT: String(BACKEND_PORT),
+      // Frozen exe runs with stdio:'ignore'; tell the launcher to tee logs to a
+      // file so packaged runs are still debuggable. Dev (piped) keeps console.
+      MIKO_BACKEND_LOG: app.isPackaged ? '1' : '',
     };
     // The Nuitka-frozen exe deadlocks if its stdout is piped; when packaged we
     // run with stdio ignored (the launcher writes its own log file instead).
