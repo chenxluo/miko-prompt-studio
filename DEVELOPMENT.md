@@ -1,8 +1,8 @@
 # Miko Prompt Studio — 开发文档
 
-> 随开发进度持续更新的配套文档。最后更新：2026-07-01
+> 随开发进度持续更新的配套文档。最后更新：2026-07-03
 
-**版本：1.0.0**
+**版本：1.1.0**
 
 ## 1. 项目定位
 
@@ -107,6 +107,7 @@ miko_prompt_studio/
 │       │   ├── CompareView.tsx      # Compare 矩阵运行
 │       │   ├── RunHistoryView.tsx   # 运行历史（过滤、搜索、详情、导出）
 │       │   ├── ResultsView.tsx      # 结果查看器（网格 + 详情 + 审阅 + 对比模式）
+│       │   ├── AnalyticsView.tsx    # 跨运行审阅统计（按 variant/model/provider 聚合）
 │       │   ├── CostView.tsx         # 成本计算器（基于历史均价）
 │       │   └── SettingsView.tsx     # 设置页（Provider Config 管理 + 定价）
 │       ├── components/
@@ -120,7 +121,8 @@ miko_prompt_studio/
 │       │   ├── results/
 │       │   │   ├── ParsedOutputView.tsx   # 智能解析输出展示（JSON/markdown/分节）
 │       │   │   ├── ReasoningBlock.tsx     # 可折叠思维链
-│       │   │   └── CollapsibleSection.tsx # 通用可折叠区块
+│       │   │   ├── CollapsibleSection.tsx # 通用可折叠区块
+│       │   │   └── ReviewStatsPanel.tsx   # 单运行审阅统计面板
 │       │   ├── prompts/
 │       │   │   ├── PromptEditor.tsx # Prompt snippet 编辑器
 │       │   │   └── ImagePreviewGrid.tsx # 图像预览网格
@@ -198,7 +200,8 @@ run_executor.execute_lab_run()
 | GET | `/api/runs` | 列出运行历史 |
 | GET | `/api/runs/{id}` | 获取运行详情（含 run items） |
 | GET | `/api/runs/{id}/items/{item_id}` | 获取单个 run item |
-| PATCH | `/api/runs/{id}/items/{item_id}/review` | 更新人工 review（accepted/rating/notes） |
+| PATCH | `/api/runs/{id}/items/{item_id}/review` | 更新人工 review（accepted/rating/notes/labels）；null/空值可清除字段，labels 通过 JSON 赋值持久化 |
+| POST | `/api/analytics/review-summary` | 跨运行审阅统计聚合（按 variant/model/provider 分组：通过率、平均评分、评分分布、accepted/rejected/undecided 计数） |
 | GET | `/api/samples` | 列出样本 |
 | POST | `/api/samples` | 创建样本 |
 | GET | `/api/sample-sets` | 列出样本集 |
@@ -368,6 +371,15 @@ run_executor.execute_lab_run()
 - [x] **Usage 字段扩展**：`reasoning_tokens`（仅展示）+ `billable_output_tokens`（按输出价计费的 token 数）；OpenAI `completion_tokens` 已含 reasoning → billable 留空（不重复计费），Vertex `candidatesTokenCount` 不含 `thoughtsTokenCount` → billable = output + reasoning
 - [x] **cost_engine 计费**：思维链 token 按输出价计入；补 `test_cost_engine.py` 回归
 - [x] **前端展示**：ResultPanel / ResultsView / RunHistoryView / SnapshotsView 展示思维链 token；ModelBar reasoning_effort 新增 `minimal` 选项；labStore 流式 usage 映射补 Gemini 字段（`promptTokenCount` / `candidatesTokenCount`）
+
+### Phase 7（v1.1.0 — Review analytics + review fixes）
+
+- [x] **审阅端点增强**：`PATCH /api/runs/{id}/items/{item_id}/review` 支持 `labels`；null/空值可正确清除字段；通过 SQLAlchemy JSON 赋值确保持久化
+- [x] **审阅统计端点**：`POST /api/analytics/review-summary` 按 `variant`（默认）/ `model` / `provider` 分组聚合，返回通过率、平均评分、评分分布、accepted/rejected/undecided 计数
+- [x] **跨运行审阅分析页**：`AnalyticsView`（nav.analytics）展示多运行审阅统计
+- [x] **单运行审阅统计面板**：`ReviewStatsPanel` 在 `ResultsView` 中展示当前运行的审阅汇总
+- [x] **图片 URL 解析集中化**：`ImagePanel.tsx` 提取 `resolveImageUrl` 辅助函数，供 `SnapshotsView` / `TasksView` 复用
+- [x] **审阅回归测试**：新增 `backend/tests/test_review_endpoint.py` 与 `backend/tests/test_review_analytics.py`
 
 ### 待实现
 - [ ] Python Import Script

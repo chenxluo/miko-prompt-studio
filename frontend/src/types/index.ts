@@ -604,6 +604,7 @@ export interface CompareAxes {
   task_version_id?: string | null;
   prompt_version_id?: string | null;
   model_config_id?: string | null;
+  config_label?: string | null;
 }
 
 export interface RunItem extends Timestamps {

@@ -14,7 +14,7 @@ import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -235,7 +235,12 @@ class SavePromptPayload(BaseModel):
 class UpdateReviewPayload(BaseModel):
     accepted: bool | None = None
     rating: int | None = None
+    labels: list[str] | None = None
     notes: str = ""
+
+class ReviewSummaryPayload(BaseModel):
+    run_ids: list[str]
+    group_by: Literal["variant", "model", "provider"] = "variant"
 
 
 class CreateResultSnapshotPayload(BaseModel):
@@ -2275,21 +2280,108 @@ async def update_review(
     if not item:
         raise HTTPException(404, "Run item not found")
 
-    review = item.review or {}
-    if payload.accepted is not None:
-        review["accepted"] = payload.accepted
-        item.accepted = 1 if payload.accepted else 0
-    if payload.rating is not None:
-        review["rating"] = payload.rating
-        item.rating = payload.rating
-    if payload.labels:
-        review["labels"] = payload.labels
-    if payload.notes:
-        review["notes"] = payload.notes
+    updates = payload.model_dump(exclude_unset=True)
+    review = dict(item.review or {})
+
+    if "accepted" in updates:
+        value = updates["accepted"]
+        review["accepted"] = value
+        item.accepted = None if value is None else (1 if value else 0)
+    if "rating" in updates:
+        value = updates["rating"]
+        review["rating"] = value
+        item.rating = value
+    if "labels" in updates:
+        review["labels"] = updates["labels"] or []
+    if "notes" in updates:
+        review["notes"] = updates["notes"]
+
     review["reviewed_at"] = datetime.utcnow().isoformat()
     item.review = review
     await db.commit()
     return review
+
+
+@app.post("/api/analytics/review-summary")
+async def review_summary(payload: ReviewSummaryPayload, db: AsyncSession = Depends(get_db)):
+    if not payload.run_ids:
+        return {"group_by": payload.group_by, "total_items": 0, "rows": []}
+
+    items_result = await db.execute(
+        select(RunItemORM).where(RunItemORM.run_id.in_(payload.run_ids))
+    )
+    items = list(items_result.scalars().all())
+
+    sessions_result = await db.execute(
+        select(RunSessionORM).where(RunSessionORM.run_id.in_(payload.run_ids))
+    )
+    session_by_run = {s.run_id: s for s in sessions_result.scalars().all()}
+
+    buckets: dict[str, dict[str, Any]] = {}
+    for item in items:
+        axes = item.compare_axes or {}
+        if payload.group_by == "model":
+            key = item.model_id or "unknown"
+        elif payload.group_by == "provider":
+            key = item.provider_id or "unknown"
+        else:  # variant (default) — cross-run safe: falls through to run identity
+            session = session_by_run.get(item.run_id)
+            source = (session.source or {}) if session is not None else {}
+            key = (
+                axes.get("config_label")
+                or axes.get("task_version_id")
+                or source.get("task_version_id")
+                or (session.name if session is not None and session.name else None)
+                or item.run_id
+                or item.model_id
+                or "unknown"
+            )
+        b = buckets.setdefault(
+            key,
+            {
+                "n": 0,
+                "accepted": 0,
+                "rejected": 0,
+                "models": set(),
+                "rating_sum": 0.0,
+                "rating_count": 0,
+                "rating_dist": [0, 0, 0, 0, 0],
+            },
+        )
+        b["n"] += 1
+        if item.accepted == 1:
+            b["accepted"] += 1
+        elif item.accepted == 0:
+            b["rejected"] += 1
+        if item.model_id:
+            b["models"].add(item.model_id)
+        rating = item.rating
+        if rating is not None:
+            b["rating_count"] += 1
+            b["rating_sum"] += rating
+            if isinstance(rating, int) and 1 <= rating <= 5:
+                b["rating_dist"][rating - 1] += 1
+
+    rows = []
+    for key, b in buckets.items():
+        judged = b["accepted"] + b["rejected"]
+        rows.append(
+            {
+                "key": key,
+                "model_display": ", ".join(sorted(b["models"])) if b["models"] else "—",
+                "n": b["n"],
+                "accepted": b["accepted"],
+                "rejected": b["rejected"],
+                "undecided": b["n"] - b["accepted"] - b["rejected"],
+                "pass_rate": b["accepted"] / judged if judged else None,
+                "avg_rating": round(b["rating_sum"] / b["rating_count"], 1) if b["rating_count"] else None,
+                "rating_count": b["rating_count"],
+                "rating_dist": b["rating_dist"],
+            }
+        )
+    rows.sort(key=lambda r: r["n"], reverse=True)
+
+    return {"group_by": payload.group_by, "total_items": len(items), "rows": rows}
 
 
 # ---------------------------------------------------------------------------

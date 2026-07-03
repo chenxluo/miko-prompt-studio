@@ -18,7 +18,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 
-import * as api from '../api/client';
+import { resolveImageUrl } from '../components/lab/ImagePanel';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
 import { useSnapshotStore } from '../store/snapshotStore';
@@ -1064,13 +1064,6 @@ function extractSnapshotImages(
     .filter((img): img is ImageRef => img !== null && Boolean(img.uri || img.path));
 }
 
-function resolveImageSrc(src: string): string {
-  if (src.startsWith('/')) {
-    return `${api.getBaseUrl()}${src}`;
-  }
-  return src;
-}
-
 function SnapshotImagesPanel({ detail }: { detail: ResultSnapshotDetail }) {
   const { t } = useI18n();
   const [preview, setPreview] = useState<{ src: string; name: string } | null>(null);
@@ -1101,7 +1094,7 @@ function SnapshotImagesPanel({ detail }: { detail: ResultSnapshotDetail }) {
         <div className="flex-1 space-y-2 overflow-auto">
           {images.map((image, index) => {
             const record = image && typeof image === 'object' ? (image as Record<string, unknown>) : {};
-            const src = resolveImageSrc(
+            const src = resolveImageUrl(
               typeof record.uri === 'string'
                 ? record.uri
                 : typeof record.path === 'string'
@@ -1161,7 +1154,7 @@ function SnapshotImagesPanel({ detail }: { detail: ResultSnapshotDetail }) {
             <X size={18} />
           </button>
           <img
-            src={resolveImageSrc(preview.src)}
+            src={resolveImageUrl(preview.src)}
             alt={preview.name}
             className="max-h-full max-w-full rounded-lg object-contain shadow-panel"
             onClick={(event) => event.stopPropagation()}

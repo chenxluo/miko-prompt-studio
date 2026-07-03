@@ -58,6 +58,7 @@ def _image_ref_from_value(
     value: str, role: str, order: int, base_dir: str | None = None
 ) -> ImageRef:
     """Create an ImageRef, preserving URL-like values as uri and resolving local paths."""
+    value = value.strip()
     if _is_uri(value):
         display_name = None
         if not value.startswith("data:"):

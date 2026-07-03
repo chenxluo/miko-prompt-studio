@@ -631,7 +631,7 @@ function SlotImageGrid({
             loading="lazy"
           />
         </button>
-        <div className="absolute right-1 top-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="absolute right-1 bottom-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
           {otherSpecs.length > 0 && (
             <MoveImageMenu
               imageIndex={globalIndex}
@@ -684,7 +684,7 @@ function SlotImageGrid({
               )}
             </button>
             {!isMore && (
-              <div className="absolute right-0.5 top-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              <div className="absolute right-0.5 bottom-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                 {otherSpecs.length > 0 && (
                   <MoveImageMenu
                     imageIndex={globalIndex}
@@ -761,7 +761,7 @@ function MoveImageMenu({
         <MoreHorizontal size={12} />
       </button>
       {isOpen && (
-        <div className="absolute right-0 top-full z-20 mt-1 w-40 rounded-md border border-surface-700 bg-surface-900 py-1 shadow-panel">
+        <div className="absolute right-0 bottom-full z-20 mb-1 w-40 rounded-md border border-surface-700 bg-surface-900 py-1 shadow-panel">
           <div className="px-2 py-1 text-[10px] font-medium text-ink-dim">{t('image.moveTo')}</div>
           {otherSpecs.map((spec) => (
             <button
@@ -996,14 +996,18 @@ function FocusModeView({
   );
 }
 
-export function resolveImageSrc(image: ImageRef): string {
-  if (image.uri) {
-    // If it's a relative URL (starts with /), prepend the API base URL
-    if (image.uri.startsWith('/')) {
-      return `${api.getBaseUrl()}${image.uri}`;
-    }
-    return image.uri;
+export function resolveImageUrl(uri?: string | null): string {
+  if (!uri) return '';
+  // Relative URL (starts with /) → prepend the API base URL so it resolves
+  // under both the Vite dev server (proxied) and Electron's file:// origin.
+  if (uri.startsWith('/')) {
+    return `${api.getBaseUrl()}${uri}`;
   }
+  return uri;
+}
+
+export function resolveImageSrc(image: ImageRef): string {
+  if (image.uri) return resolveImageUrl(image.uri);
   if (!image.path) return '';
   if (/^https?:\/\//.test(image.path)) return image.path;
   // If path looks like a URL path (starts with /api/), prepend base URL

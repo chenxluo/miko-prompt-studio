@@ -20,6 +20,7 @@ import { resolveImageSrc } from '../components/lab/ImagePanel';
 import { CollapsibleSection } from '../components/results/CollapsibleSection';
 import { ParsedOutputView } from '../components/results/ParsedOutputView';
 import { ReasoningBlock } from '../components/results/ReasoningBlock';
+import { ReviewStatsPanel } from '../components/results/ReviewStatsPanel';
 import { RunSelector } from '../components/results/RunSelector';
 import type { I18n } from '../i18n';
 import { useI18n } from '../i18n';
@@ -383,6 +384,8 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
                 <span className="font-mono">{formatLatency(stats.avgLatencyMs)}</span>
               </span>
             </div>
+
+            <ReviewStatsPanel items={filteredItems} />
 
             {filteredItems.length === 0 ? (
               <div className="panel flex h-48 items-center justify-center text-sm text-ink-dim">

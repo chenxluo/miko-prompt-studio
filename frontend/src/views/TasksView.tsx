@@ -35,6 +35,7 @@ import {
 import { TaskGroupFilter } from '../components/tasks/TaskGroupFilter';
 import { TaskGroupManager } from '../components/tasks/TaskGroupManager';
 import { TaskListCard } from '../components/tasks/TaskListCard';
+import { resolveImageUrl } from '../components/lab/ImagePanel';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
 import type {
@@ -1240,7 +1241,7 @@ function ExampleSnapshotCard({
               images.slice(0, 4).map((image, index) => (
                 <img
                   key={index}
-                  src={image.uri || ''}
+                  src={resolveImageUrl(image.uri)}
                   alt={image.display_name || ''}
                   className="h-16 w-16 shrink-0 rounded-md border border-surface-800 object-cover"
                 />
@@ -1350,7 +1351,7 @@ function ExampleDetailView({
             {images.map((image, index) => (
               <img
                 key={index}
-                src={image.uri || ''}
+                src={resolveImageUrl(image.uri)}
                 alt={image.display_name || ''}
                 className="h-32 w-32 rounded-md border border-surface-800 object-cover"
               />
@@ -1609,7 +1610,7 @@ function SnapshotLinkPickerModal({
                   <div className="flex min-w-0 items-start gap-3">
                     {snapshot.thumbnail_image_uri ? (
                       <img
-                        src={snapshot.thumbnail_image_uri}
+                        src={resolveImageUrl(snapshot.thumbnail_image_uri)}
                         alt={snapshot.name}
                         className="h-10 w-10 shrink-0 rounded-md border border-surface-800 object-cover"
                       />

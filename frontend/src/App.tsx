@@ -1,5 +1,6 @@
 import {
   Beaker,
+  BarChart3,
   Bookmark,
   Eye,
   FileImage,
@@ -23,9 +24,10 @@ import { SamplesView } from './views/SamplesView';
 import { RunsView } from './views/RunsView';
 import { CostView } from './views/CostView';
 import { ResultsView } from './views/ResultsView';
+import { AnalyticsView } from './views/AnalyticsView';
 import { useI18n } from './i18n';
 
-type View = 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'results' | 'snapshots' | 'cost' | 'settings';
+type View = 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'results' | 'analytics' | 'snapshots' | 'cost' | 'settings';
 
 interface NavItem {
   id: View;
@@ -40,6 +42,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'samples', labelKey: 'nav.samples', icon: FileImage },
   { id: 'runs', labelKey: 'nav.runs', icon: Layers },
   { id: 'results', labelKey: 'nav.results', icon: Eye },
+  { id: 'analytics', labelKey: 'nav.analytics', icon: BarChart3 },
   { id: 'snapshots', labelKey: 'nav.snapshots', icon: Bookmark },
   { id: 'cost', labelKey: 'nav.cost', icon: Calculator },
   { id: 'settings', labelKey: 'nav.settings', icon: Settings },
@@ -110,6 +113,7 @@ export default function App() {
         {activeView === 'samples' && <SamplesView />}
         {activeView === 'runs' && <RunsView />}
         {activeView === 'results' && <ResultsView initialRunId={resultsRunId} />}
+        {activeView === 'analytics' && <AnalyticsView />}
         {activeView === 'snapshots' && <SnapshotsView />}
         {activeView === 'cost' && <CostView />}
         {activeView === 'settings' && <SettingsView />}

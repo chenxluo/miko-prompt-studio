@@ -660,6 +660,41 @@ export async function updateReview(
 }
 
 // ---------------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------------
+
+export type ReviewGroupBy = 'variant' | 'model' | 'provider';
+
+export interface ReviewSummaryRow {
+  key: string;
+  model_display: string;
+  n: number;
+  accepted: number;
+  rejected: number;
+  undecided: number;
+  pass_rate: number | null;
+  avg_rating: number | null;
+  rating_count: number;
+  rating_dist: number[];
+}
+
+export interface ReviewSummaryResponse {
+  group_by: ReviewGroupBy;
+  total_items: number;
+  rows: ReviewSummaryRow[];
+}
+
+export async function fetchReviewSummary(
+  runIds: string[],
+  groupBy: ReviewGroupBy,
+): Promise<ReviewSummaryResponse> {
+  return request<ReviewSummaryResponse>('POST', '/api/analytics/review-summary', {
+    run_ids: runIds,
+    group_by: groupBy,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Batch runs
 // ---------------------------------------------------------------------------
 
