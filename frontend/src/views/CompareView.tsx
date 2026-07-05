@@ -20,7 +20,8 @@ import * as api from '../api/client';
 import { SaveTaskDialog, type SaveTaskDialogPrefill } from '../components/lab/SaveTaskDialog';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
-import type { ImagePreprocessConfig, RunItemSummary, Task, TaskVersion } from '../types';
+import { MappingPanel } from '../components/batch/MappingPanel';
+import type { ImagePreprocessConfig, ImageRef, RunItemSummary, Task, TaskVersion } from '../types';
 
 type Phase = 'setup' | 'running' | 'results';
 type LimitOption = 10 | 50 | 'all';
@@ -47,6 +48,8 @@ interface SelectedVersion {
   label: string | null;
   taskName: string;
   version: TaskVersion;
+  variableMapping: Record<string, string>;
+  imageRoleMapping: Record<string, string>;
 }
 
 interface VersionColumn {
@@ -68,6 +71,7 @@ export function CompareView() {
   const [isLoadingSets, setIsLoadingSets] = useState(false);
 
   const [selectedSetId, setSelectedSetId] = useState<string>('');
+  const [sampleRecords, setSampleRecords] = useState<api.SampleListItem[]>([]);
   const [limit, setLimit] = useState<LimitOption>(10);
 
   const [selectedTaskIdForAdd, setSelectedTaskIdForAdd] = useState<string>('');
@@ -130,6 +134,44 @@ export function CompareView() {
       })
       .finally(() => setIsLoadingSets(false));
   }, [t]);
+
+  // Load one sample record from the selected set so we can offer field mapping.
+  useEffect(() => {
+    if (!selectedSetId) {
+      setSampleRecords([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .listSamples(selectedSetId, 1)
+      .then((records) => {
+        if (!cancelled) setSampleRecords(records);
+      })
+      .catch(() => {
+        if (!cancelled) setSampleRecords([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSetId]);
+
+  const sampleVarsKeys = useMemo(() => {
+    const vars = sampleRecords[0]?.data?.vars;
+    if (!vars || typeof vars !== 'object' || Array.isArray(vars)) return [];
+    return Object.keys(vars);
+  }, [sampleRecords]);
+
+  const sampleImageRoles = useMemo(() => {
+    const images = sampleRecords[0]?.data?.images;
+    if (!Array.isArray(images)) return [];
+    const roles = new Set<string>();
+    for (const image of images) {
+      if (image && typeof image === 'object' && typeof (image as ImageRef).role === 'string') {
+        roles.add((image as ImageRef).role as string);
+      }
+    }
+    return Array.from(roles);
+  }, [sampleRecords]);
 
   // Load task detail for the add selector.
   useEffect(() => {
@@ -211,11 +253,24 @@ export function CompareView() {
   function buildPayload(): api.CreateCompareRunPayload {
     return {
       sample_set_id: selectedSetId,
-      task_versions: selectedVersions.map((v) => ({
-        task_id: v.taskId,
-        task_version_id: v.taskVersionId,
-        label: v.label,
-      })),
+      task_versions: selectedVersions.map((v) => {
+        const variableMappingPayload: Record<string, string> = {};
+        for (const [key, value] of Object.entries(v.variableMapping)) {
+          if (value) variableMappingPayload[key] = value;
+        }
+        const imageRoleMappingPayload: Record<string, string> = {};
+        for (const [key, value] of Object.entries(v.imageRoleMapping)) {
+          if (value) imageRoleMappingPayload[key] = value;
+        }
+
+        return {
+          task_id: v.taskId,
+          task_version_id: v.taskVersionId,
+          label: v.label,
+          variable_mapping: variableMappingPayload,
+          image_role_mapping: imageRoleMappingPayload,
+        };
+      }),
       limit: limit === 'all' ? null : limit,
     };
   }
@@ -301,12 +356,36 @@ export function CompareView() {
         label: version.version_label || null,
         taskName: selectedTaskForAdd.name,
         version,
+        variableMapping: {},
+        imageRoleMapping: {},
       },
     ]);
   }
 
   function handleRemoveVersion(taskVersionId: string) {
     setSelectedVersions((current) => current.filter((v) => v.taskVersionId !== taskVersionId));
+  }
+
+  function setVersionVariableMapping(
+    taskVersionId: string,
+    variableMapping: Record<string, string>,
+  ) {
+    setSelectedVersions((current) =>
+      current.map((v) =>
+        v.taskVersionId === taskVersionId ? { ...v, variableMapping } : v,
+      ),
+    );
+  }
+
+  function setVersionImageRoleMapping(
+    taskVersionId: string,
+    imageRoleMapping: Record<string, string>,
+  ) {
+    setSelectedVersions((current) =>
+      current.map((v) =>
+        v.taskVersionId === taskVersionId ? { ...v, imageRoleMapping } : v,
+      ),
+    );
   }
 
   function toggleBest(item: RunItemSummary) {
@@ -376,6 +455,10 @@ export function CompareView() {
             limit={limit}
             onChangeLimit={setLimit}
             providerNames={providerNames}
+            sampleVarsKeys={sampleVarsKeys}
+            sampleImageRoles={sampleImageRoles}
+            onChangeVersionVariableMapping={setVersionVariableMapping}
+            onChangeVersionImageRoleMapping={setVersionImageRoleMapping}
             onStart={handleStart}
             isStarting={isStarting}
             canStart={canStart}
@@ -445,6 +528,16 @@ interface SetupPanelProps {
   limit: LimitOption;
   onChangeLimit: (value: LimitOption) => void;
   providerNames: Map<string, string>;
+  sampleVarsKeys: string[];
+  sampleImageRoles: string[];
+  onChangeVersionVariableMapping: (
+    taskVersionId: string,
+    mapping: Record<string, string>,
+  ) => void;
+  onChangeVersionImageRoleMapping: (
+    taskVersionId: string,
+    mapping: Record<string, string>,
+  ) => void;
   onStart: () => void;
   isStarting: boolean;
   canStart: boolean;
@@ -469,6 +562,10 @@ function SetupPanel({
   limit,
   onChangeLimit,
   providerNames,
+  sampleVarsKeys,
+  sampleImageRoles,
+  onChangeVersionVariableMapping,
+  onChangeVersionImageRoleMapping,
   onStart,
   isStarting,
   canStart,
@@ -648,21 +745,40 @@ function SetupPanel({
             {selectedVersions.length > 0 && (
               <div className="rounded-md border border-surface-800 bg-surface-950 p-3 text-xs text-ink-dim">
                 <div className="mb-2 font-medium text-ink-muted">{t('compare.selectedConfig')}</div>
-                <div className="space-y-2">
+                <div className="space-y-4">
                   {selectedVersions.map((v) => (
-                    <div key={v.taskVersionId} className="flex flex-wrap gap-x-3 text-ink">
-                      <span className="font-medium">{v.taskName}</span>
-                      <span className="text-ink-muted">
-                        {v.label || v.taskVersionId}
-                      </span>
-                      <span>{t('task.model')}: {v.version.model_id}</span>
-                      <span>
-                        {t('task.providerConfig')}:{' '}
-                        {v.version.provider_config_id
-                          ? providerNames.get(v.version.provider_config_id) ??
-                            v.version.provider_config_id
-                          : '—'}
-                      </span>
+                    <div key={v.taskVersionId} className="space-y-2">
+                      <div className="flex flex-wrap gap-x-3 text-ink">
+                        <span className="font-medium">{v.taskName}</span>
+                        <span className="text-ink-muted">
+                          {v.label || v.taskVersionId}
+                        </span>
+                        <span>{t('task.model')}: {v.version.model_id}</span>
+                        <span>
+                          {t('task.providerConfig')}:{' '}
+                          {v.version.provider_config_id
+                            ? providerNames.get(v.version.provider_config_id) ??
+                              v.version.provider_config_id
+                            : '—'}
+                        </span>
+                      </div>
+                      {selectedSetId && (
+                        <MappingPanel
+                          namespace="compare"
+                          variableSpecs={v.version.variable_specs ?? []}
+                          imageSlotSpecs={v.version.image_slot_specs ?? []}
+                          sampleVarsKeys={sampleVarsKeys}
+                          sampleImageRoles={sampleImageRoles}
+                          variableMapping={v.variableMapping}
+                          imageRoleMapping={v.imageRoleMapping}
+                          onChangeVariableMapping={(mapping) =>
+                            onChangeVersionVariableMapping(v.taskVersionId, mapping)
+                          }
+                          onChangeImageRoleMapping={(mapping) =>
+                            onChangeVersionImageRoleMapping(v.taskVersionId, mapping)
+                          }
+                        />
+                      )}
                     </div>
                   ))}
                 </div>

@@ -705,6 +705,8 @@ export interface CreateBatchRunPayload {
   limit?: number | null;
   max_concurrency?: number;
   max_retries?: number;
+  variable_mapping?: Record<string, string>;
+  image_role_mapping?: Record<string, string>;
 }
 
 export interface BatchRunCreationResponse {

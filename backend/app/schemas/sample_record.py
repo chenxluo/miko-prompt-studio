@@ -78,6 +78,15 @@ class SampleSet(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class SampleMapping(BaseModel):
+    """Runtime mapping from sample fields to a task version's expected IDs."""
+
+    # task_var_id -> sample.vars key
+    variable_mapping: dict[str, str] = Field(default_factory=dict)
+    # task_role_hint -> sample.images[].role
+    image_role_mapping: dict[str, str] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # ORM-facing model that flattens SampleRecord for storage
 # ---------------------------------------------------------------------------

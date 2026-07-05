@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 from sqlalchemy import delete, select
@@ -23,6 +23,7 @@ from app.services.batch_executor import (
 )
 from app.services.request_builder import _pricing_snapshot
 from app.services.run_executor import LabRunRequest, _make_prompt_snapshot, execute_lab_run
+from app.services.sample_mapping import apply_sample_mapping
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,8 @@ class VariantSpec:
     task_version_id: str
     prompt_id: str | None = None
     prompt_version_id: str | None = None
+    variable_mapping: dict[str, str] = field(default_factory=dict)
+    image_role_mapping: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -226,9 +229,11 @@ async def _execute_one_item(
     compare_item: RunItemORM,
 ) -> None:
     template = cell.variant.request_template
-    mapped_sample = cell.sample
+    mapped_sample = apply_sample_mapping(
+        cell.sample, cell.variant.variable_mapping, cell.variant.image_role_mapping
+    )
     if template.image_slot_specs:
-        mapped_sample = map_sample_images_to_prompt_slots(cell.sample, template.image_slot_specs)
+        mapped_sample = map_sample_images_to_prompt_slots(mapped_sample, template.image_slot_specs)
     request = LabRunRequest(
         sample=mapped_sample,
         prompt=template.prompt,

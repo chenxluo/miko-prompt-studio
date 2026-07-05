@@ -2,7 +2,7 @@
 
 > 随开发进度持续更新的配套文档。最后更新：2026-07-03
 
-**版本：1.1.0**
+**版本：1.2.0**
 
 ## 1. 项目定位
 
@@ -81,8 +81,9 @@ miko_prompt_studio/
 │           ├── contract_validation.py # 输入契约校验（image slots + variables）
 │           ├── input_spec_generator.py # 生成 TaskVersion 输入说明文档
 │           ├── task_doc_generator.py  # 生成 TaskVersion 可复现说明文档（Markdown 导出）
-│           ├── html_export.py        # 运行结果导出为自包含 HTML 可视化（内联图片 + 卡片网格）
-│           └── importer.py           # CSV/JSONL 导入 + 智能列映射 + URL/本地路径识别
+├── html_export.py        # 运行结果导出为自包含 HTML 可视化（内联图片 + 卡片网格）
+├── importer.py           # CSV/JSONL 导入 + 智能列映射 + URL/本地路径识别
+└── sample_mapping.py     # 运行时样本字段临时映射到任务变量/图片槽位
 │
 ├── frontend/                   # React + TypeScript 前端
 │   ├── package.json
@@ -128,6 +129,8 @@ miko_prompt_studio/
 │       │   │   └── ImagePreviewGrid.tsx # 图像预览网格
 │       │   ├── samples/
 │       │   │   └── ImportDialog.tsx # CSV/JSONL 导入
+│       │   ├── batch/
+│       │   │   └── MappingPanel.tsx # Batch/Compare 字段映射面板
 │       │   ├── NavButton.tsx
 │       │   └── LocaleSwitch.tsx     # 中/英语言切换
 │       ├── App.tsx                  # 侧边栏导航 + 视图切换
@@ -233,11 +236,11 @@ run_executor.execute_lab_run()
 | GET | `/api/tasks/{id}/versions/{vid}/snapshots` | 列出关联到此版本的快照 |
 | GET | `/api/tasks/{id}/versions/{vid}/cost-stats` | 获取 TaskVersion 成本统计（历史均价） |
 | GET | `/api/tasks/{id}/versions/{vid}/export/markdown` | 导出 TaskVersion 可复现说明文档（Markdown） |
-| POST | `/api/batch-runs` | 创建 Batch 运行（Task + SampleSet） |
+| POST | `/api/batch-runs` | 创建 Batch 运行（Task + SampleSet）；支持 `variable_mapping` / `image_role_mapping` 临时字段映射 |
 | GET | `/api/batch-runs/{id}/status` | 查询 Batch 运行状态 |
 | POST | `/api/batch-runs/{id}/cancel` | 取消 Batch 运行 |
 | POST | `/api/batch-runs/{id}/retry-failed` | 重跑失败项 |
-| POST | `/api/compare-runs` | 创建 Compare 矩阵运行 |
+| POST | `/api/compare-runs` | 创建 Compare 矩阵运行；每个 variant 支持独立 `variable_mapping` / `image_role_mapping` 临时字段映射 |
 | GET | `/api/compare-runs/{id}/status` | 查询 Compare 运行状态 |
 | POST | `/api/compare-runs/{id}/cancel` | 取消 Compare 运行 |
 | POST | `/api/upload/image` | 上传图片，返回 url |
@@ -380,6 +383,17 @@ run_executor.execute_lab_run()
 - [x] **单运行审阅统计面板**：`ReviewStatsPanel` 在 `ResultsView` 中展示当前运行的审阅汇总
 - [x] **图片 URL 解析集中化**：`ImagePanel.tsx` 提取 `resolveImageUrl` 辅助函数，供 `SnapshotsView` / `TasksView` 复用
 - [x] **审阅回归测试**：新增 `backend/tests/test_review_endpoint.py` 与 `backend/tests/test_review_analytics.py`
+
+### Phase 8（v1.2.0 — Sample Set 临时字段映射）
+
+解除样本集与任务版本的命名硬耦合：同一份样本集可通过运行时临时映射复用于命名不同的任务版本。
+
+- [x] **运行时映射模型**：`backend/app/schemas/sample_record.py` 新增 `SampleMapping`；`backend/app/services/sample_mapping.py` 提供 `apply_sample_mapping(sample, variable_mapping, image_role_mapping)`
+- [x] **Batch/Compare payload 扩展**：`POST /api/batch-runs` 与 `POST /api/compare-runs` 的 variant 均支持 `variable_mapping`（task_var_id → sample.vars key）和 `image_role_mapping`（task_role_hint → sample.images[].role）
+- [x] **执行器接入**：`batch_executor.py` / `compare_executor.py` 在每个 item 执行前应用映射，再进行 slot 排序与 prompt 渲染
+- [x] **契约校验适配**：`contract_validation.py` 支持带 mapping 的校验，缺失字段在映射后仍正确报错
+- [x] **前端映射面板**：新增 `frontend/src/components/batch/MappingPanel.tsx`，在 `BatchView.tsx` / `CompareView.tsx` 中可折叠展示，支持手动选择 + 按名称相似度自动建议
+- [x] **映射回归测试**：新增 `backend/tests/test_sample_mapping.py`（7 个用例）
 
 ### 待实现
 - [ ] Python Import Script

@@ -767,6 +767,8 @@ export interface CompareTaskVersionPayload {
   task_id: string;
   task_version_id?: string | null;
   label?: string | null;
+  variable_mapping?: Record<string, string>;
+  image_role_mapping?: Record<string, string>;
 }
 
 export interface CreateCompareRunPayload {

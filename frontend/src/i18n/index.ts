@@ -653,6 +653,15 @@ const zh: Record<string, string> = {
   'batch.statusFailed': '获取运行状态失败',
   'batch.cancelFailed': '取消运行失败',
   'batch.retryFailedError': '重试失败项失败',
+  'batch.mapping.title': '字段映射',
+  'batch.mapping.description': '临时将样本字段映射到任务变量',
+  'batch.mapping.autoSuggest': '自动建议',
+  'batch.mapping.variables': '任务变量',
+  'batch.mapping.imageSlots': '图像槽位',
+  'batch.mapping.noSampleKeys': '请先选择包含 vars 的样本集',
+  'batch.mapping.noSampleRoles': '请先选择包含图像的样本集',
+  'batch.mapping.exactMatch': '精确匹配（留空）',
+  'batch.mapping.to': '→',
 
   // Compare
   'compare.title': '对比测试',
@@ -669,6 +678,15 @@ const zh: Record<string, string> = {
   'compare.cancelFailed': '取消对比运行失败',
   'compare.markBest': '标记为最佳',
   'compare.saveWinningConfig': '保存优胜配置',
+  'compare.mapping.title': '字段映射',
+  'compare.mapping.description': '为该版本临时映射样本字段',
+  'compare.mapping.autoSuggest': '自动建议',
+  'compare.mapping.variables': '任务变量',
+  'compare.mapping.imageSlots': '图像槽位',
+  'compare.mapping.noSampleKeys': '请先选择包含 vars 的样本集',
+  'compare.mapping.noSampleRoles': '请先选择包含图像的样本集',
+  'compare.mapping.exactMatch': '精确匹配（留空）',
+  'compare.mapping.to': '→',
 
   // Results
   'results.title': '结果查看',
@@ -1396,6 +1414,15 @@ const en: Record<string, string> = {
   'batch.statusFailed': 'Failed to fetch run status',
   'batch.cancelFailed': 'Failed to cancel run',
   'batch.retryFailedError': 'Failed to retry failed items',
+  'batch.mapping.title': 'Field Mapping',
+  'batch.mapping.description': 'Temporarily map sample fields to task variables',
+  'batch.mapping.autoSuggest': 'Auto-suggest',
+  'batch.mapping.variables': 'Task Variables',
+  'batch.mapping.imageSlots': 'Image Slots',
+  'batch.mapping.noSampleKeys': 'Select a sample set with vars first',
+  'batch.mapping.noSampleRoles': 'Select a sample set with images first',
+  'batch.mapping.exactMatch': 'Exact match (leave blank)',
+  'batch.mapping.to': '→',
 
   // Compare
   'compare.title': 'Compare',
@@ -1412,6 +1439,15 @@ const en: Record<string, string> = {
   'compare.cancelFailed': 'Failed to cancel compare run',
   'compare.markBest': 'Mark as best',
   'compare.saveWinningConfig': 'Save winning config',
+  'compare.mapping.title': 'Field Mapping',
+  'compare.mapping.description': 'Temporarily map sample fields for this version',
+  'compare.mapping.autoSuggest': 'Auto-suggest',
+  'compare.mapping.variables': 'Task Variables',
+  'compare.mapping.imageSlots': 'Image Slots',
+  'compare.mapping.noSampleKeys': 'Select a sample set with vars first',
+  'compare.mapping.noSampleRoles': 'Select a sample set with images first',
+  'compare.mapping.exactMatch': 'Exact match (leave blank)',
+  'compare.mapping.to': '→',
 
   // Results
   'results.title': 'Results Viewer',

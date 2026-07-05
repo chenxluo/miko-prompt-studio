@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.prompt import ImageSlotSpec, VariableSpec
 from app.schemas.sample_record import SampleRecord
+from app.services.sample_mapping import apply_sample_mapping
 
 
 class InvalidRow(BaseModel):
@@ -26,8 +27,15 @@ def validate_sample_against_specs(
     sample: SampleRecord,
     image_slot_specs: list[ImageSlotSpec],
     variable_specs: list[VariableSpec],
+    variable_mapping: dict[str, str] | None = None,
+    image_role_mapping: dict[str, str] | None = None,
 ) -> list[str]:
-    """Return human-readable contract validation errors for a sample."""
+    """Return human-readable contract validation errors for a sample.
+
+    If ``variable_mapping`` or ``image_role_mapping`` are provided, the sample
+    is mapped before validation so missing fields after mapping are reported.
+    """
+    sample = apply_sample_mapping(sample, variable_mapping, image_role_mapping)
     errors: list[str] = []
 
     for slot in image_slot_specs:
@@ -56,12 +64,20 @@ def validate_records_against_contract(
     records: list[SampleRecord],
     image_slot_specs: list[ImageSlotSpec],
     variable_specs: list[VariableSpec],
+    variable_mapping: dict[str, str] | None = None,
+    image_role_mapping: dict[str, str] | None = None,
 ) -> tuple[list[SampleRecord], list[InvalidRow]]:
     valid_records: list[SampleRecord] = []
     invalid_rows: list[InvalidRow] = []
 
     for index, record in enumerate(records, start=1):
-        errors = validate_sample_against_specs(record, image_slot_specs, variable_specs)
+        errors = validate_sample_against_specs(
+            record,
+            image_slot_specs,
+            variable_specs,
+            variable_mapping=variable_mapping,
+            image_role_mapping=image_role_mapping,
+        )
         if errors:
             invalid_rows.append(
                 InvalidRow(row_index=index, sample_id=record.sample_id, errors=errors)

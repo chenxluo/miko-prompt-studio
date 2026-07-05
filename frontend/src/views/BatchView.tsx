@@ -25,7 +25,8 @@ import { ImagePreviewGrid } from '../components/prompts/ImagePreviewGrid';
 import { resolveImageSrc } from '../components/lab/ImagePanel';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
-import type { ImageRef, RequestImage, RunItemSummary, Task, TaskVersion } from '../types';
+import { MappingPanel } from '../components/batch/MappingPanel';
+import type { ImageRef, ImageSlotSpec, RequestImage, RunItemSummary, Task, TaskVersion, VariableSpec } from '../types';
 
 type Phase = 'setup' | 'running' | 'results';
 type LimitOption = 10 | 50 | 'all';
@@ -67,6 +68,9 @@ export function BatchView() {
   const [concurrency, setConcurrency] = useState<ConcurrencyOption>(1);
   const [maxRetries, setMaxRetries] = useState<RetryOption>(0);
   const [selectedSetId, setSelectedSetId] = useState<string>('');
+  const [sampleRecords, setSampleRecords] = useState<api.SampleListItem[]>([]);
+  const [variableMapping, setVariableMapping] = useState<Record<string, string>>({});
+  const [imageRoleMapping, setImageRoleMapping] = useState<Record<string, string>>({});
 
   const [runId, setRunId] = useState<string | null>(null);
   const [session, setSession] = useState<api.RunListItem | null>(null);
@@ -107,6 +111,44 @@ export function BatchView() {
     const set = sampleSets.find((s) => s.sample_set_id === selectedSetId);
     return set?.name;
   }, [sampleSets, selectedSetId]);
+
+  // Load one sample record from the selected set so we can offer field mapping.
+  useEffect(() => {
+    if (!selectedSetId) {
+      setSampleRecords([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .listSamples(selectedSetId, 1)
+      .then((records) => {
+        if (!cancelled) setSampleRecords(records);
+      })
+      .catch(() => {
+        if (!cancelled) setSampleRecords([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSetId]);
+
+  const sampleVarsKeys = useMemo(() => {
+    const vars = sampleRecords[0]?.data?.vars;
+    if (!vars || typeof vars !== 'object' || Array.isArray(vars)) return [];
+    return Object.keys(vars);
+  }, [sampleRecords]);
+
+  const sampleImageRoles = useMemo(() => {
+    const images = sampleRecords[0]?.data?.images;
+    if (!Array.isArray(images)) return [];
+    const roles = new Set<string>();
+    for (const image of images) {
+      if (image && typeof image === 'object' && typeof (image as ImageRef).role === 'string') {
+        roles.add((image as ImageRef).role as string);
+      }
+    }
+    return Array.from(roles);
+  }, [sampleRecords]);
 
   // Resume an in-flight batch run when this view mounts — e.g. after the user
   // navigates to another page and back. The backend keeps executing; without
@@ -249,6 +291,15 @@ export function BatchView() {
   const canStart = Boolean(selectedTaskId && selectedSetId && selectedVersion);
 
   function buildPayload(): api.CreateBatchRunPayload {
+    const variableMappingPayload: Record<string, string> = {};
+    for (const [key, value] of Object.entries(variableMapping)) {
+      if (value) variableMappingPayload[key] = value;
+    }
+    const imageRoleMappingPayload: Record<string, string> = {};
+    for (const [key, value] of Object.entries(imageRoleMapping)) {
+      if (value) imageRoleMappingPayload[key] = value;
+    }
+
     return {
       task_id: selectedTaskId,
       sample_set_id: selectedSetId,
@@ -256,6 +307,8 @@ export function BatchView() {
       limit: limit === 'all' ? null : limit,
       max_concurrency: concurrency,
       max_retries: maxRetries,
+      variable_mapping: variableMappingPayload,
+      image_role_mapping: imageRoleMappingPayload,
     };
   }
 
@@ -404,6 +457,14 @@ export function BatchView() {
             onChangeMaxRetries={setMaxRetries}
             providerNames={providerNames}
             selectedSetName={selectedSetName}
+            variableSpecs={selectedVersion?.variable_specs ?? []}
+            imageSlotSpecs={selectedVersion?.image_slot_specs ?? []}
+            sampleVarsKeys={sampleVarsKeys}
+            sampleImageRoles={sampleImageRoles}
+            variableMapping={variableMapping}
+            imageRoleMapping={imageRoleMapping}
+            onChangeVariableMapping={setVariableMapping}
+            onChangeImageRoleMapping={setImageRoleMapping}
             onStart={handleStart}
             isStarting={isStarting}
             canStart={canStart}
@@ -466,6 +527,14 @@ interface SetupPanelProps {
   onChangeMaxRetries: (value: RetryOption) => void;
   providerNames: Map<string, string>;
   selectedSetName?: string;
+  variableSpecs: VariableSpec[];
+  imageSlotSpecs: ImageSlotSpec[];
+  sampleVarsKeys: string[];
+  sampleImageRoles: string[];
+  variableMapping: Record<string, string>;
+  imageRoleMapping: Record<string, string>;
+  onChangeVariableMapping: (mapping: Record<string, string>) => void;
+  onChangeImageRoleMapping: (mapping: Record<string, string>) => void;
   onStart: () => void;
   isStarting: boolean;
   canStart: boolean;
@@ -492,6 +561,14 @@ function SetupPanel({
   onChangeMaxRetries,
   providerNames,
   selectedSetName,
+  variableSpecs,
+  imageSlotSpecs,
+  sampleVarsKeys,
+  sampleImageRoles,
+  variableMapping,
+  imageRoleMapping,
+  onChangeVariableMapping,
+  onChangeImageRoleMapping,
   onStart,
   isStarting,
   canStart,
@@ -763,6 +840,19 @@ function SetupPanel({
             </div>
           </div>
         </section>
+      )}
+
+      {selectedVersion && selectedSetId && (
+        <MappingPanel
+          variableSpecs={variableSpecs}
+          imageSlotSpecs={imageSlotSpecs}
+          sampleVarsKeys={sampleVarsKeys}
+          sampleImageRoles={sampleImageRoles}
+          variableMapping={variableMapping}
+          imageRoleMapping={imageRoleMapping}
+          onChangeVariableMapping={onChangeVariableMapping}
+          onChangeImageRoleMapping={onChangeImageRoleMapping}
+        />
       )}
 
       <section className="panel p-5">

@@ -181,6 +181,8 @@ class BatchRunPayload(BaseModel):
     limit: int | None = None
     max_concurrency: int = 1
     max_retries: int = 0
+    variable_mapping: dict[str, str] = Field(default_factory=dict)
+    image_role_mapping: dict[str, str] = Field(default_factory=dict)
 
 
 class CompareTaskVersion(BaseModel):
@@ -190,6 +192,8 @@ class CompareTaskVersion(BaseModel):
 
 class CompareVariant(CompareTaskVersion):
     label: str | None = None
+    variable_mapping: dict[str, str] = Field(default_factory=dict)
+    image_role_mapping: dict[str, str] = Field(default_factory=dict)
 
 
 class CompareRunPayload(BaseModel):
@@ -667,6 +671,8 @@ async def create_batch_run(payload: BatchRunPayload, db: AsyncSession = Depends(
     max_retries = max(0, min(payload.max_retries, MAX_RETRIES))
     source["max_concurrency"] = max_concurrency
     source["max_retries"] = max_retries
+    source["variable_mapping"] = payload.variable_mapping
+    source["image_role_mapping"] = payload.image_role_mapping
     spec = BatchRunSpec(
         run_id=run_id,
         name=template.run_name,
@@ -675,6 +681,8 @@ async def create_batch_run(payload: BatchRunPayload, db: AsyncSession = Depends(
         request_template=template,
         max_concurrency=max_concurrency,
         max_retries=max_retries,
+        variable_mapping=payload.variable_mapping,
+        image_role_mapping=payload.image_role_mapping,
     )
     await start_batch_run(spec)
     return await _batch_status_response(run_id, db)
@@ -739,6 +747,8 @@ async def retry_failed_batch_run(run_id: str, db: AsyncSession = Depends(get_db)
             request_template=template,
             max_concurrency=max_concurrency,
             max_retries=max_retries,
+            variable_mapping=payload.variable_mapping,
+            image_role_mapping=payload.image_role_mapping,
         )
     )
     return await _batch_status_response(new_run_id, db)
@@ -779,6 +789,10 @@ def _payload_from_session_snapshot(session: RunSessionORM) -> BatchRunPayload:
         task_id=task_id,
         sample_set_id=source.get("sample_set_id") or "",
         task_version_id=source.get("task_version_id"),
+        max_concurrency=source.get("max_concurrency", 1),
+        max_retries=source.get("max_retries", 0),
+        variable_mapping=source.get("variable_mapping") or {},
+        image_role_mapping=source.get("image_role_mapping") or {},
     )
 
 
@@ -810,6 +824,8 @@ async def _resolve_compare_variants(
                 request_template=template,
                 task_id=task.task_id,
                 task_version_id=task_version.task_version_id,
+                variable_mapping=variant.variable_mapping,
+                image_role_mapping=variant.image_role_mapping,
             )
         )
     return variants
@@ -849,6 +865,8 @@ async def create_compare_run(payload: CompareRunPayload, db: AsyncSession = Depe
             "prompt_version_id": variant.prompt_version_id,
             "provider_config_id": variant.request_template.provider_config_id,
             "model_id": variant.request_template.model_config.model_id,
+            "variable_mapping": variant.variable_mapping,
+            "image_role_mapping": variant.image_role_mapping,
         }
         for variant in variants
     ]

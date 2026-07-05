@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 from sqlalchemy import delete, select
@@ -26,6 +26,7 @@ from app.schemas.run_record import ConfigSnapshot, RunSource, RunSummary
 from app.schemas.sample_record import SampleRecord
 from app.services.request_builder import _pricing_snapshot
 from app.services.run_executor import LabRunRequest, _make_prompt_snapshot, execute_lab_run
+from app.services.sample_mapping import apply_sample_mapping
 
 # Concurrency ceilings (clamped again at payload time).
 MAX_CONCURRENCY = 16
@@ -61,6 +62,8 @@ class BatchRunSpec:
     request_template: LabRunRequest
     max_concurrency: int = 1
     max_retries: int = 0
+    variable_mapping: dict[str, str] = field(default_factory=dict)
+    image_role_mapping: dict[str, str] = field(default_factory=dict)
 
 
 _running_tasks: dict[str, asyncio.Task] = {}
@@ -316,9 +319,11 @@ async def _execute_one_item(
     batch_item: RunItemORM,
 ) -> None:
     template = spec.request_template
-    mapped_sample = sample
+    mapped_sample = apply_sample_mapping(
+        sample, spec.variable_mapping, spec.image_role_mapping
+    )
     if template.image_slot_specs:
-        mapped_sample = map_sample_images_to_prompt_slots(sample, template.image_slot_specs)
+        mapped_sample = map_sample_images_to_prompt_slots(mapped_sample, template.image_slot_specs)
     request = LabRunRequest(
         sample=mapped_sample,
         prompt=template.prompt,
