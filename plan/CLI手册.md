@@ -1,7 +1,7 @@
 # Miko Prompt Studio — CLI 手册（`mps`）
 
 > 命令行入口，便于外部 agent / 脚本驱动本工具。进程内直连后端，无需启动 server。
-> 配套文档：`DEVELOPMENT.md`。最后更新：2026-06-29
+> 配套文档：`DEVELOPMENT.md`。编排导向指南（分类→路由→收集等工作流套路）：`.agents/skills/mps/SKILL.md`。最后更新：2026-07-09
 
 ## 1. 概述
 
@@ -12,7 +12,7 @@
 - **进程内直连**：复用 route handler 与执行器（`batch_executor` / `compare_executor`），零逻辑重复，与 REST API 行为一致。
 - **共享数据目录**：默认 `~/.miko_prompt_studio/`，与桌面 GUI 同库同 key，CLI 看到的就是 GUI 看到的。可用 `MIKO_DATA_DIR` 覆盖。
 - **可与 GUI 并存**：SQLite 已开 WAL + busy_timeout，CLI 进程与打开的桌面应用可同时读写。
-- **`task run` / `compare run` 是阻塞的**：执行器在本进程 event loop 里跑后台 worker，CLI 必须 await 到完成才退出（否则 worker 会被 loop 关停杀掉）。这对 agent 反而更好——一条命令跑完直接吐结果。
+- **`task run` / `compare run` 是阻塞的**：执行器在本进程 event loop 里跑，CLI 必须 await 到完成才退出。**worker 不是 daemon——进程死了 worker 必死**，不要假设杀掉 CLI 后任务还能后台继续。长时间运行（>30s）用 `pueue add` 包一层保活（见 SKILL.md）。阻塞开始前，`task run` 会先把 `run_id` 打到 **stderr**（`--json` 模式为 `{"event":"started","run_id":"..."}` 一行），shell 超时也能从 stderr 拿回 run_id。
 
 ## 2. 安装与调用
 
@@ -52,22 +52,40 @@ mps [--json | --no-json] <command> ...
 - 错误格式：`error: [404] Task not found`，退出码非 0。
 - JSON 模式下 `export` 仍输出原始文件内容（jsonl/csv/html 字节），不走 JSON 包裹。
 
+## 3.1 引用语法（task / sample-set）
+
+凡是接受 task 或 sample-set 的命令，都支持以下引用形式。**优先用名称而非 UUID**——名称语义清晰、GUI 每行有复制按钮、不易抄错。
+
+| 形式 | 含义 |
+|---|---|
+| `task_<id>` / `ss_<id>` / `tv_<id>` | 原始 UUID（仍可用，但不建议手敲） |
+| `<name>` | task → 解析到其 `current_version`；sset → 按 name |
+| `<name>@latest` | 显式指向 current version |
+| `<name>@v3` | 锁定到版本标签 `v3` |
+| `<name>@tv_<id>` | 锁定到具体 version UUID |
+
+- 分隔符是 `@`（不用 `:`）——避开 Windows 路径 / shell 歧义。
+- task 和 sample-set 的 name **全局唯一**。删除某 task 后不能重建同名（用 `xxx-v2` 替代）。
+- 解析失败时：stderr 输出 `error: cannot resolve 'X': ... Did you mean: <最接近>?`，退出码 **67**。
+
 ## 4. 命令参考
 
 ### 4.1 task — 任务与版本
 
 ```
-mps task list [--group GROUP]                                   # 列任务
-mps task get  <task_id>                                         # 任务详情（含全部版本）
-mps task spec  <task_id> [--version <tv>]                       # 输入说明（见 4.1.1）
-mps task new   --name N [--model M ...] [--from-file F]         # 新建 task + v1
-mps task edit  <task_id> [版本flags] [--from-file F]            # 编辑 → 派生新版本（见 5）
-mps task set-header <task_id> [--name/--description/--tags/--group]   # 改 header，不增版本
-mps task fork  <task_id> --name N [--version <tv>]              # fork 成独立 task
-mps task run   <task_id> --sample-set S [选项]                  # 跑批量（阻塞，见 4.1.2）
-mps task rm    <task_id>                                        # 删 task 及全部版本
-mps task rm-version <task_id> <version_id>                      # 删单个版本
+mps task list [--group GROUP]                                    # 列任务
+mps task get  <task_ref>                                         # 任务详情（含全部版本）
+mps task spec  <task_ref> [--version V]                          # 输入说明（见 4.1.1）
+mps task new   --name N [--model M ...] [--from-file F]          # 新建 task + v1
+mps task edit  <task_ref> [版本flags] [--from-file F]             # 编辑 → 派生新版本（见 5）
+mps task set-header <task_ref> [--name/--description/--tags/--group]   # 改 header，不增版本
+mps task fork  <task_ref> --name N [--version V]                 # fork 成独立 task
+mps task run   <task_ref> --sample-set S [选项]                  # 跑批量（阻塞，见 4.1.2）
+mps task rm    <task_ref>                                        # 删 task 及全部版本
+mps task rm-version <task_ref> <version_ref>                     # 删单个版本
 ```
+
+> `<task_ref>` / `<version_ref>` / `S` 均支持 §3.1 引用语法（name / name@vN / UUID）。
 
 #### 4.1.1 `task spec` — 任务输入说明
 
@@ -85,11 +103,17 @@ agent 跑任务前的标准动作：先 `task spec` 看需要哪些图/变量，
 #### 4.1.2 `task run` — 批量运行（阻塞）
 
 ```
-mps task run <task_id> --sample-set S [--version V] [--limit N] [--concurrency N] [--retries N]
+mps task run <task_ref> --sample-set <sset_ref>
+  [--version V] [--limit N] [--limit-strategy first|random]
+  [--concurrency N] [--retries N]
+  [--pipeline-id ID] [--pipeline-step LABEL]
 ```
 
 - 默认用 task 的 current version；`--version` 指定其它版本。
 - 映射到后端 batch-runs：阻塞到全部样本完成，打印 summary（`ok / failed / total` + cost）。
+- **`--limit-strategy`**：`first`（默认）取前 N 条；`random` 先打乱再取——异构数据集小批量测试时用 random 才有代表性。
+- **`--pipeline-id` / `--pipeline-step`**：自由字符串，存到 RunSession。GUI 的 **PipelineView** 按 `pipeline_id` 分组、按创建时间排序、显示 step 标签。串联 run 时打同一 pipeline_id，人就能在 GUI 一次看完整条流程。
+- 阻塞开始前，run_id 先打到 **stderr**（`--json` 模式：`{"event":"started","run_id":"..."}`），shell 超时也能拿回。
 - 结果随后用 `run get/items/export` 查看。
 
 ### 4.2 run — 运行记录与导出
@@ -97,20 +121,70 @@ mps task run <task_id> --sample-set S [--version V] [--limit N] [--concurrency N
 ```
 mps run list   [--type batch|lab|compare] [--status S] [--search Q] [--limit N] [--offset N]
 mps run get    <run_id>                    # session summary + items
-mps run items  <run_id>                    # 逐条结果（sample/status/tokens/cost）
+mps run items  <run_id> [--select F1,F2] [--filter EXPR] [--format json|jsonl|csv]  # 逐条结果
 mps run cancel <run_id>                    # 取消运行中的 batch
 mps run export <run_id> --format jsonl|csv|html [--out FILE]
 ```
+
+`run items` 的 token 效率选项（agent 编排时常用）：
+
+- **`--select`**：逗号分隔的点路径字段抽取，如 `sample_id,status,parsed.category,cost.estimated_cost`。缺失字段返回 `null`，不崩。
+- **`--filter EXPR`**：保留 EXPR 为真的条目（见 §4.2.1 DSL）。先 filter 后 select。
+- **`--format jsonl`**：一行一个 JSON 对象，最适合管道处理；`csv` 需配合 `--select`。
+- 不带任何 flag 时：输出完整逐条结果（原行为）。
+
+#### 4.2.1 Filter DSL
+
+基于 `simpleeval` 的受限表达式：支持比较（`==`/`!=`/`<`/`>`）、布尔（`and`/`or`/`not`）、`in`、属性访问、下标。**不支持函数调用、import、赋值**。每条 run item 暴露为属性（嵌套 JSON 也能用点号）：
+
+- `sample_id`、`run_item_id`、`status` —— RunItem 状态是 `succeeded`/`failed`/`pending`/`skipped`（**不是** "completed"）。
+- `parsed` —— 模型结构化输出（任意 JSON 对象），失败项可能为 `None`。
+- `raw_text` —— 模型原始文本输出。
+- `usage`、`cost` —— dict，cost 常用 `cost.estimated_cost`。
+
+```
+parsed.category == "food"
+status == "succeeded"
+status in ("failed", "error")
+parsed.category == "food" and parsed.confidence > 0.5
+cost.estimated_cost > 0.001
+```
+
+**防 None**：`parsed` 为 None 时访问 `parsed.category` 会抛 FilterError。务必先判状态：`status == "succeeded" and parsed.category == "food"`，状态判断放前面。错误表达式 → 退出码 65，stderr 给出失败位置。
 
 ### 4.3 sset — 样本集与导入
 
 ```
 mps sset list                                     # 列样本集
-mps sset get  <sample_set_id>                     # 样本集详情
+mps sset get  <sset_ref>                          # 样本集详情
 mps sset import-csv  <path> [选项]                # CSV/TSV 导入（见 6.1）
 mps sset import-jsonl <path> [选项]               # JSONL 导入（见 6.2）
-mps sset rm <sample_set_id>                       # 删样本集及其样本
+mps sset from-run --run-id R --name N [选项]      # 从 run 结果派生新样本集（见 4.3.1）
+mps sset rm <sset_ref>                            # 删样本集及其样本
 ```
+
+> `<sset_ref>` 支持 §3.1 引用语法（name / UUID）。`--run-id R` 是原始 `run_...` id（run 无 name）。
+
+#### 4.3.1 `sset from-run` — 从 run 结果派生样本集（编排命脉）
+
+```
+mps sset from-run --run-id <RUN_ID> --name <NEW_NAME>
+  [--filter EXPR]
+  [--carry-response [VAR_NAME]]
+  [--drop-original]
+  [--task-version REF]
+```
+
+按 filter 从一个已完成的 run 里选子集，生成新样本集。三种模式：
+
+| 模式 | 场景 | 命令 |
+|---|---|---|
+| **分流**（默认） | 分类→选子集→原图喂给下游 task | `--filter 'parsed.category=="food"'`（无额外 flag，带原 images+vars） |
+| **组合** | 下游 task 标注同一批图，且要看上游输出 | `--carry-response`（额外把 run 的 response 挂到 `prev_output` 变量） |
+| **串联** | 上游输出直接当下游输入（少见） | `--carry-response --drop-original` |
+
+- `--carry-response [VAR_NAME]`：挂上游 response 到 vars（默认名 `prev_output`）。有结构化 contract→挂 parsed 对象；无→挂 raw_text。
+- 守卫：源 run 必须已完成（`completed`/`completed_with_errors`）；运行中→退出码 65。重名→退出码 73。
 
 ### 4.4 provider / mconfig — 配置发现
 
@@ -123,10 +197,10 @@ mps mconfig list                               # 列已保存的 model 配置
 ### 4.5 compare — 横向对比（阻塞）
 
 ```
-mps compare run --sample-set S --variant TASK [--variant TASK ...] [--limit N] [--name N]
+mps compare run --sample-set <sset_ref> --variant <task_ref> [--variant <task_ref> ...] [--limit N] [--name N]
 ```
 
-同一 sample-set 上跑多个 task 的 current version，阻塞到完成。结果用 `run get` 查看对比矩阵。
+同一 sample-set 上跑多个 task 的 current version，阻塞到完成。结果用 `run get` 查看对比矩阵。`<sset_ref>`/`<task_ref>` 均支持 §3.1 引用语法。
 
 ### 4.6 api — 原始 API 逃生舱
 
@@ -227,33 +301,58 @@ mps sset list
 mps provider list
 
 # 2. 看任务需要什么输入
-mps task spec task_xxxx
+mps task spec 物品数据集标注
 
 # 3. 准备数据（按 spec 的 csv_example_row / jsonl_example 组织文件）
-mps sset import-csv data.csv --task-version tv_xxxx --name "实验集A"
+mps sset import-csv data.csv --task-version "物品数据集标注@v1" --name "实验集A"
 # → 拿到 sample_set_id
 
-# 4. 跑
-mps task run task_xxxx --sample-set ss_xxxx --limit 50 --concurrency 4
-# → 阻塞完成，拿到 run_id
+# 4. 小批量测试（random 抽样才有代表性）
+mps task run 物品数据集标注 --sample-set 实验集A --limit 5 --limit-strategy random
 
-# 5. 取结果
-mps run get   run_xxxx          # 概览
-mps run items run_xxxx          # 逐条
+# 5. 全量跑（阻塞；长时间用 pueue add 包一层保活）
+mps task run 物品数据集标注 --sample-set 实验集A --concurrency 4 --retries 3 \
+  --pipeline-id pipe_demo --pipeline-step annotate
+# → 阻塞完成，拿到 run_id（阻塞前 run_id 已打到 stderr）
+
+# 6. 取结果（token 效率版）
+mps run get   run_xxxx                       # 概览
+mps run items run_xxxx --select sample_id,status,parsed --format jsonl
 mps run export run_xxxx --format jsonl --out out.jsonl
 
-# 6.（可选）对比多版本
-mps compare run --sample-set ss_xxxx --variant task_a --variant task_b --limit 20
+# 7.（可选）对比多版本
+mps compare run --sample-set 实验集A --variant "物品数据集标注@v1" --variant "物品数据集标注@v2" --limit 20
 ```
 
 **调整现有 task 再跑**：
 
 ```bash
-mps task edit task_xxxx --temperature 0.5 --thinking off     # → 新版本，自动成 current
+mps task edit 物品数据集标注 --temperature 0.5 --thinking off     # → 新版本，自动成 current
 # 或改提示词
-mps task edit task_xxxx --system-prompt-file new_sp.txt
+mps task edit 物品数据集标注 --system-prompt-file new_sp.txt
 # 或改嵌套结构
-mps task edit task_xxxx --from-file overlay.json
+mps task edit 物品数据集标注 --from-file overlay.json
+```
+
+### 7.1 编排：分类 → 分流 → 标注
+
+把多个 task 串成工作流（详细套路见 `.agents/skills/mps/SKILL.md`）：
+
+```bash
+# 1. 分类（打 pipeline 标签，GUI 可聚合查看）
+mps task run 分类器 --sample-set raw-images --pipeline-id "$PIPE" --pipeline-step classify
+# → run_abc
+
+# 2. 看分类分布
+mps run items run_abc --select sample_id,parsed.category --format jsonl
+
+# 3. 按类别分流（原图带过去，喂给各自的标注 task）
+mps sset from-run --run-id run_abc --filter 'status=="succeeded" and parsed.category=="food"' --name food-set
+mps sset from-run --run-id run_abc --filter 'status=="succeeded" and parsed.category=="fashion"' --name fashion-set
+
+# 4. 各分支跑各自的标注
+mps task run 标注-food   --sample-set food-set   --pipeline-id "$PIPE" --pipeline-step annotate-food
+mps task run 标注-fashion --sample-set fashion-set --pipeline-id "$PIPE" --pipeline-step annotate-fashion
 ```
 
 ## 8. 退出码与错误
@@ -261,15 +360,20 @@ mps task edit task_xxxx --from-file overlay.json
 | 退出码 | 含义 |
 |---|---|
 | 0 | 成功 |
-| 1 | 运行时错误（后端 `HTTPException`、校验失败、找不到资源等） |
+| 1 | 运行时错误（后端 `HTTPException`、校验失败等） |
 | 2 | 参数错误（argparse） |
+| 65 (EX_DATAERR) | filter 表达式错误、run 未完成、输入数据非法 |
+| 67 (EX_NOUSER) | task/sset/run 引用解析失败（附 "Did you mean" 提示） |
+| 73 (EX_CANTCREAT) | 名称冲突（如样本集已存在） |
 | 130 | Ctrl+C 中断 |
 
-错误信息一律 stderr：`error: [404] Task not found`。设置 `MIKO_CLI_DEBUG=1` 可看完整 traceback。
+错误信息一律 stderr：`error: [404] Task not found` 或 `error: cannot resolve 'X': ...`。设置 `MIKO_CLI_DEBUG=1` 可看完整 traceback。
 
 ## 9. 注意事项
 
 - **`mps` shim 安装**：需项目以 packaged 方式安装（`uv pip install -e .`）。仅 `uv run python -m app.cli` 不需要。
+- **长时间运行**：`task run` 阻塞且 worker 非 daemon——进程死则任务死。超过 ~30s 的批量用 `pueue add` 包一层保活（见 SKILL.md）。阻塞开始前 run_id 已打到 stderr，shell 超时也能拿回。
+- **失败项诊断**：FAILED 的 RunItem 现在必定带 `error` dict（adapter 无结构化错误时回填 `empty_response` 类型）。`status` 字段值是 `succeeded`/`failed`，不是 "completed"。
 - **与 GUI 并存**：WAL 已开，可同时操作；但高并发写仍受 busy_timeout（5s）约束。
 - **未封装端点**：provider 配置 CRUD、API key、pricing、result snapshot、prompt snippet 等暂无专用命令，用 `mps api` 逃生舱（第 4.6 节）。
 - **CLI 自动化测试**：handlers 是对已测后端的薄封装；真集成测试需 live provider 或 fixture DB，后续按需补。
