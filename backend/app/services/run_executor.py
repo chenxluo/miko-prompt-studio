@@ -287,6 +287,19 @@ async def execute_lab_run(
         item_orm.estimated_cost = cost.estimated_cost
     if result.error:
         item_orm.error = result.error.model_dump(mode="json")
+    elif result.status == AttemptStatus.FAILED:
+        # Adapters can report FAILED with no structured error (e.g. empty choices).
+        # Always persist a fallback so the failure is explainable in the UI/API.
+        item_orm.error = {
+            "type": ErrorType.EMPTY_RESPONSE.value,
+            "message": (
+                f"Run item failed (status={result.status.value}) but adapter returned no "
+                "structured error. Likely empty/blank model response. See usage for clues."
+            ),
+            "retryable": False,
+            "provider_error_code": None,
+            "raw_error": None,
+        }
 
     # 10. Update the Run Session summary -------------------------------------
     _update_session_summary(session_orm, item_orm)
@@ -405,6 +418,8 @@ def _to_session(session_orm: RunSessionORM) -> RunSession:
         config_snapshot=ConfigSnapshot(**session_orm.config_snapshot),
         summary=RunSummary(**session_orm.summary),
         notes=session_orm.notes,
+        pipeline_id=session_orm.pipeline_id,
+        pipeline_step=session_orm.pipeline_step,
     )
 
 

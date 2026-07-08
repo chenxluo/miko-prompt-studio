@@ -16,16 +16,24 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
 import os
 import sys
+import types
 from collections.abc import Callable
 from typing import Any
 
-# ``app.main`` builds the FastAPI app object on import but does NOT start a
-# server. Importing it makes every route handler + helper below available.
 from app.database import init_db, session_scope
 from app.services.batch_executor import _running_tasks
+from app.services.filter_eval import FilterError, apply_filter, build_item_context
+from app.services.refs import (
+    RefResolutionError,
+    resolve_sset_ref,
+    resolve_task_ref,
+    resolve_version_ref,
+)
+from app.services.sample_derive import DeriveError, derive_sample_set_from_run
 
 # Type-only: keep the lint happy about the dict type.
 _JSON_MODE = False
@@ -57,7 +65,7 @@ def _emit(obj: Any, *, human: Callable[[Any], None] | None = None) -> None:
 
 def _human_record(obj: Any) -> None:
     for key, value in (obj.items() if isinstance(obj, dict) else []):
-        if isinstance(value, (dict, list)):
+        if isinstance(value, dict | list):
             print(f"{key}:")
             print(json.dumps(value, ensure_ascii=False, indent=2))
         else:
@@ -99,9 +107,57 @@ def _dig(row: Any, key: str) -> Any:
 def _fmt_cell(value: Any) -> str:
     if value is None:
         return ""
-    if isinstance(value, (dict, list)):
+    if isinstance(value, dict | list):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
+
+
+def _get_path(obj: Any, path: str) -> Any:
+    """Descend into a dict/namespace by a dot-separated path.
+
+    Missing path segments return ``None`` rather than raising.
+    """
+    cur: Any = obj
+    for part in path.split("."):
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        elif isinstance(cur, types.SimpleNamespace):
+            cur = getattr(cur, part, None)
+        else:
+            cur = None
+        if cur is None:
+            break
+    return cur
+
+
+def _print_formatted_items(
+    items: list[dict], *, select: list[str] | None, fmt: str | None
+) -> None:
+    """Render filtered items as JSON, JSONL or CSV."""
+    if select:
+        out = [{field: _get_path(item, field) for field in select} for item in items]
+    else:
+        out = items
+
+    if fmt == "jsonl":
+        for row in out:
+            print(json.dumps(row, ensure_ascii=False))
+        return
+
+    if fmt == "csv":
+        if not select:
+            raise ValueError("--format csv requires --select")
+        writer = csv.writer(sys.stdout, lineterminator="\n")
+        writer.writerow(select)
+        for row in out:
+            writer.writerow([_fmt_cell(row.get(field)) for field in select])
+        return
+
+    # Default JSON.  Pretty when interactive, compact when piped.
+    if sys.stdout.isatty():
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
 
 
 # ---------------------------------------------------------------------------
@@ -286,31 +342,55 @@ async def cmd_task_get(args: argparse.Namespace) -> None:
     from app.main import get_task
 
     async with session_scope() as db:
-        task = await get_task(args.task_id, db=db)
+        task, _ = await resolve_task_ref(db, args.task_id)
+        task = await get_task(task.task_id, db=db)
     _emit(task)
 
 
 async def cmd_task_run(args: argparse.Namespace) -> None:
     from app.main import BatchRunPayload, _batch_status_response, create_batch_run
 
-    payload = BatchRunPayload(
-        task_id=args.task_id,
-        sample_set_id=args.sample_set,
-        task_version_id=args.version,
-        limit=args.limit,
-        max_concurrency=args.concurrency,
-        max_retries=args.retries,
-    )
-
-    # `create_batch_run` starts a fire-and-forget background worker and returns
-    # the early (running) status. The worker lives in *this* event loop, so if
-    # the process exits now the loop closes and the run is killed. In-process
-    # CLI therefore MUST await the worker to completion before returning.
+    # Resolve task/sample-set (and optional version) before building the payload.
     async with session_scope() as db:
+        task, version = await resolve_task_ref(db, args.task_id)
+        if args.version:
+            _, version = await resolve_version_ref(db, args.task_id, args.version)
+        sset = await resolve_sset_ref(db, args.sample_set)
+        payload = BatchRunPayload(
+            task_id=task.task_id,
+            sample_set_id=sset.sample_set_id,
+            task_version_id=version.task_version_id,
+            limit=args.limit,
+            limit_strategy=args.limit_strategy,
+            max_concurrency=args.concurrency,
+            max_retries=args.retries,
+            pipeline_id=args.pipeline_id,
+            pipeline_step=args.pipeline_step,
+        )
+
+        # `create_batch_run` starts a fire-and-forget background worker and returns
+        # the early (running) status. The worker lives in *this* event loop, so if
+        # the process exits now the loop closes and the run is killed. In-process
+        # CLI therefore MUST await the worker to completion before returning.
         early = await create_batch_run(payload, db=db)
         run_id = early.get("run_id")
     if not run_id:
         raise RuntimeError("Batch run did not return a run_id.")
+
+    # Emit run_id to stderr immediately so an agent whose shell times out
+    # mid-run still has the run_id to poll later. Stdout is reserved for the
+    # final summary JSON, so this must never go there.
+    if _want_json(args):
+        print(
+            json.dumps({"event": "started", "run_id": run_id}, ensure_ascii=False),
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"run_id: {run_id} (running, will block until done...)",
+            file=sys.stderr,
+        )
+    sys.stderr.flush()
 
     worker = _running_tasks.get(run_id)
     if worker is not None:
@@ -349,7 +429,23 @@ async def cmd_run_items(args: argparse.Namespace) -> None:
 
     async with session_scope() as db:
         result = await get_run(args.run_id, db=db)
-    _emit({"items": result.get("items", [])}, human=_human_run_items)
+    items = result.get("items", [])
+
+    if not args.select and not args.filter and args.format is None:
+        _emit({"items": items}, human=_human_run_items)
+        return
+
+    contexts = [build_item_context(types.SimpleNamespace(**item)) for item in items]
+    if args.filter:
+        contexts = apply_filter(contexts, args.filter)
+
+    select = [f.strip() for f in args.select.split(",") if f.strip()] if args.select else None
+    fmt = args.format
+    if fmt is None:
+        fmt = "jsonl" if not sys.stdout.isatty() else "json"
+    if fmt == "csv" and not select:
+        raise ValueError("--format csv requires --select")
+    _print_formatted_items(contexts, select=select, fmt=fmt)
 
 
 async def cmd_run_cancel(args: argparse.Namespace) -> None:
@@ -395,8 +491,40 @@ async def cmd_sset_get(args: argparse.Namespace) -> None:
     from app.main import get_sample_set
 
     async with session_scope() as db:
-        sset = await get_sample_set(args.sample_set_id, db=db)
+        sset = await resolve_sset_ref(db, args.sample_set_id)
+        sset = await get_sample_set(sset.sample_set_id, db=db)
     _emit(sset)
+
+
+async def cmd_sset_from_run(args: argparse.Namespace) -> None:
+    if args.drop_original and not args.carry_response:
+        print(
+            "warning: --drop-original without --carry-response produces "
+            "records with empty vars/images.",
+            file=sys.stderr,
+        )
+    async with session_scope() as db:
+        task_version_id = None
+        if args.task_version:
+            _, version = await resolve_version_ref(db, None, args.task_version)
+            task_version_id = version.task_version_id
+
+        sset = await derive_sample_set_from_run(
+            db,
+            args.run_id,
+            name=args.name,
+            filter_expr=args.filter,
+            carry_response=args.carry_response,
+            drop_original=args.drop_original,
+            task_version_id=task_version_id,
+        )
+    _emit(
+        {
+            "sample_set_id": sset.sample_set_id,
+            "name": sset.name,
+            "record_count": len(sset.record_ids or []),
+        }
+    )
 
 
 async def cmd_provider_list(args: argparse.Namespace) -> None:
@@ -533,14 +661,13 @@ def _compose_version(base: dict, overlay: dict) -> dict:
 
 
 async def cmd_task_spec(args: argparse.Namespace) -> None:
-    from app.main import get_task, get_task_input_spec
+    from app.main import get_task_input_spec
 
     async with session_scope() as db:
-        task = await get_task(args.task_id, db=db)
-        version_id = args.version or task.get("current_version_id")
-        if not version_id:
-            raise ValueError("Task has no current version; pass --version.")
-        spec = await get_task_input_spec(args.task_id, version_id, db=db)
+        task, version = await resolve_task_ref(db, args.task_id)
+        if args.version:
+            _, version = await resolve_version_ref(db, args.task_id, args.version)
+        spec = await get_task_input_spec(task.task_id, version.task_version_id, db=db)
     _emit(spec, human=_human_task_spec)
 
 
@@ -571,13 +698,14 @@ async def cmd_task_edit(args: argparse.Namespace) -> None:
     if not overlay:
         raise ValueError("No changes given (pass version flags or --from-file).")
     async with session_scope() as db:
-        task = await get_task(args.task_id, db=db)
-        current = task.get("current_version")
+        task, _ = await resolve_task_ref(db, args.task_id)
+        task_dict = await get_task(task.task_id, db=db)
+        current = task_dict.get("current_version")
         if current is None:
             raise ValueError("Task has no current version to edit.")
         base = {k: current.get(k) for k in _VERSION_FIELDS}
         payload = CreateTaskVersionPayload(**_compose_version(base, overlay))
-        new_version = await create_task_version(args.task_id, payload, db=db)
+        new_version = await create_task_version(task.task_id, payload, db=db)
     _emit(new_version, human=_human_task_brief)
 
 
@@ -593,27 +721,25 @@ async def cmd_task_set_header(args: argparse.Namespace) -> None:
     if all(v is None for v in (payload.name, payload.description, payload.tags, payload.group_id)):
         raise ValueError("No header changes given (--name/--description/--tags/--group).")
     async with session_scope() as db:
-        task = await update_task(args.task_id, payload, db=db)
+        task, _ = await resolve_task_ref(db, args.task_id)
+        task = await update_task(task.task_id, payload, db=db)
     _emit(task, human=_human_task_brief)
 
 
 async def cmd_task_fork(args: argparse.Namespace) -> None:
-    from app.main import ForkTaskPayload, fork_task, get_task
+    from app.main import ForkTaskPayload, fork_task
 
     async with session_scope() as db:
-        source_version_id = args.version
-        if source_version_id is None:
-            task = await get_task(args.task_id, db=db)
-            source_version_id = task.get("current_version_id")
-            if not source_version_id:
-                raise ValueError("Task has no current version to fork.")
+        task, version = await resolve_task_ref(db, args.task_id)
+        if args.version:
+            _, version = await resolve_version_ref(db, args.task_id, args.version)
         payload = ForkTaskPayload(
-            source_version_id=source_version_id,
+            source_version_id=version.task_version_id,
             name=args.name,
             description=args.description,
             tags=_split_tags(args.tags),
         )
-        task = await fork_task(args.task_id, payload, db=db)
+        task = await fork_task(task.task_id, payload, db=db)
     _emit(task, human=_human_task_brief)
 
 
@@ -621,7 +747,8 @@ async def cmd_task_rm(args: argparse.Namespace) -> None:
     from app.main import delete_task
 
     async with session_scope() as db:
-        result = await delete_task(args.task_id, db=db)
+        task, _ = await resolve_task_ref(db, args.task_id)
+        result = await delete_task(task.task_id, db=db)
     _emit(result)
 
 
@@ -629,7 +756,8 @@ async def cmd_task_rm_version(args: argparse.Namespace) -> None:
     from app.main import delete_task_version
 
     async with session_scope() as db:
-        result = await delete_task_version(args.task_id, args.version_id, db=db)
+        task, version = await resolve_version_ref(db, args.task_id, args.version_id)
+        result = await delete_task_version(task.task_id, version.task_version_id, db=db)
     _emit(result)
 
 
@@ -646,6 +774,7 @@ async def cmd_sset_import_csv(args: argparse.Namespace) -> None:
         suggest_column_mapping,
     )
 
+    version_id = None
     if args.mapping_file:
         with open(args.mapping_file, encoding="utf-8") as fh:
             mapping = ColumnMapping.model_validate(json.load(fh))
@@ -654,19 +783,21 @@ async def cmd_sset_import_csv(args: argparse.Namespace) -> None:
         image_specs = variable_specs = None
         if args.task_version:
             async with session_scope() as db:
-                tv = await _task_version_schema_by_id(args.task_version, db)
+                _, version = await resolve_version_ref(db, None, args.task_version)
+                tv = await _task_version_schema_by_id(version.task_version_id, db)
             image_specs, variable_specs = tv.image_slot_specs, tv.variable_specs
+            version_id = version.task_version_id
         mapping = suggest_column_mapping(columns, image_specs, variable_specs)
         mapping.base_dir = args.base_dir
-        if args.task_version:
-            mapping.task_version_id = args.task_version
+        if version_id:
+            mapping.task_version_id = version_id
 
     records = import_csv(args.path, mapping, delimiter=args.delimiter)
     if not records:
         raise ValueError("No rows imported (check id_column / mapping).")
 
     async with session_scope() as db:
-        report = await _validation_report_for_records(records, args.task_version, db)
+        report = await _validation_report_for_records(records, version_id, db)
         if args.validate_only:
             if report is not None:
                 _emit(report.model_dump(mode="json"))
@@ -696,6 +827,12 @@ async def cmd_sset_import_jsonl(args: argparse.Namespace) -> None:
     )
     from app.services.importer import import_jsonl
 
+    version_id = None
+    if args.task_version:
+        async with session_scope() as db:
+            _, version = await resolve_version_ref(db, None, args.task_version)
+        version_id = version.task_version_id
+
     try:
         records = import_jsonl(args.path)
     except ValueError as exc:
@@ -704,7 +841,7 @@ async def cmd_sset_import_jsonl(args: argparse.Namespace) -> None:
         raise ValueError("No records imported.")
 
     async with session_scope() as db:
-        report = await _validation_report_for_records(records, args.task_version, db)
+        report = await _validation_report_for_records(records, version_id, db)
         if args.validate_only:
             if report is not None:
                 _emit(report.model_dump(mode="json"))
@@ -731,7 +868,8 @@ async def cmd_sset_rm(args: argparse.Namespace) -> None:
     from app.main import delete_sample_set
 
     async with session_scope() as db:
-        result = await delete_sample_set(args.sample_set_id, db=db)
+        sset = await resolve_sset_ref(db, args.sample_set_id)
+        result = await delete_sample_set(sset.sample_set_id, db=db)
     _emit(result)
 
 
@@ -744,16 +882,25 @@ async def cmd_compare_run(args: argparse.Namespace) -> None:
     )
     from app.services.compare_executor import _running_tasks as _compare_running
 
-    variants = [CompareVariant(task_id=t) for t in args.variant]
-    payload = CompareRunPayload(
-        sample_set_id=args.sample_set,
-        variants=variants,
-        limit=args.limit,
-        name=args.name,
-    )
-    # Same fire-and-forget + await-worker pattern as `task run`: the compare
-    # worker lives in this loop, so the CLI must block on it before exiting.
     async with session_scope() as db:
+        sset = await resolve_sset_ref(db, args.sample_set)
+        variants = []
+        for v in args.variant:
+            task, version = await resolve_task_ref(db, v)
+            variants.append(
+                CompareVariant(
+                    task_id=task.task_id,
+                    task_version_id=version.task_version_id,
+                )
+            )
+        payload = CompareRunPayload(
+            sample_set_id=sset.sample_set_id,
+            variants=variants,
+            limit=args.limit,
+            name=args.name,
+        )
+        # Same fire-and-forget + await-worker pattern as `task run`: the compare
+        # worker lives in this loop, so the CLI must block on it before exiting.
         early = await create_compare_run(payload, db=db)
         run_id = early.get("run_id")
     if not run_id:
@@ -953,8 +1100,23 @@ def _build_parser() -> argparse.ArgumentParser:
     t_run.add_argument("--version", default=None, help="Specific task_version_id.")
     t_run.add_argument("--sample-set", required=True, help="Sample set id to run against.")
     t_run.add_argument("--limit", type=int, default=None, help="Cap number of samples.")
+    t_run.add_argument(
+        "--limit-strategy",
+        dest="limit_strategy",
+        choices=["first", "random"],
+        default="first",
+        help="How to pick samples when --limit is set (default: first).",
+    )
     t_run.add_argument("--concurrency", type=int, default=1, help="Max concurrent requests.")
     t_run.add_argument("--retries", type=int, default=0, help="Retries on transient errors.")
+    t_run.add_argument(
+        "--pipeline-id", dest="pipeline_id", default=None,
+        help="Pipeline grouping key for chained runs.",
+    )
+    t_run.add_argument(
+        "--pipeline-step", dest="pipeline_step", default=None,
+        help="Semantic label for this run's role in the pipeline.",
+    )
     t_run.set_defaults(_handler=cmd_task_run)
 
     t_spec = task.add_parser(
@@ -1028,6 +1190,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     r_items = run.add_parser("items", help="List a run's items (one row per sample).")
     r_items.add_argument("run_id")
+    r_items.add_argument(
+        "--select",
+        default=None,
+        help="Comma-separated field paths (e.g. sample_id,parsed.category).",
+    )
+    r_items.add_argument("--filter", default=None, help="Filter expression evaluated per item.")
+    r_items.add_argument(
+        "--format", choices=["json", "jsonl", "csv"], default=None, help="Output format."
+    )
     r_items.set_defaults(_handler=cmd_run_items)
 
     r_cancel = run.add_parser("cancel", help="Request cancellation of a running batch run.")
@@ -1051,6 +1222,34 @@ def _build_parser() -> argparse.ArgumentParser:
     s_get = sset.add_parser("get", help="Show one sample set.")
     s_get.add_argument("sample_set_id")
     s_get.set_defaults(_handler=cmd_sset_get)
+
+    s_from = sset.add_parser(
+        "from-run", help="Derive a sample set from a finished run (routing / composition)."
+    )
+    s_from.add_argument("--run-id", required=True, help="Run id (run_...).")
+    s_from.add_argument("--name", required=True, help="Name for the new sample set.")
+    s_from.add_argument("--filter", default=None, help="Filter expression for run items.")
+    s_from.add_argument(
+        "--carry-response",
+        dest="carry_response",
+        nargs="?",
+        const="prev_output",
+        default=None,
+        help="Carry the upstream response as a variable (default name: prev_output).",
+    )
+    s_from.add_argument(
+        "--drop-original",
+        dest="drop_original",
+        action="store_true",
+        help="Discard original sample vars/images.",
+    )
+    s_from.add_argument(
+        "--task-version",
+        dest="task_version",
+        default=None,
+        help="Optional target task version tag.",
+    )
+    s_from.set_defaults(_handler=cmd_sset_from_run)
 
     s_csv = sset.add_parser(
         "import-csv", help="Import CSV/TSV into a sample set (auto-suggests column mapping)."
@@ -1162,6 +1361,15 @@ def main() -> None:
         rc = 130
     except SystemExit:
         raise
+    except RefResolutionError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        rc = 67
+    except DeriveError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        rc = exc.exit_code
+    except FilterError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        rc = 65
     except Exception as exc:  # noqa: BLE001 — top-level CLI guard.
         # Translate backend HTTPException (the only typed error the handlers raise).
         status = getattr(exc, "status_code", None)

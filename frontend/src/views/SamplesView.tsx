@@ -11,6 +11,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 
 import * as api from '../api/client';
+import { CopyReferenceButton } from '../components/CopyReferenceButton';
 import { ImportDialog } from '../components/samples/ImportDialog';
 import { useI18n } from '../i18n';
 import type { ImageRef } from '../types';
@@ -226,6 +227,7 @@ function SampleSetCard({
           >
             {t('samples.view')}
           </button>
+          <CopyReferenceButton reference={sampleSet.name} />
           <button
             type="button"
             onClick={onDelete}

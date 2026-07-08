@@ -95,6 +95,8 @@ class RunSession(TimestampedModel):
     config_snapshot: ConfigSnapshot = Field(default_factory=ConfigSnapshot)
     summary: RunSummary = Field(default_factory=RunSummary)
     notes: str = ""
+    pipeline_id: str | None = None
+    pipeline_step: str | None = None
 
 
 # ---------------------------------------------------------------------------

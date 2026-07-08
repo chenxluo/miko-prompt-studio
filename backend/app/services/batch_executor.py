@@ -64,6 +64,8 @@ class BatchRunSpec:
     max_retries: int = 0
     variable_mapping: dict[str, str] = field(default_factory=dict)
     image_role_mapping: dict[str, str] = field(default_factory=dict)
+    pipeline_id: str | None = None
+    pipeline_step: str | None = None
 
 
 _running_tasks: dict[str, asyncio.Task] = {}
@@ -138,6 +140,8 @@ async def _create_session(db: AsyncSession, spec: BatchRunSpec) -> None:
             total_items=len(spec.samples),
             currency=pricing_snapshot.currency,
         ).model_dump(mode="json"),
+        pipeline_id=spec.pipeline_id,
+        pipeline_step=spec.pipeline_step,
     )
     db.add(session)
     await db.flush()

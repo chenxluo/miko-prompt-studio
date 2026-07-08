@@ -10,6 +10,7 @@ import csv
 import hashlib
 import io
 import json
+import random
 import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -179,10 +180,13 @@ class BatchRunPayload(BaseModel):
     sample_set_id: str
     task_version_id: str | None = None
     limit: int | None = None
+    limit_strategy: Literal["first", "random"] = "first"
     max_concurrency: int = 1
     max_retries: int = 0
     variable_mapping: dict[str, str] = Field(default_factory=dict)
     image_role_mapping: dict[str, str] = Field(default_factory=dict)
+    pipeline_id: str | None = None
+    pipeline_step: str | None = None
 
 
 class CompareTaskVersion(BaseModel):
@@ -640,6 +644,9 @@ async def _load_batch_samples(
         if missing:
             raise HTTPException(404, f"Samples not found in set: {', '.join(missing)}")
     if payload.limit is not None:
+        if payload.limit_strategy == "random":
+            ordered_ids = list(ordered_ids)
+            random.shuffle(ordered_ids)
         ordered_ids = ordered_ids[: max(0, payload.limit)]
     samples = [
         SampleRecord.model_validate(rows_by_id[sample_id].data)
@@ -683,6 +690,8 @@ async def create_batch_run(payload: BatchRunPayload, db: AsyncSession = Depends(
         max_retries=max_retries,
         variable_mapping=payload.variable_mapping,
         image_role_mapping=payload.image_role_mapping,
+        pipeline_id=payload.pipeline_id,
+        pipeline_step=payload.pipeline_step,
     )
     await start_batch_run(spec)
     return await _batch_status_response(run_id, db)
@@ -1637,6 +1646,8 @@ def _run_session_to_dict(session: RunSessionORM) -> dict[str, Any]:
         "config_snapshot": session.config_snapshot,
         "summary": session.summary,
         "notes": session.notes,
+        "pipeline_id": session.pipeline_id,
+        "pipeline_step": session.pipeline_step,
         "created_at": session.created_at,
         "updated_at": session.updated_at,
     }
@@ -2002,6 +2013,8 @@ async def list_runs(
                 "started_at": data["started_at"],
                 "completed_at": data["completed_at"],
                 "summary": data["summary"],
+                "pipeline_id": data["pipeline_id"],
+                "pipeline_step": data["pipeline_step"],
                 "created_at": data["created_at"],
             }
         )
@@ -2039,6 +2052,8 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
             "config_snapshot": session.config_snapshot,
             "summary": session.summary,
             "notes": session.notes,
+            "pipeline_id": session.pipeline_id,
+            "pipeline_step": session.pipeline_step,
             "created_at": session.created_at,
         },
         "items": [

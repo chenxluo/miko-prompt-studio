@@ -2,7 +2,9 @@ import { BookOpen, Loader2, Tag, Trash2, Upload } from 'lucide-react';
 import { useState } from 'react';
 
 import { useI18n } from '../../i18n';
+import { formatTaskReference } from '../../utils/reference';
 import type { Task, TaskGroup } from '../../types';
+import { CopyReferenceButton } from '../CopyReferenceButton';
 
 export interface TaskListCardProps {
   task: Task;
@@ -28,6 +30,7 @@ export function TaskListCard({
   const { t } = useI18n();
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const version = task.current_version;
+  const reference = formatTaskReference(task);
   const providerName = version?.provider_config_id
     ? providerNames.get(version.provider_config_id) ?? version.provider_config_id
     : task.provider_config_id
@@ -130,6 +133,7 @@ export function TaskListCard({
               </div>
             )}
           </div>
+          <CopyReferenceButton reference={reference} />
           <button
             type="button"
             onClick={onDelete}

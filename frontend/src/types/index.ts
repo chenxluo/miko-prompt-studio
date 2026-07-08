@@ -527,6 +527,8 @@ export interface RunSession extends Timestamps {
   config_snapshot?: ConfigSnapshot;
   summary?: RunSummary;
   notes?: string;
+  pipeline_id: string | null;
+  pipeline_step: string | null;
 }
 
 export interface Usage {

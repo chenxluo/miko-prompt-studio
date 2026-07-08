@@ -127,6 +127,8 @@ def test_listing_runs_with_filters_search_and_pagination(client: TestClient) -> 
         "completed_at",
         "summary",
         "created_at",
+        "pipeline_id",
+        "pipeline_step",
     }
 
     response = client.get("/api/runs?status=failed")

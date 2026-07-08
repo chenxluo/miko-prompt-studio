@@ -37,6 +37,7 @@ const zh: Record<string, string> = {
   'nav.prompts': '提示词',
   'nav.samples': '样本',
   'nav.runs': '运行',
+  'nav.pipelines': '工作流',
   'nav.results': '结果',
   'nav.snapshots': '快照',
   'nav.cost': '成本',
@@ -558,6 +559,20 @@ const zh: Record<string, string> = {
   'history.reviewPending': '待复核',
   'history.itemDetail': '运行项详情',
 
+  // Pipelines
+  'pipelines.title': '工作流',
+  'pipelines.description': '按 pipeline_id 聚合查看链式运行结果。',
+  'pipelines.loading': '加载中…',
+  'pipelines.loadFailed': '加载运行记录失败',
+  'pipelines.emptyTitle': '暂无工作流运行',
+  'pipelines.emptyDescription': 'Pipelines 通过 CLI 使用 --pipeline-id 创建。运行 `mps task run ... --pipeline-id <id> --pipeline-step <label>` 来生成一个链式工作流，然后回到这里查看结果。',
+  'pipelines.filterPlaceholder': '过滤工作流 ID...',
+  'pipelines.runCount': '{count} 次运行',
+  'pipelines.totalCost': '总成本',
+  'pipelines.step': '步骤 {n}',
+  'pipelines.sampleCount': '{count} 样本',
+  'pipelines.viewRun': '查看运行',
+
   // Settings
   'settings.providerConfigs': '提供商配置',
   'settings.addProviderConfig': '添加提供商配置',
@@ -795,6 +810,9 @@ const zh: Record<string, string> = {
   'common.new': '新建',
   'common.save': '保存',
   'common.all': '全部',
+  'common.copyReference': '复制引用',
+  'common.copyFailed': '复制失败',
+  'common.copied': '已复制',
 };
 
 const en: Record<string, string> = {
@@ -808,6 +826,7 @@ const en: Record<string, string> = {
   'nav.prompts': 'Prompts',
   'nav.samples': 'Samples',
   'nav.runs': 'Runs',
+  'nav.pipelines': 'Pipelines',
   'nav.results': 'Results',
   'nav.snapshots': 'Snapshots',
   'nav.cost': 'Cost',
@@ -1319,6 +1338,20 @@ const en: Record<string, string> = {
   'history.reviewPending': 'Pending',
   'history.itemDetail': 'Run Item Detail',
 
+  // Pipelines
+  'pipelines.title': 'Pipelines',
+  'pipelines.description': 'Inspect chained runs grouped by pipeline_id.',
+  'pipelines.loading': 'Loading…',
+  'pipelines.loadFailed': 'Failed to load runs',
+  'pipelines.emptyTitle': 'No pipeline runs yet',
+  'pipelines.emptyDescription': 'Pipelines are created via the CLI using --pipeline-id. Run `mps task run ... --pipeline-id <id> --pipeline-step <label>` to create a chain, then inspect results here.',
+  'pipelines.filterPlaceholder': 'Filter pipelines...',
+  'pipelines.runCount': '{count} runs',
+  'pipelines.totalCost': 'Total cost',
+  'pipelines.step': 'Step {n}',
+  'pipelines.sampleCount': '{count} samples',
+  'pipelines.viewRun': 'View run',
+
   // Settings
   'settings.providerConfigs': 'Provider Configs',
   'settings.addProviderConfig': 'Add Provider Config',
@@ -1556,6 +1589,9 @@ const en: Record<string, string> = {
   'common.new': 'New',
   'common.save': 'Save',
   'common.all': 'All',
+  'common.copyReference': 'Copy reference',
+  'common.copyFailed': 'Copy failed',
+  'common.copied': 'Copied',
 };
 
 const DICTS: Record<Locale, Record<string, string>> = { zh, en };

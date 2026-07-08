@@ -807,7 +807,7 @@ function RunItemModal({ item, onClose }: RunItemModalProps) {
   );
 }
 
-function RunStatusBadge({ status }: { status: string | undefined }) {
+export function RunStatusBadge({ status }: { status: string | undefined }) {
   const { t } = useI18n();
 
   if (status === 'completed' || status === 'succeeded') {

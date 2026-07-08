@@ -34,7 +34,7 @@ class TaskORM(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[str] = mapped_column(String, unique=True, index=True)
-    name: Mapped[str] = mapped_column(String, default="")
+    name: Mapped[str] = mapped_column(String, default="", unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     current_version_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     group_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)

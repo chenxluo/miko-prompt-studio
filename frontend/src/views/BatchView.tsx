@@ -323,6 +323,8 @@ export function BatchView() {
       completed_at: null,
       summary: response.summary,
       created_at: new Date().toISOString(),
+      pipeline_id: null,
+      pipeline_step: null,
     });
     setItems([]);
     setElapsedMs(0);

@@ -508,6 +508,8 @@ export interface RunListItem {
   completed_at: string | null;
   summary: Record<string, unknown>;
   created_at: string;
+  pipeline_id: string | null;
+  pipeline_step: string | null;
 }
 
 export interface ListRunsFilters {

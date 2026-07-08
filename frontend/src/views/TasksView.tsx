@@ -32,12 +32,15 @@ import {
   updateTask,
   updateTaskGroup,
 } from '../api/client';
+import { CopyReferenceButton } from '../components/CopyReferenceButton';
 import { TaskGroupFilter } from '../components/tasks/TaskGroupFilter';
 import { TaskGroupManager } from '../components/tasks/TaskGroupManager';
 import { TaskListCard } from '../components/tasks/TaskListCard';
 import { resolveImageUrl } from '../components/lab/ImagePanel';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
+import { copyText } from '../utils/clipboard';
+import { formatTaskReference } from '../utils/reference';
 import type {
   ResultSnapshot,
   Task,
@@ -548,6 +551,7 @@ function TaskDetailDrawer({
               <>
                 <BookOpen size={16} className="text-accent" />
                 <span className="text-sm font-semibold text-ink">{task.name}</span>
+                <CopyReferenceButton reference={formatTaskReference(task)} />
               </>
             )}
           </div>
@@ -1826,32 +1830,6 @@ function formatFullDocument(
   }
 
   return lines.join('\n');
-}
-
-async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  return new Promise((resolve, reject) => {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-      if (document.execCommand('copy')) {
-        resolve();
-      } else {
-        reject(new Error('Copy failed'));
-      }
-    } catch (err) {
-      reject(err);
-    } finally {
-      document.body.removeChild(textarea);
-    }
-  });
 }
 
 function formatCsvRow(row: Record<string, string>): string {

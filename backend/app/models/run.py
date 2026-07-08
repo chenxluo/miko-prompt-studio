@@ -33,6 +33,9 @@ class RunSessionORM(Base):
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     notes: Mapped[str] = mapped_column(Text, default="")
 
+    pipeline_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    pipeline_step: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+
     created_at: Mapped[str] = mapped_column(
         String, default=lambda: utc_now().isoformat(), index=True
     )

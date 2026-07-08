@@ -115,6 +115,8 @@ async def init_db() -> None:
         await _migrate_prompt_snippets(conn)
         await _recreate_prompts_table_without_legacy_columns(conn)
         await _migrate_pricing_profiles_to_per_million_tokens(conn)
+        await _migrate_unique_names(conn)
+        await _migrate_pipeline_fields(conn)
 
 
 async def _migrate_task_groups(conn) -> None:
@@ -1107,6 +1109,9 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
     if not legacy_columns.intersection(columns):
         return
 
+    # Clean up any leftover table from a previous interrupted migration run.
+    await conn.execute(text("DROP TABLE IF EXISTS tasks_new"))
+
     await conn.execute(
         text(
             "CREATE TABLE tasks_new ("
@@ -1141,6 +1146,51 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
     await conn.execute(
         text("CREATE INDEX ix_tasks_current_version_id ON tasks (current_version_id)")
     )
+
+
+async def _migrate_unique_names(conn) -> None:
+    """Add unique indexes on task and sample-set names after checking for duplicates."""
+    result = await conn.execute(
+        text("SELECT name, COUNT(*) FROM tasks GROUP BY name HAVING COUNT(*) > 1")
+    )
+    task_duplicates = [row[0] for row in result.fetchall()]
+
+    result = await conn.execute(
+        text("SELECT name, COUNT(*) FROM sample_sets GROUP BY name HAVING COUNT(*) > 1")
+    )
+    sset_duplicates = [row[0] for row in result.fetchall()]
+
+    if task_duplicates or sset_duplicates:
+        parts = []
+        if task_duplicates:
+            names = ", ".join(str(n) for n in task_duplicates)
+            parts.append(f"duplicate task names: {names}")
+        if sset_duplicates:
+            names = ", ".join(str(n) for n in sset_duplicates)
+            parts.append(f"duplicate sample-set names: {names}")
+        raise RuntimeError(
+            "Cannot add unique name constraint; resolve duplicates first. " + "; ".join(parts)
+        )
+
+    await conn.execute(
+        text("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_name ON tasks(name)")
+    )
+    await conn.execute(
+        text("CREATE UNIQUE INDEX IF NOT EXISTS idx_sset_name ON sample_sets(name)")
+    )
+
+
+async def _migrate_pipeline_fields(conn) -> None:
+    """Add pipeline lineage columns to run_sessions for external agent chaining."""
+    result = await conn.execute(text("PRAGMA table_info(run_sessions)"))
+    columns = {row[1] for row in result.fetchall()}
+    if not columns:
+        return
+
+    if "pipeline_id" not in columns:
+        await conn.execute(text("ALTER TABLE run_sessions ADD COLUMN pipeline_id TEXT"))
+    if "pipeline_step" not in columns:
+        await conn.execute(text("ALTER TABLE run_sessions ADD COLUMN pipeline_step TEXT"))
 
 
 @asynccontextmanager

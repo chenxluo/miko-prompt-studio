@@ -16,7 +16,7 @@ class SampleSetORM(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     sample_set_id: Mapped[str] = mapped_column(String, unique=True, index=True)
-    name: Mapped[str] = mapped_column(String, default="")
+    name: Mapped[str] = mapped_column(String, default="", unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     import_source: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     record_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
