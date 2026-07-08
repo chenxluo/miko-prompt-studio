@@ -14,6 +14,7 @@ import random
 import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -319,7 +320,12 @@ class UpdateTaskPayload(BaseModel):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "1.0.0"}
+    # Read version from package metadata so it never drifts from pyproject.toml.
+    try:
+        app_version = pkg_version("miko-prompt-studio-backend")
+    except PackageNotFoundError:  # not installed (e.g. dev mode w/o install)
+        app_version = "0.0.0+dev"
+    return {"status": "ok", "version": app_version}
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,9 @@ import { ResultsView } from './views/ResultsView';
 import { AnalyticsView } from './views/AnalyticsView';
 import { useI18n } from './i18n';
 
+// Injected at build time by Vite (define) from the root package.json version.
+declare const __APP_VERSION__: string;
+
 type View = 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'pipelines' | 'results' | 'analytics' | 'snapshots' | 'cost' | 'settings';
 
 interface NavItem {
@@ -104,7 +107,7 @@ export default function App() {
         </nav>
 
         <div className="flex items-center justify-between border-t border-surface-800 px-4 py-3">
-          <span className="text-xs text-ink-dim">v1.0.0</span>
+          <span className="text-xs text-ink-dim">v{__APP_VERSION__}</span>
           <LocaleSwitch />
         </div>
       </aside>
