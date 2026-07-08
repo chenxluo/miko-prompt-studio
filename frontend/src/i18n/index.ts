@@ -572,6 +572,11 @@ const zh: Record<string, string> = {
   'pipelines.step': '步骤 {n}',
   'pipelines.sampleCount': '{count} 样本',
   'pipelines.viewRun': '查看运行',
+  'pipelines.deleteRun': '删除运行',
+  'pipelines.deleteRunConfirm': '删除此运行？',
+  'pipelines.deletePipeline': '删除工作流',
+  'pipelines.deletePipelineConfirm': '删除工作流 "{id}" 及其中 {count} 条运行？',
+  'pipelines.deletePipelinePartial': '已删除 {succeeded} / {total} 条运行，{failed} 条可能仍存在。错误：{message}',
 
   // Settings
   'settings.providerConfigs': '提供商配置',
@@ -1351,6 +1356,11 @@ const en: Record<string, string> = {
   'pipelines.step': 'Step {n}',
   'pipelines.sampleCount': '{count} samples',
   'pipelines.viewRun': 'View run',
+  'pipelines.deleteRun': 'Delete run',
+  'pipelines.deleteRunConfirm': 'Delete this run?',
+  'pipelines.deletePipeline': 'Delete pipeline',
+  'pipelines.deletePipelineConfirm': 'Delete pipeline "{id}" and all {count} run(s) in it?',
+  'pipelines.deletePipelinePartial': 'Deleted {succeeded} of {total} runs; {failed} may still exist. Error: {message}',
 
   // Settings
   'settings.providerConfigs': 'Provider Configs',

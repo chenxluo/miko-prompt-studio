@@ -1,4 +1,4 @@
-import { AlertCircle, Eye, Loader2, Search, Workflow } from 'lucide-react';
+import { AlertCircle, Eye, Loader2, Search, Trash, Trash2, Workflow } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import * as api from '../api/client';
@@ -26,6 +26,8 @@ export function PipelineView() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
+  const [deletingPipelineId, setDeletingPipelineId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +63,59 @@ export function PipelineView() {
     window.dispatchEvent(
       new CustomEvent('miko:navigate', { detail: { view: 'results', runId } }),
     );
+  }
+
+  async function handleDeleteRun(runId: string) {
+    if (!window.confirm(t('pipelines.deleteRunConfirm'))) return;
+    setDeletingRunId(runId);
+    setError(null);
+    try {
+      await api.deleteRun(runId);
+      setRuns((current) => current.filter((run) => run.run_id !== runId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('runs.deleteFailed'));
+    } finally {
+      setDeletingRunId(null);
+    }
+  }
+
+  async function handleDeletePipeline(group: PipelineGroup) {
+    if (
+      !window.confirm(
+        t('pipelines.deletePipelineConfirm', {
+          id: group.pipelineId,
+          count: group.runs.length,
+        }),
+      )
+    )
+      return;
+    setDeletingPipelineId(group.pipelineId);
+    setError(null);
+    const deletedIds: string[] = [];
+    try {
+      for (const run of group.runs) {
+        await api.deleteRun(run.run_id);
+        deletedIds.push(run.run_id);
+      }
+    } catch (err) {
+      const succeeded = deletedIds.length;
+      const total = group.runs.length;
+      const failed = total - succeeded;
+      const baseMessage = err instanceof Error ? err.message : t('runs.deleteFailed');
+      setError(
+        t('pipelines.deletePipelinePartial', {
+          succeeded,
+          failed,
+          total,
+          message: baseMessage,
+        }),
+      );
+    } finally {
+      if (deletedIds.length > 0) {
+        setRuns((current) => current.filter((run) => !deletedIds.includes(run.run_id)));
+      }
+      setDeletingPipelineId(null);
+    }
   }
 
   return (
@@ -116,6 +171,10 @@ export function PipelineView() {
                 key={group.pipelineId}
                 group={group}
                 onViewRun={handleViewRun}
+                onDeleteRun={handleDeleteRun}
+                onDeletePipeline={handleDeletePipeline}
+                deletingRunId={deletingRunId}
+                deletingPipelineId={deletingPipelineId}
               />
             ))}
           </div>
@@ -128,13 +187,22 @@ export function PipelineView() {
 function PipelineCard({
   group,
   onViewRun,
+  onDeleteRun,
+  onDeletePipeline,
+  deletingRunId,
+  deletingPipelineId,
 }: {
   group: PipelineGroup;
   onViewRun: (runId: string) => void;
+  onDeleteRun: (runId: string) => void;
+  onDeletePipeline: (group: PipelineGroup) => void;
+  deletingRunId: string | null;
+  deletingPipelineId: string | null;
 }) {
   const { t } = useI18n();
   const firstAt = group.firstAt ? new Date(group.firstAt).toLocaleString() : '—';
   const lastAt = group.lastAt ? new Date(group.lastAt).toLocaleString() : '—';
+  const isDeletingPipeline = deletingPipelineId === group.pipelineId;
 
   return (
     <article className="panel p-4">
@@ -148,10 +216,27 @@ function PipelineCard({
             {t('pipelines.runCount', { count: group.runs.length })} · {firstAt} → {lastAt}
           </div>
         </div>
-        <div className="shrink-0 text-left md:text-right">
-          <div className="text-xs text-ink-dim">{t('pipelines.totalCost')}</div>
-          <div className="text-sm font-semibold text-cost">
-            {group.currency} {group.totalCost.toFixed(6)}
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onDeletePipeline(group)}
+            disabled={isDeletingPipeline}
+            className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-2.5 py-1.5 text-xs text-ink-muted transition-colors hover:border-danger/50 hover:text-danger disabled:opacity-50"
+            title={t('pipelines.deletePipeline')}
+            aria-label={t('pipelines.deletePipeline')}
+          >
+            {isDeletingPipeline ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Trash size={14} />
+            )}
+            {t('pipelines.deletePipeline')}
+          </button>
+          <div className="text-left md:text-right">
+            <div className="text-xs text-ink-dim">{t('pipelines.totalCost')}</div>
+            <div className="text-sm font-semibold text-cost">
+              {group.currency} {group.totalCost.toFixed(6)}
+            </div>
           </div>
         </div>
       </div>
@@ -164,6 +249,8 @@ function PipelineCard({
             index={index}
             isLast={index === group.runs.length - 1}
             onView={onViewRun}
+            onDelete={onDeleteRun}
+            isDeleting={deletingRunId === run.run_id}
           />
         ))}
       </div>
@@ -176,11 +263,15 @@ function PipelineStepRow({
   index,
   isLast,
   onView,
+  onDelete,
+  isDeleting,
 }: {
   run: api.RunListItem;
   index: number;
   isLast: boolean;
   onView: (runId: string) => void;
+  onDelete: (runId: string) => void;
+  isDeleting: boolean;
 }) {
   const { t } = useI18n();
   const summary = run.summary || {};
@@ -221,6 +312,19 @@ function PipelineStepRow({
           </div>
           <div className="text-[10px] text-ink-dim">{createdAt}</div>
         </div>
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onDelete(run.run_id);
+        }}
+        disabled={isDeleting}
+        className="mb-3 ml-2 inline-flex items-center justify-center self-center rounded-md p-1.5 text-ink-dim opacity-0 transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50 group-hover:opacity-100"
+        title={t('pipelines.deleteRun')}
+        aria-label={t('pipelines.deleteRun')}
+      >
+        {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
       </button>
       <button
         type="button"
