@@ -74,6 +74,46 @@ def test_create_list_get_update_version_and_delete_task(client: TestClient) -> N
     assert client.get(f"/api/tasks/{task['task_id']}").status_code == 404
 
 
+def test_task_language_family_metadata_round_trip_and_clear(client: TestClient) -> None:
+    provider_config_id = _provider(client)
+    base = client.post(
+        "/api/tasks",
+        json={
+            "name": "Caption ZH",
+            "language": "zh-CN",
+            "version": _version(provider_config_id),
+        },
+    ).json()
+
+    translated = client.post(
+        "/api/tasks",
+        json={
+            "name": "Caption EN",
+            "family_id": base["task_id"],
+            "language": "en-US",
+            "translated_from_version_id": base["current_version_id"],
+            "version": _version(provider_config_id),
+        },
+    )
+    assert translated.status_code == 200, translated.text
+    body = translated.json()
+    assert body["family_id"] == base["task_id"]
+    assert body["language"] == "en-US"
+    assert body["translated_from_version_id"] == base["current_version_id"]
+
+    listed = client.get("/api/tasks").json()
+    assert next(item for item in listed if item["task_id"] == body["task_id"])["language"] == "en-US"
+
+    cleared = client.put(
+        f"/api/tasks/{body['task_id']}",
+        json={"family_id": None, "language": None, "translated_from_version_id": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert "family_id" not in cleared.json()
+    assert "language" not in cleared.json()
+    assert "translated_from_version_id" not in cleared.json()
+
+
 def test_task_version_cost_stats_aggregates_completed_run_items(client: TestClient) -> None:
     provider_config_id = _provider(client)
     created = client.post(

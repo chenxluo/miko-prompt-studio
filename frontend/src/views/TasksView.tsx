@@ -253,6 +253,7 @@ export function TasksView() {
                 onDelete={() => void handleDelete(task)}
                 onLoad={() => void handleLoad(task, task.current_version ?? undefined)}
                 onMoveGroup={(groupId) => void handleMoveTask(task, groupId)}
+                translationDrift={isTranslationDrifted(task, tasks)}
               />
             ))}
           </div>
@@ -266,6 +267,7 @@ export function TasksView() {
           isLoading={isDetailLoading}
           providerNames={providerNames}
           groups={groups}
+          allTasks={tasks}
           onClose={() => setSelectedTask(null)}
           onLoad={(version) => void handleLoad(selectedTask, version)}
           onDelete={() => void handleDelete(selectedTask)}
@@ -278,6 +280,12 @@ export function TasksView() {
             getTask(selectedTask.task_id)
               .then(setDetail)
               .catch((err) => setError(err instanceof Error ? err.message : t('task.detailFailed')));
+          }}
+          onMetadataUpdated={(updated) => {
+            setSelectedTask(updated);
+            setTasks((current) =>
+              current.map((item) => (item.task_id === updated.task_id ? updated : item)),
+            );
           }}
         />
       )}
@@ -299,6 +307,15 @@ export function TasksView() {
   );
 }
 
+function isTranslationDrifted(task: Task, tasks: Task[]): boolean {
+  if (!task.family_id || !task.translated_from_version_id) return false;
+  const familyRoot = tasks.find((candidate) => candidate.task_id === task.family_id);
+  return Boolean(
+    familyRoot?.current_version_id &&
+      familyRoot.current_version_id !== task.translated_from_version_id,
+  );
+}
+
 
 function TaskDetailDrawer({
   task,
@@ -306,24 +323,28 @@ function TaskDetailDrawer({
   isLoading,
   providerNames,
   groups,
+  allTasks,
   onClose,
   onLoad,
   onDelete,
   onForkNavigate,
   onMoveGroup,
   onVersionDeleted,
+  onMetadataUpdated,
 }: {
   task: Task;
   detail: (Task & { versions: TaskVersion[] }) | null;
   isLoading: boolean;
   providerNames: Map<string, string>;
   groups: TaskGroup[];
+  allTasks: Task[];
   onClose: () => void;
   onLoad: (version: TaskVersion) => void;
   onDelete: () => void;
   onForkNavigate: (task: Task) => void;
   onMoveGroup: (groupId: string | null) => void;
   onVersionDeleted: () => void;
+  onMetadataUpdated: (task: Task) => void;
 }) {
   const { t } = useI18n();
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
@@ -345,6 +366,10 @@ function TaskDetailDrawer({
   const [versionDeleteError, setVersionDeleteError] = useState<string | null>(null);
   const [isExportingDoc, setIsExportingDoc] = useState(false);
   const [exportDocError, setExportDocError] = useState<string | null>(null);
+  const [language, setLanguage] = useState(task.language ?? '');
+  const [familyTaskId, setFamilyTaskId] = useState(task.family_id ?? '');
+  const [isSavingLanguage, setIsSavingLanguage] = useState(false);
+  const [languageError, setLanguageError] = useState<string | null>(null);
 
   const versions = detail?.versions ?? [];
   const selectedVersion =
@@ -373,7 +398,31 @@ function TaskDetailDrawer({
     setDeletingVersionId(null);
     setShowMoveMenu(false);
     setVersionDeleteError(null);
+    setLanguage(task.language ?? '');
+    setFamilyTaskId(task.family_id ?? '');
+    setLanguageError(null);
   }, [task]);
+
+  async function handleSaveLanguageMetadata() {
+    setIsSavingLanguage(true);
+    setLanguageError(null);
+    try {
+      const familyTask = allTasks.find((candidate) => candidate.task_id === familyTaskId);
+      const familyRoot = familyTask?.family_id
+        ? allTasks.find((candidate) => candidate.task_id === familyTask.family_id) ?? familyTask
+        : familyTask;
+      const updated = await updateTask(task.task_id, {
+        language: language.trim() || null,
+        family_id: familyRoot?.task_id ?? null,
+        translated_from_version_id: familyRoot?.current_version_id ?? null,
+      });
+      onMetadataUpdated(updated);
+    } catch (err) {
+      setLanguageError(err instanceof Error ? err.message : t('task.saveFailed'));
+    } finally {
+      setIsSavingLanguage(false);
+    }
+  }
 
   async function handleSelectVersion(version: TaskVersion) {
     setSelectedVersionId(version.task_version_id);
@@ -630,6 +679,45 @@ function TaskDetailDrawer({
         <div className="min-h-0 flex-1 space-y-6 overflow-auto p-4">
           {viewLevel === 'task' ? (
             <>
+              <section className="space-y-2 rounded-md border border-surface-800 bg-surface-950 p-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
+                  {t('task.translationFamily')}
+                </h3>
+                <div className="grid gap-2 sm:grid-cols-[10rem_1fr_auto]">
+                  <input
+                    value={language}
+                    onChange={(event) => setLanguage(event.target.value)}
+                    placeholder="zh-CN / en / ja"
+                    className="input text-xs"
+                    aria-label={t('task.language')}
+                  />
+                  <select
+                    value={familyTaskId}
+                    onChange={(event) => setFamilyTaskId(event.target.value)}
+                    className="input text-xs"
+                    aria-label={t('task.translationBase')}
+                  >
+                    <option value="">{t('task.noTranslationFamily')}</option>
+                    {allTasks
+                      .filter((candidate) => candidate.task_id !== task.task_id)
+                      .map((candidate) => (
+                        <option key={candidate.task_id} value={candidate.task_id}>
+                          {candidate.name}{candidate.language ? ` · ${candidate.language}` : ''}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveLanguageMetadata()}
+                    disabled={isSavingLanguage}
+                    className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
+                  >
+                    {isSavingLanguage ? <Loader2 size={12} className="animate-spin" /> : t('common.save')}
+                  </button>
+                </div>
+                {languageError && <p className="text-xs text-danger">{languageError}</p>}
+              </section>
+
               {task.description && <p className="text-xs text-ink-muted">{task.description}</p>}
 
               {task.tags && task.tags.length > 0 && (

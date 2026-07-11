@@ -95,6 +95,9 @@ class Task(TimestampedModel):
     description: str = ""
     current_version_id: str | None = None
     group_id: str | None = None
+    family_id: str | None = None
+    language: str | None = None
+    translated_from_version_id: str | None = None
     tags: list[str] = Field(default_factory=list)
     current_version: TaskVersion | None = None
     versions: list[TaskVersion] | None = None

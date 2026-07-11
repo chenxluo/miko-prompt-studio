@@ -15,6 +15,7 @@ export interface TaskListCardProps {
   onDelete: () => void;
   onLoad: () => void;
   onMoveGroup: (groupId: string | null) => void;
+  translationDrift?: boolean;
 }
 
 export function TaskListCard({
@@ -26,6 +27,7 @@ export function TaskListCard({
   onDelete,
   onLoad,
   onMoveGroup,
+  translationDrift = false,
 }: TaskListCardProps) {
   const { t } = useI18n();
   const [showMoveMenu, setShowMoveMenu] = useState(false);
@@ -54,6 +56,27 @@ export function TaskListCard({
             {versionLabel && versionLabel !== '—' && (
               <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-ink-muted">
                 {versionLabel}
+              </span>
+            )}
+            {task.language && (
+              <span
+                className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent"
+                title={t('task.language')}
+              >
+                {task.language}
+              </span>
+            )}
+            {task.family_id && (
+              <span
+                className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-300"
+                title={task.family_id}
+              >
+                {t('task.translationSibling')}
+              </span>
+            )}
+            {translationDrift && (
+              <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">
+                {t('task.translationDrift')}
               </span>
             )}
             {currentGroup && (

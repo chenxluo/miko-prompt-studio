@@ -232,6 +232,9 @@ export interface Task extends Timestamps {
   description?: string;
   current_version_id?: string | null;
   group_id?: string | null;
+  family_id?: string | null;
+  language?: string | null;
+  translated_from_version_id?: string | null;
   tags?: string[];
   current_version?: TaskVersion | null;
 
@@ -662,6 +665,37 @@ export interface RunItemSummary extends Timestamps {
   model_id: string | null;
   estimated_cost: number;
   compare_axes?: CompareAxes | null;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-run compare
+// ---------------------------------------------------------------------------
+
+export interface CrossRunColumn {
+  run_id: string;
+  run_type: string;
+  name: string;
+  task_name: string;
+  task_version_label: string;
+  model_id: string;
+  item_count: number;
+  task_id?: string | null;
+  family_id?: string | null;
+  language?: string | null;
+  translated_from_version_id?: string | null;
+  translation_drift?: boolean;
+}
+
+export interface CrossRunResponse {
+  columns: CrossRunColumn[];
+  rows: CrossRunRow[];
+  sample_count: number;
+  total_per_run: Record<string, number>;
+}
+
+export interface CrossRunRow {
+  sample_id: string;
+  items: Record<string, RunItemSummary>;  // run_id → item
 }
 
 // ---------------------------------------------------------------------------

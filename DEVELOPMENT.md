@@ -203,6 +203,7 @@ run_executor.execute_lab_run()
 | GET | `/api/runs` | 列出运行历史 |
 | GET | `/api/runs/{id}` | 获取运行详情（含 run items） |
 | GET | `/api/runs/{id}/items/{item_id}` | 获取单个 run item |
+| POST | `/api/compare/cross-run` | 按共同 `sample_id` 对齐 2–4 个已完成 run，返回轻量 Diff 矩阵 |
 | PATCH | `/api/runs/{id}/items/{item_id}/review` | 更新人工 review（accepted/rating/notes/labels）；null/空值可清除字段，labels 通过 JSON 赋值持久化 |
 | POST | `/api/analytics/review-summary` | 跨运行审阅统计聚合（按 variant/model/provider 分组：通过率、平均评分、评分分布、accepted/rejected/undecided 计数） |
 | GET | `/api/samples` | 列出样本 |

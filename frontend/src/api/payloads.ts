@@ -59,6 +59,9 @@ export interface CreateTaskPayload {
   description?: string;
   tags?: string[];
   group_id?: string | null;
+  family_id?: string | null;
+  language?: string | null;
+  translated_from_version_id?: string | null;
   version: CreateTaskVersionPayload;
 }
 
@@ -68,6 +71,9 @@ export interface UpdateTaskPayload {
   tags?: string[];
   current_version_id?: string | null;
   group_id?: string | null;
+  family_id?: string | null;
+  language?: string | null;
+  translated_from_version_id?: string | null;
 }
 
 export interface CreateResultSnapshotPayload {

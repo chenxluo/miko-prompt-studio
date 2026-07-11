@@ -106,6 +106,7 @@ async def init_db() -> None:
         await _migrate_task_image_resolution_columns(conn)
         await _migrate_tasks_to_versions(conn)
         await _recreate_tasks_table_without_legacy_columns(conn)
+        await _migrate_task_language_family_columns(conn)
         await _migrate_result_snapshot_full_snapshot_columns(conn)
         await _migrate_snapshot_linked_task_version(conn)
         await _migrate_prompt_version_library_columns(conn)
@@ -148,6 +149,18 @@ async def _migrate_task_groups(conn) -> None:
         await conn.execute(text("ALTER TABLE tasks ADD COLUMN updated_at VARCHAR"))
         await conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_tasks_updated_at ON tasks (updated_at)")
+        )
+
+
+async def _migrate_task_language_family_columns(conn) -> None:
+    """Add task-per-language relationship metadata to existing databases."""
+    result = await conn.execute(text("PRAGMA table_info(tasks)"))
+    columns = {row[1] for row in result.fetchall()}
+    for column in ("family_id", "language", "translated_from_version_id"):
+        if column not in columns:
+            await conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {column} VARCHAR"))
+        await conn.execute(
+            text(f"CREATE INDEX IF NOT EXISTS ix_tasks_{column} ON tasks ({column})")
         )
 
 

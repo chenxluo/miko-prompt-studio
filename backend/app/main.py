@@ -210,6 +210,12 @@ class CompareRunPayload(BaseModel):
     name: str = ""
 
 
+class CrossRunComparePayload(BaseModel):
+    """Payload for POST /api/compare/cross-run."""
+
+    run_ids: list[str] = Field(..., min_length=2, max_length=4)
+
+
 class CreateModelConfigPayload(BaseModel):
     name: str
     provider_id: str
@@ -298,6 +304,9 @@ class CreateTaskPayload(BaseModel):
     description: str = ""
     tags: list[str] = Field(default_factory=list)
     group_id: str | None = None
+    family_id: str | None = None
+    language: str | None = None
+    translated_from_version_id: str | None = None
     version: TaskVersionDataSchema
 
 
@@ -311,6 +320,9 @@ class UpdateTaskPayload(BaseModel):
     tags: list[str] | None = None
     current_version_id: str | None = None
     group_id: str | None = None
+    family_id: str | None = None
+    language: str | None = None
+    translated_from_version_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -960,6 +972,156 @@ def _compare_matrix(items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+@app.post("/api/compare/cross-run")
+async def cross_run_compare(
+    payload: CrossRunComparePayload, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """Compare multiple runs by aligning their RunItems on ``sample_id``.
+
+    Returns a column for every requested run and one row per sample that
+    appears in **all** runs.  Each row contains a slim RunItem summary for
+    the run/sample pair, suitable for a diff-style UI.
+    """
+    run_ids = payload.run_ids
+
+    # 1. Validate that every run exists.
+    sessions: dict[str, RunSessionORM] = {}
+    for run_id in run_ids:
+        result = await db.execute(
+            select(RunSessionORM).where(RunSessionORM.run_id == run_id)
+        )
+        session = result.scalar_one_or_none()
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+        sessions[run_id] = session
+
+    # 2. Load items per run and require every run to be non-empty.
+    items_by_run: dict[str, dict[str, RunItemORM]] = {}
+    total_per_run: dict[str, int] = {}
+    for run_id in run_ids:
+        result = await db.execute(
+            select(RunItemORM).where(RunItemORM.run_id == run_id)
+        )
+        run_items = list(result.scalars().all())
+        if not run_items:
+            raise HTTPException(
+                status_code=400, detail=f"Run has no items: {run_id}"
+            )
+        sample_ids = [item.sample_id for item in run_items]
+        if len(sample_ids) != len(set(sample_ids)):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Run contains multiple items for the same sample: {run_id}. "
+                    "Choose batch or lab runs rather than a compare run."
+                ),
+            )
+        items_by_run[run_id] = {item.sample_id: item for item in run_items}
+        total_per_run[run_id] = len(run_items)
+
+    # 3. Build column metadata in the order requested by the client.
+    columns: list[dict[str, Any]] = []
+    for run_id in run_ids:
+        session = sessions[run_id]
+        source = session.source or {}
+        run_type = session.run_type
+
+        # Pick the representative task_version_id for this run.
+        task_version_id: str | None = None
+        if run_type == RunType.COMPARE.value:
+            variants = source.get("variants") or []
+            if variants:
+                task_version_id = variants[0].get("task_version_id")
+        else:
+            task_version_id = source.get("task_version_id")
+
+        task_version_label = ""
+        task_row: TaskORM | None = None
+        if task_version_id:
+            version_result = await db.execute(
+                select(TaskVersionORM).where(
+                    TaskVersionORM.task_version_id == task_version_id
+                )
+            )
+            version_row = version_result.scalar_one_or_none()
+            task_version_label = version_row.version_label if version_row else task_version_id[:8]
+            if version_row:
+                task_result = await db.execute(
+                    select(TaskORM).where(TaskORM.task_id == version_row.task_id)
+                )
+                task_row = task_result.scalar_one_or_none()
+
+        # task_name is best-effort from the source; fall back to run metadata.
+        task_name = task_row.name if task_row else source.get("task_id") or session.name or run_id[:8]
+        translation_drift = False
+        if task_row and task_row.family_id and task_row.translated_from_version_id:
+            family_result = await db.execute(
+                select(TaskORM.current_version_id).where(
+                    TaskORM.task_id == task_row.family_id
+                )
+            )
+            family_current_version_id = family_result.scalar_one_or_none()
+            translation_drift = bool(
+                family_current_version_id
+                and family_current_version_id != task_row.translated_from_version_id
+            )
+
+        # model_id comes from the first item's model config snapshot, or from source.
+        first_item = next(iter(items_by_run[run_id].values()))
+        model_id = ""
+        model_config = first_item.model_config_snapshot or {}
+        if isinstance(model_config, dict):
+            model_id = model_config.get("model_id") or ""
+        if not model_id:
+            if run_type == RunType.COMPARE.value:
+                variants = source.get("variants") or []
+                if variants:
+                    model_id = variants[0].get("model_id") or ""
+            else:
+                model_id = source.get("model_id") or ""
+
+        columns.append(
+            {
+                "run_id": run_id,
+                "run_type": run_type,
+                "name": session.name,
+                "task_name": task_name,
+                "task_version_label": task_version_label,
+                "model_id": model_id,
+                "item_count": total_per_run[run_id],
+                "task_id": task_row.task_id if task_row else source.get("task_id"),
+                "family_id": task_row.family_id if task_row else None,
+                "language": task_row.language if task_row else None,
+                "translated_from_version_id": (
+                    task_row.translated_from_version_id if task_row else None
+                ),
+                "translation_drift": translation_drift,
+            }
+        )
+
+    # 4. Compute the intersection of sample_ids across all runs.
+    common_sample_ids = set.intersection(
+        *(set(sample_map.keys()) for sample_map in items_by_run.values())
+    )
+    sorted_sample_ids = sorted(common_sample_ids)
+
+    # 5. Build rows with one slim item summary per run.
+    rows: list[dict[str, Any]] = []
+    for sample_id in sorted_sample_ids:
+        items: dict[str, dict[str, Any]] = {
+            run_id: _run_item_cross_run_summary(items_by_run[run_id][sample_id])
+            for run_id in run_ids
+        }
+        rows.append({"sample_id": sample_id, "items": items})
+
+    return {
+        "columns": columns,
+        "rows": rows,
+        "sample_count": len(sorted_sample_ids),
+        "total_per_run": total_per_run,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
@@ -1012,6 +1174,10 @@ def _task_to_schema(
         description=row.description or "",
         current_version_id=row.current_version_id,
         group_id=row.group_id,
+        family_id=row.family_id,
+        language=row.language,
+        translated_from_version_id=row.translated_from_version_id,
+        tags=row.tags or [],
         current_version=_task_version_to_schema(current_version) if current_version else None,
         versions=(
             [_task_version_to_schema(version) for version in versions]
@@ -1140,6 +1306,9 @@ async def create_task(payload: CreateTaskPayload, db: AsyncSession = Depends(get
         description=payload.description,
         tags=payload.tags,
         group_id=payload.group_id,
+        family_id=payload.family_id,
+        language=payload.language,
+        translated_from_version_id=payload.translated_from_version_id,
     )
     db.add(row)
     await db.flush()
@@ -1395,6 +1564,12 @@ async def update_task(task_id: str, payload: UpdateTaskPayload, db: AsyncSession
             if group.scalar_one_or_none() is None:
                 raise HTTPException(404, f"Task group '{payload.group_id}' not found")
         row.group_id = payload.group_id if payload.group_id else None
+    if "family_id" in payload.model_fields_set:
+        row.family_id = payload.family_id or None
+    if "language" in payload.model_fields_set:
+        row.language = payload.language.strip() or None if payload.language else None
+    if "translated_from_version_id" in payload.model_fields_set:
+        row.translated_from_version_id = payload.translated_from_version_id or None
     row.updated_at = utc_now().isoformat()
     await db.commit()
     current = await _current_task_version(row, db)
@@ -1687,6 +1862,30 @@ def _run_item_to_dict(item: RunItemORM) -> dict[str, Any]:
         "rating": item.rating,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
+    }
+
+
+def _run_item_cross_run_summary(item: RunItemORM) -> dict[str, Any]:
+    """Slim RunItem serialization used by the cross-run comparison matrix.
+
+    Keeps only image references from ``internal_request_snapshot`` so the
+    diff UI can show the shared input without returning embedded request data.
+    """
+    return {
+        "run_item_id": item.run_item_id,
+        "run_id": item.run_id,
+        "sample_id": item.sample_id,
+        "status": item.status,
+        "internal_request_snapshot": {
+            "images": (item.internal_request_snapshot or {}).get("images", [])
+        },
+        "response": item.response,
+        "prompt_snapshot": item.prompt_snapshot,
+        "model_config_snapshot": item.model_config_snapshot,
+        "output_contract_snapshot": item.output_contract_snapshot,
+        "estimated_cost": item.estimated_cost,
+        "latency_ms": item.latency_ms,
+        "compare_axes": item.compare_axes,
     }
 
 

@@ -4,6 +4,7 @@ import type {
   ApiErrorBody,
   CompareRunCreationResponse,
   CreateCompareRunPayload,
+  CrossRunResponse,
   ImageSlotSpec,
   ModelConfig,
   PricingProfile,
@@ -705,6 +706,7 @@ export interface CreateBatchRunPayload {
   sample_set_id: string;
   task_version_id?: string | null;
   limit?: number | null;
+  limit_strategy?: 'first' | 'random';
   max_concurrency?: number;
   max_retries?: number;
   variable_mapping?: Record<string, string>;
@@ -782,6 +784,32 @@ export async function cancelCompareRun(runId: string): Promise<{ cancelled: bool
     'POST',
     `/api/compare-runs/${encodeURIComponent(runId)}/cancel`,
   );
+}
+
+export async function compareCrossRun(runIds: string[]): Promise<CrossRunResponse> {
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+  const res = await fetch(`${baseUrl}/api/compare/cross-run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ run_ids: runIds }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `compare cross-run failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function listCompletedRuns(): Promise<RunListItem[]> {
+  const [completed, partial] = await Promise.all([
+    listRuns({ status: 'completed', limit: 200 }),
+    listRuns({ status: 'completed_with_errors', limit: 200 }),
+  ]);
+  return [...completed.runs, ...partial.runs]
+    .filter((run) => run.run_type !== 'compare')
+    .sort((a, b) =>
+      (b.completed_at ?? b.created_at).localeCompare(a.completed_at ?? a.created_at),
+    );
 }
 
 // ---------------------------------------------------------------------------

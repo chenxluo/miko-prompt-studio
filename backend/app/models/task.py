@@ -38,6 +38,11 @@ class TaskORM(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     current_version_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     group_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    family_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    language: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    translated_from_version_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[str] = mapped_column(String, default=lambda: utc_now().isoformat())
     updated_at: Mapped[str] = mapped_column(
