@@ -5,6 +5,7 @@ import {
   Eye,
   FileImage,
   FileText,
+  GitCompare,
   Layers,
   ListChecks,
   Settings,
@@ -26,13 +27,14 @@ import { RunsView } from './views/RunsView';
 import { PipelineView } from './views/PipelineView';
 import { CostView } from './views/CostView';
 import { ResultsView } from './views/ResultsView';
+import { CompareResultsView } from './views/CompareResultsView';
 import { AnalyticsView } from './views/AnalyticsView';
 import { useI18n } from './i18n';
 
 // Injected at build time by Vite (define) from the root package.json version.
 declare const __APP_VERSION__: string;
 
-type View = 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'pipelines' | 'results' | 'analytics' | 'snapshots' | 'cost' | 'settings';
+type View = 'lab' | 'tasks' | 'prompts' | 'samples' | 'runs' | 'pipelines' | 'results' | 'compareResults' | 'analytics' | 'snapshots' | 'cost' | 'settings';
 
 interface NavItem {
   id: View;
@@ -48,6 +50,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'runs', labelKey: 'nav.runs', icon: Layers },
   { id: 'pipelines', labelKey: 'nav.pipelines', icon: Workflow },
   { id: 'results', labelKey: 'nav.results', icon: Eye },
+  { id: 'compareResults', labelKey: 'nav.compareResults', icon: GitCompare },
   { id: 'analytics', labelKey: 'nav.analytics', icon: BarChart3 },
   { id: 'snapshots', labelKey: 'nav.snapshots', icon: Bookmark },
   { id: 'cost', labelKey: 'nav.cost', icon: Calculator },
@@ -57,6 +60,7 @@ const NAV_ITEMS: NavItem[] = [
 export default function App() {
   const [activeView, setActiveView] = useState<View>('lab');
   const [resultsRunId, setResultsRunId] = useState<string | null>(null);
+  const [compareResultsRunId, setCompareResultsRunId] = useState<string | null>(null);
   const { t } = useI18n();
 
   useEffect(() => {
@@ -72,6 +76,9 @@ export default function App() {
         }
         if (detail.view === 'results' && detail.runId) {
           setResultsRunId(detail.runId);
+        }
+        if (detail.view === 'compareResults' && detail.runId) {
+          setCompareResultsRunId(detail.runId);
         }
       }
     };
@@ -120,6 +127,7 @@ export default function App() {
         {activeView === 'runs' && <RunsView />}
         {activeView === 'pipelines' && <PipelineView />}
         {activeView === 'results' && <ResultsView initialRunId={resultsRunId} />}
+        {activeView === 'compareResults' && <CompareResultsView initialRunId={compareResultsRunId} />}
         {activeView === 'analytics' && <AnalyticsView />}
         {activeView === 'snapshots' && <SnapshotsView />}
         {activeView === 'cost' && <CostView />}

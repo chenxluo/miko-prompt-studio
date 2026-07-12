@@ -26,12 +26,20 @@ import { resolveImageSrc } from '../components/lab/ImagePanel';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
 import { MappingPanel } from '../components/batch/MappingPanel';
+import {
+  RunExecutionControls,
+  type RunConcurrency,
+  type RunLimit,
+  type RunLimitStrategy,
+  type RunRetries,
+} from '../components/runs/RunExecutionControls';
 import type { ImageRef, ImageSlotSpec, RequestImage, RunItemSummary, Task, TaskVersion, VariableSpec } from '../types';
 
 type Phase = 'setup' | 'running' | 'results';
-type LimitOption = 10 | 50 | 'all';
-type ConcurrencyOption = 1 | 2 | 4 | 8;
-type RetryOption = 0 | 1 | 3;
+type LimitOption = RunLimit;
+type LimitStrategyOption = RunLimitStrategy;
+type ConcurrencyOption = RunConcurrency;
+type RetryOption = RunRetries;
 
 const POLL_INTERVAL_MS = 2000;
 const TERMINAL_STATES = new Set([
@@ -65,8 +73,10 @@ export function BatchView() {
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [limit, setLimit] = useState<LimitOption>(10);
+  const [limitStrategy, setLimitStrategy] = useState<LimitStrategyOption>('first');
   const [concurrency, setConcurrency] = useState<ConcurrencyOption>(1);
   const [maxRetries, setMaxRetries] = useState<RetryOption>(0);
+  const [runName, setRunName] = useState('');
   const [selectedSetId, setSelectedSetId] = useState<string>('');
   const [sampleRecords, setSampleRecords] = useState<api.SampleListItem[]>([]);
   const [variableMapping, setVariableMapping] = useState<Record<string, string>>({});
@@ -305,8 +315,10 @@ export function BatchView() {
       sample_set_id: selectedSetId,
       task_version_id: selectedVersion?.task_version_id ?? selectedTask?.current_version_id ?? null,
       limit: limit === 'all' ? null : limit,
+      limit_strategy: limit === 'all' ? undefined : limitStrategy,
       max_concurrency: concurrency,
       max_retries: maxRetries,
+      name: runName.trim(),
       variable_mapping: variableMappingPayload,
       image_role_mapping: imageRoleMappingPayload,
     };
@@ -453,10 +465,14 @@ export function BatchView() {
             onSelectSet={setSelectedSetId}
             limit={limit}
             onChangeLimit={setLimit}
+            limitStrategy={limitStrategy}
+            onChangeLimitStrategy={setLimitStrategy}
             concurrency={concurrency}
             onChangeConcurrency={setConcurrency}
             maxRetries={maxRetries}
             onChangeMaxRetries={setMaxRetries}
+            runName={runName}
+            onChangeRunName={setRunName}
             providerNames={providerNames}
             selectedSetName={selectedSetName}
             variableSpecs={selectedVersion?.variable_specs ?? []}
@@ -523,10 +539,14 @@ interface SetupPanelProps {
   onSelectSet: (id: string) => void;
   limit: LimitOption;
   onChangeLimit: (value: LimitOption) => void;
+  limitStrategy: LimitStrategyOption;
+  onChangeLimitStrategy: (value: LimitStrategyOption) => void;
   concurrency: ConcurrencyOption;
   onChangeConcurrency: (value: ConcurrencyOption) => void;
   maxRetries: RetryOption;
   onChangeMaxRetries: (value: RetryOption) => void;
+  runName: string;
+  onChangeRunName: (value: string) => void;
   providerNames: Map<string, string>;
   selectedSetName?: string;
   variableSpecs: VariableSpec[];
@@ -557,10 +577,14 @@ function SetupPanel({
   onSelectSet,
   limit,
   onChangeLimit,
+  limitStrategy,
+  onChangeLimitStrategy,
   concurrency,
   onChangeConcurrency,
   maxRetries,
   onChangeMaxRetries,
+  runName,
+  onChangeRunName,
   providerNames,
   selectedSetName,
   variableSpecs,
@@ -576,15 +600,6 @@ function SetupPanel({
   canStart,
 }: SetupPanelProps) {
   const { t } = useI18n();
-
-  const limitOptions: { value: LimitOption; labelKey: string }[] = [
-    { value: 10, labelKey: 'batch.limit10' },
-    { value: 50, labelKey: 'batch.limit50' },
-    { value: 'all', labelKey: 'batch.limitAll' },
-  ];
-
-  const concurrencyOptions: ConcurrencyOption[] = [1, 2, 4, 8];
-  const retryOptions: RetryOption[] = [0, 1, 3];
 
   const selectedTask = tasks.find((task) => task.task_id === selectedTaskId);
   const versions = taskDetail?.versions ?? [];
@@ -728,86 +743,18 @@ function SetupPanel({
               </select>
             </div>
 
-            <div>
-              <label className="mb-1.5 block text-xs text-ink-muted">{t('batch.limit')}</label>
-              <div className="flex flex-wrap gap-2">
-                {limitOptions.map((option) => (
-                  <button
-                    key={String(option.value)}
-                    type="button"
-                    onClick={() => onChangeLimit(option.value)}
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs transition-colors ${
-                      limit === option.value
-                        ? 'border-accent/50 bg-accent/10 text-accent'
-                        : 'border-surface-700 text-ink-muted hover:bg-surface-800 hover:text-ink'
-                    }`}
-                  >
-                    {limit === option.value ? (
-                      <CheckCircle2 size={12} className="text-accent" />
-                    ) : (
-                      <Square size={12} />
-                    )}
-                    {t(option.labelKey)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs text-ink-muted">
-                {t('batch.concurrency')}
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {concurrencyOptions.map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => onChangeConcurrency(value)}
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs transition-colors ${
-                      concurrency === value
-                        ? 'border-accent/50 bg-accent/10 text-accent'
-                        : 'border-surface-700 text-ink-muted hover:bg-surface-800 hover:text-ink'
-                    }`}
-                  >
-                    {concurrency === value ? (
-                      <CheckCircle2 size={12} className="text-accent" />
-                    ) : (
-                      <Square size={12} />
-                    )}
-                    {value}×
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1.5 text-[10px] text-ink-dim">{t('batch.concurrencyHint')}</p>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs text-ink-muted">
-                {t('batch.retries')}
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {retryOptions.map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => onChangeMaxRetries(value)}
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs transition-colors ${
-                      maxRetries === value
-                        ? 'border-accent/50 bg-accent/10 text-accent'
-                        : 'border-surface-700 text-ink-muted hover:bg-surface-800 hover:text-ink'
-                    }`}
-                  >
-                    {maxRetries === value ? (
-                      <CheckCircle2 size={12} className="text-accent" />
-                    ) : (
-                      <Square size={12} />
-                    )}
-                    {value === 0 ? t('batch.none') : `×${value}`}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1.5 text-[10px] text-ink-dim">{t('batch.retriesHint')}</p>
-            </div>
+            <RunExecutionControls
+              name={runName}
+              onChangeName={onChangeRunName}
+              limit={limit}
+              onChangeLimit={onChangeLimit}
+              limitStrategy={limitStrategy}
+              onChangeLimitStrategy={onChangeLimitStrategy}
+              concurrency={concurrency}
+              onChangeConcurrency={onChangeConcurrency}
+              maxRetries={maxRetries}
+              onChangeMaxRetries={onChangeMaxRetries}
+            />
           </div>
         )}
       </section>

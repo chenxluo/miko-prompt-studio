@@ -3,7 +3,7 @@ import { useState } from 'react';
 
 import { useI18n } from '../i18n';
 import { BatchView } from './BatchView';
-import { CompareView } from './CompareView';
+import { CompareRunView } from './CompareView';
 import { RunHistoryView } from './RunHistoryView';
 
 type RunsTab = 'batch' | 'compare' | 'history';
@@ -48,7 +48,7 @@ export function RunsView() {
 
       <section className="flex-1 overflow-hidden">
         {activeTab === 'batch' && <BatchView />}
-        {activeTab === 'compare' && <CompareView />}
+        {activeTab === 'compare' && <CompareRunView />}
         {activeTab === 'history' && <RunHistoryView />}
       </section>
     </div>

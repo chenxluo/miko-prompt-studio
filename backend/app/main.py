@@ -14,7 +14,8 @@ import random
 import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
-from importlib.metadata import PackageNotFoundError, version as pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -23,7 +24,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -174,16 +175,22 @@ class LabRunPayload(BaseModel):
     run_name: str = ""
 
 
-class BatchRunPayload(BaseModel):
+class RunExecutionOptions(BaseModel):
+    """Execution controls shared by every multi-item Run mode."""
+
+    limit: int | None = None
+    limit_strategy: Literal["first", "random"] = "first"
+    max_concurrency: int = 1
+    max_retries: int = 0
+    name: str = ""
+
+
+class BatchRunPayload(RunExecutionOptions):
     """Payload for POST /api/batch-runs."""
 
     task_id: str
     sample_set_id: str
     task_version_id: str | None = None
-    limit: int | None = None
-    limit_strategy: Literal["first", "random"] = "first"
-    max_concurrency: int = 1
-    max_retries: int = 0
     variable_mapping: dict[str, str] = Field(default_factory=dict)
     image_role_mapping: dict[str, str] = Field(default_factory=dict)
     pipeline_id: str | None = None
@@ -201,13 +208,14 @@ class CompareVariant(CompareTaskVersion):
     image_role_mapping: dict[str, str] = Field(default_factory=dict)
 
 
-class CompareRunPayload(BaseModel):
+class CompareRunPayload(RunExecutionOptions):
     """Payload for POST /api/compare-runs."""
 
     sample_set_id: str
-    variants: list[CompareVariant] = Field(min_length=1)
-    limit: int | None = None
-    name: str = ""
+    variants: list[CompareVariant] = Field(
+        min_length=1,
+        validation_alias=AliasChoices("variants", "task_versions"),
+    )
 
 
 class CrossRunComparePayload(BaseModel):
@@ -700,7 +708,7 @@ async def create_batch_run(payload: BatchRunPayload, db: AsyncSession = Depends(
     source["image_role_mapping"] = payload.image_role_mapping
     spec = BatchRunSpec(
         run_id=run_id,
-        name=template.run_name,
+        name=payload.name or template.run_name,
         source=source,
         samples=samples,
         request_template=template,
@@ -839,6 +847,7 @@ async def _resolve_compare_variants(
             sample_set_id=payload.sample_set_id,
             task_version_id=variant.task_version_id,
             limit=payload.limit,
+            limit_strategy=payload.limit_strategy,
         )
         task, task_version = await _resolve_task_version_for_payload(batch_payload, db)
         template = await _resolve_batch_template(batch_payload, db)
@@ -866,6 +875,7 @@ async def _load_compare_samples(
         task_id=payload.variants[0].task_id if payload.variants else "",
         sample_set_id=payload.sample_set_id,
         limit=payload.limit,
+        limit_strategy=payload.limit_strategy,
     )
     return await _load_batch_samples(batch_payload, db)
 
@@ -897,12 +907,19 @@ async def create_compare_run(payload: CompareRunPayload, db: AsyncSession = Depe
         }
         for variant in variants
     ]
+    max_concurrency = max(1, min(payload.max_concurrency, MAX_CONCURRENCY))
+    max_retries = max(0, min(payload.max_retries, MAX_RETRIES))
+    source["limit_strategy"] = payload.limit_strategy
+    source["max_concurrency"] = max_concurrency
+    source["max_retries"] = max_retries
     spec = CompareRunSpec(
         run_id=run_id,
         name=payload.name,
         source=source,
         samples=samples,
         variants=variants,
+        max_concurrency=max_concurrency,
+        max_retries=max_retries,
     )
     await start_compare_run(spec)
     return await _compare_status_response(run_id, db)
@@ -953,6 +970,17 @@ async def _compare_status_response(run_id: str, db: AsyncSession) -> dict[str, A
 
 
 def _compare_matrix(items: list[dict[str, Any]]) -> dict[str, Any]:
+    # First pass: detect config_label collisions (same label, different
+    # task_version_id). This is common when comparing versions from different
+    # tasks that each start at "v1".
+    label_to_versions: dict[str, set[str]] = {}
+    for item in items:
+        axes = item.get("compare_axes") or {}
+        label = axes.get("config_label") or axes.get("task_version_id") or "variant"
+        tv = axes.get("task_version_id") or ""
+        label_to_versions.setdefault(label, set()).add(tv)
+    colliding = {lbl for lbl, tvs in label_to_versions.items() if len(tvs) > 1}
+
     sample_ids: list[str] = []
     variant_labels: list[str] = []
     items_by_sample: dict[str, dict[str, dict[str, Any]]] = {}
@@ -960,6 +988,11 @@ def _compare_matrix(items: list[dict[str, Any]]) -> dict[str, Any]:
         axes = item.get("compare_axes") or {}
         sample_id = axes.get("sample_id") or item.get("sample_id")
         label = axes.get("config_label") or axes.get("task_version_id") or "variant"
+        tv = axes.get("task_version_id") or ""
+        # Disambiguate colliding labels with a short task_version_id suffix so
+        # each variant gets its own column instead of overwriting siblings.
+        if label in colliding and tv:
+            label = f"{label} · {tv[-6:]}"
         if sample_id not in sample_ids:
             sample_ids.append(sample_id)
         if label not in variant_labels:
@@ -993,6 +1026,11 @@ async def cross_run_compare(
         session = result.scalar_one_or_none()
         if session is None:
             raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+        if session.run_type != RunType.BATCH.value:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cross-run analysis only supports batch runs: {run_id}",
+            )
         sessions[run_id] = session
 
     # 2. Load items per run and require every run to be non-empty.
@@ -1052,7 +1090,11 @@ async def cross_run_compare(
                 task_row = task_result.scalar_one_or_none()
 
         # task_name is best-effort from the source; fall back to run metadata.
-        task_name = task_row.name if task_row else source.get("task_id") or session.name or run_id[:8]
+        task_name = (
+            task_row.name
+            if task_row
+            else source.get("task_id") or session.name or run_id[:8]
+        )
         translation_drift = False
         if task_row and task_row.family_id and task_row.translated_from_version_id:
             family_result = await db.execute(
@@ -1220,6 +1262,37 @@ async def _get_task_or_404(task_id: str, db: AsyncSession) -> TaskORM:
     return row
 
 
+async def _assign_task_family(
+    row: TaskORM, family_task_id: str | None, db: AsyncSession
+) -> None:
+    """Move/merge a task family while preserving the equivalence relation."""
+    current_family_id = row.family_id or row.task_id
+    current_result = await db.execute(
+        select(TaskORM).where(TaskORM.family_id == current_family_id)
+    )
+    current_members = {member.task_id: member for member in current_result.scalars().all()}
+    current_members[row.task_id] = row
+
+    if not family_task_id:
+        remaining = [member for member in current_members.values() if member.task_id != row.task_id]
+        row.family_id = None
+        if remaining:
+            new_root_id = sorted(member.task_id for member in remaining)[0]
+            for member in remaining:
+                member.family_id = new_root_id
+        return
+
+    family_task = await _get_task_or_404(family_task_id, db)
+    canonical_id = family_task.family_id or family_task.task_id
+    target_result = await db.execute(
+        select(TaskORM).where(TaskORM.family_id == canonical_id)
+    )
+    target_members = {member.task_id: member for member in target_result.scalars().all()}
+    target_members[family_task.task_id] = family_task
+    for member in {**current_members, **target_members}.values():
+        member.family_id = canonical_id
+
+
 async def _get_task_version_or_404(
     task_id: str,
     task_version_id: str,
@@ -1312,6 +1385,8 @@ async def create_task(payload: CreateTaskPayload, db: AsyncSession = Depends(get
     )
     db.add(row)
     await db.flush()
+    if payload.family_id:
+        await _assign_task_family(row, payload.family_id, db)
     version = TaskVersionORM(
         task_version_id=f"tv_{uuid4().hex[:12]}",
         task_id=row.task_id,
@@ -1565,7 +1640,7 @@ async def update_task(task_id: str, payload: UpdateTaskPayload, db: AsyncSession
                 raise HTTPException(404, f"Task group '{payload.group_id}' not found")
         row.group_id = payload.group_id if payload.group_id else None
     if "family_id" in payload.model_fields_set:
-        row.family_id = payload.family_id or None
+        await _assign_task_family(row, payload.family_id, db)
     if "language" in payload.model_fields_set:
         row.language = payload.language.strip() or None if payload.language else None
     if "translated_from_version_id" in payload.model_fields_set:
@@ -2206,9 +2281,85 @@ async def list_runs(
     total = int(total_result.scalar_one())
     result = await db.execute(stmt)
     rows = result.scalars().all()
+    task_ids = {
+        str((row.source or {}).get("task_id"))
+        for row in rows
+        if (row.source or {}).get("task_id")
+    }
+    sample_set_ids = {
+        str((row.source or {}).get("sample_set_id"))
+        for row in rows
+        if (row.source or {}).get("sample_set_id")
+    }
+    task_rows = (
+        list(
+            (
+                await db.execute(select(TaskORM).where(TaskORM.task_id.in_(task_ids)))
+            ).scalars().all()
+        )
+        if task_ids
+        else []
+    )
+    tasks_by_id = {task.task_id: task for task in task_rows}
+    version_ids = {
+        str((row.source or {}).get("task_version_id"))
+        for row in rows
+        if (row.source or {}).get("task_version_id")
+    }
+    version_ids.update(
+        task.current_version_id for task in task_rows if task.current_version_id
+    )
+    version_rows = (
+        list(
+            (
+                await db.execute(
+                    select(TaskVersionORM).where(
+                        TaskVersionORM.task_version_id.in_(version_ids)
+                    )
+                )
+            ).scalars().all()
+        )
+        if version_ids
+        else []
+    )
+    versions_by_id = {version.task_version_id: version for version in version_rows}
+    sample_set_rows = (
+        list(
+            (
+                await db.execute(
+                    select(SampleSetORM).where(SampleSetORM.sample_set_id.in_(sample_set_ids))
+                )
+            ).scalars().all()
+        )
+        if sample_set_ids
+        else []
+    )
+    sample_sets_by_id = {sample_set.sample_set_id: sample_set for sample_set in sample_set_rows}
     runs = []
     for row in rows:
         data = _run_session_to_dict(row)
+        source = row.source or {}
+        task = tasks_by_id.get(str(source.get("task_id") or ""))
+        source_version_id = str(source.get("task_version_id") or "")
+        version = versions_by_id.get(source_version_id)
+        if version is None and task:
+            version = versions_by_id.get(task.current_version_id or "")
+        sample_set = sample_sets_by_id.get(str(source.get("sample_set_id") or ""))
+        summary = dict(data["summary"] or {})
+        summary.update(
+            {
+                "task_id": task.task_id if task else source.get("task_id"),
+                "task_name": task.name if task else "",
+                "family_id": task.family_id if task else None,
+                "language": task.language if task else None,
+                "model_id": version.model_id if version else source.get("model_id") or "",
+                "sample_set_id": (
+                    sample_set.sample_set_id if sample_set else source.get("sample_set_id")
+                ),
+                "sample_set_name": sample_set.name if sample_set else "",
+                "item_count": summary.get("total_items", 0),
+            }
+        )
         runs.append(
             {
                 "run_id": data["run_id"],
@@ -2217,7 +2368,7 @@ async def list_runs(
                 "status": data["status"],
                 "started_at": data["started_at"],
                 "completed_at": data["completed_at"],
-                "summary": data["summary"],
+                "summary": summary,
                 "pipeline_id": data["pipeline_id"],
                 "pipeline_step": data["pipeline_step"],
                 "created_at": data["created_at"],
@@ -2245,7 +2396,9 @@ async def _get_run_session_and_items_or_404(
 async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
     session, items = await _get_run_session_and_items_or_404(run_id, db)
 
-    return {
+    item_dicts = [_run_item_to_dict(i) for i in items]
+
+    result: dict[str, Any] = {
         "session": {
             "run_id": session.run_id,
             "run_type": session.run_type,
@@ -2261,33 +2414,15 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
             "pipeline_step": session.pipeline_step,
             "created_at": session.created_at,
         },
-        "items": [
-            {
-                "run_item_id": i.run_item_id,
-                "run_id": i.run_id,
-                "sample_id": i.sample_id,
-                "status": i.status,
-                "started_at": i.started_at,
-                "completed_at": i.completed_at,
-                "prompt_snapshot": i.prompt_snapshot,
-                "internal_request_snapshot": i.internal_request_snapshot,
-                "model_config_snapshot": i.model_config_snapshot,
-                "output_contract_snapshot": i.output_contract_snapshot,
-                "final_attempt_id": i.final_attempt_id,
-                "response": i.response,
-                "usage": i.usage,
-                "cost": i.cost,
-                "review": i.review,
-                "error": i.error,
-                "provider_id": i.provider_id,
-                "model_id": i.model_id,
-                "estimated_cost": i.estimated_cost,
-                "latency_ms": i.latency_ms,
-                "created_at": i.created_at,
-            }
-            for i in items
-        ],
+        "items": item_dicts,
     }
+
+    # Compare runs carry an extra ``matrix`` field (samples × variants) that
+    # the dedicated compare-results view relies on.
+    if session.run_type == RunType.COMPARE.value:
+        result["matrix"] = _compare_matrix(item_dicts)
+
+    return result
 
 
 @app.delete("/api/runs/{run_id}")
@@ -2612,7 +2747,11 @@ async def review_summary(payload: ReviewSummaryPayload, db: AsyncSession = Depen
                 "rejected": b["rejected"],
                 "undecided": b["n"] - b["accepted"] - b["rejected"],
                 "pass_rate": b["accepted"] / judged if judged else None,
-                "avg_rating": round(b["rating_sum"] / b["rating_count"], 1) if b["rating_count"] else None,
+                "avg_rating": (
+                    round(b["rating_sum"] / b["rating_count"], 1)
+                    if b["rating_count"]
+                    else None
+                ),
                 "rating_count": b["rating_count"],
                 "rating_dist": b["rating_dist"],
             }

@@ -59,9 +59,10 @@ export function PipelineView() {
     return groups.filter((group) => group.pipelineId.toLowerCase().includes(query));
   }, [groups, filter]);
 
-  function handleViewRun(runId: string) {
+  function handleViewRun(runId: string, runType?: string) {
+    const target = runType === 'compare' ? 'compareResults' : 'results';
     window.dispatchEvent(
-      new CustomEvent('miko:navigate', { detail: { view: 'results', runId } }),
+      new CustomEvent('miko:navigate', { detail: { view: target, runId } }),
     );
   }
 
@@ -193,7 +194,7 @@ function PipelineCard({
   deletingPipelineId,
 }: {
   group: PipelineGroup;
-  onViewRun: (runId: string) => void;
+  onViewRun: (runId: string, runType?: string) => void;
   onDeleteRun: (runId: string) => void;
   onDeletePipeline: (group: PipelineGroup) => void;
   deletingRunId: string | null;
@@ -269,7 +270,7 @@ function PipelineStepRow({
   run: api.RunListItem;
   index: number;
   isLast: boolean;
-  onView: (runId: string) => void;
+  onView: (runId: string, runType?: string) => void;
   onDelete: (runId: string) => void;
   isDeleting: boolean;
 }) {
@@ -293,7 +294,7 @@ function PipelineStepRow({
       </div>
       <button
         type="button"
-        onClick={() => onView(run.run_id)}
+        onClick={() => onView(run.run_id, run.run_type)}
         className="mb-3 flex flex-1 cursor-pointer items-start justify-between gap-4 rounded-md border border-surface-800 bg-surface-950 p-3 text-left transition-colors hover:border-surface-600 hover:bg-surface-900/50"
       >
         <div className="min-w-0">
@@ -328,7 +329,7 @@ function PipelineStepRow({
       </button>
       <button
         type="button"
-        onClick={() => onView(run.run_id)}
+        onClick={() => onView(run.run_id, run.run_type)}
         className="mb-3 ml-2 inline-flex items-center justify-center self-center rounded-md p-1.5 text-ink-dim opacity-0 transition-colors hover:bg-surface-800 hover:text-ink group-hover:opacity-100"
         aria-label={t('pipelines.viewRun')}
         title={t('pipelines.viewRun')}

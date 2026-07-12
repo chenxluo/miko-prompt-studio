@@ -1,8 +1,8 @@
 # Miko Prompt Studio — 开发文档
 
-> 随开发进度持续更新的配套文档。最后更新：2026-07-03
+> 随开发进度持续更新的配套文档。最后更新：2026-07-12
 
-**版本：1.3.0**
+**版本：1.4.0**
 
 ## 1. 项目定位
 
@@ -203,7 +203,7 @@ run_executor.execute_lab_run()
 | GET | `/api/runs` | 列出运行历史 |
 | GET | `/api/runs/{id}` | 获取运行详情（含 run items） |
 | GET | `/api/runs/{id}/items/{item_id}` | 获取单个 run item |
-| POST | `/api/compare/cross-run` | 按共同 `sample_id` 对齐 2–4 个已完成 run，返回轻量 Diff 矩阵 |
+| POST | `/api/compare/cross-run` | 按共同 `sample_id` 对齐 2–4 个已完成 Batch run，返回轻量 Diff 矩阵 |
 | PATCH | `/api/runs/{id}/items/{item_id}/review` | 更新人工 review（accepted/rating/notes/labels）；null/空值可清除字段，labels 通过 JSON 赋值持久化 |
 | POST | `/api/analytics/review-summary` | 跨运行审阅统计聚合（按 variant/model/provider 分组：通过率、平均评分、评分分布、accepted/rejected/undecided 计数） |
 | GET | `/api/samples` | 列出样本 |
@@ -241,7 +241,7 @@ run_executor.execute_lab_run()
 | GET | `/api/batch-runs/{id}/status` | 查询 Batch 运行状态 |
 | POST | `/api/batch-runs/{id}/cancel` | 取消 Batch 运行 |
 | POST | `/api/batch-runs/{id}/retry-failed` | 重跑失败项 |
-| POST | `/api/compare-runs` | 创建 Compare 矩阵运行；每个 variant 支持独立 `variable_mapping` / `image_role_mapping` 临时字段映射 |
+| POST | `/api/compare-runs` | 创建 Compare 矩阵运行；与 Batch 共用命名、数量、随机抽样、并发和重试选项，每个 variant 支持独立字段映射 |
 | GET | `/api/compare-runs/{id}/status` | 查询 Compare 运行状态 |
 | POST | `/api/compare-runs/{id}/cancel` | 取消 Compare 运行 |
 | POST | `/api/upload/image` | 上传图片，返回 url |
@@ -396,11 +396,35 @@ run_executor.execute_lab_run()
 - [x] **前端映射面板**：新增 `frontend/src/components/batch/MappingPanel.tsx`，在 `BatchView.tsx` / `CompareView.tsx` 中可折叠展示，支持手动选择 + 按名称相似度自动建议
 - [x] **映射回归测试**：新增 `backend/tests/test_sample_mapping.py`（7 个用例）
 
+### Phase 9（v1.3.0 — 工作流编排 + Pipeline 视图）
+
+面向多步骤标注流程：把若干 Batch / Compare 运行组织成可顺序执行的 pipeline，并在前端 Pipeline 视图中管理整体进度与单步/整体删除。
+
+- [x] **工作流编排原语**：后台增加 pipeline 层级（`pipeline_id` / `pipeline_step` 注入 RunSession），支持把 Batch / Compare 运行关联到同一次 pipeline 执行
+- [x] **Pipeline 视图**：新增 `frontend/src/views/PipelineView.tsx`，展示 pipeline 步骤、运行状态、进度与结果入口
+- [x] **运行管理**：支持删除 pipeline 内单个运行或整体 pipeline，删除时级联清理关联的 RunSession / RunItem / Attempt
+- [x] **CLI 引用层**：`mps` CLI 增加 pipeline / workflow 相关引用与命令，配套更新 `plan/CLI手册.md`
+- [x] **版本同步基建**：`package.json` 为单一版本来源；`scripts/bump.mjs` + `npm run bump` 自动同步 `frontend/package.json`、`backend/pyproject.toml`、`DEVELOPMENT.md` 的版本号
+- [x] **数据库清理**：移除 `database.py` 中 4 个已失效/被覆盖的迁移函数定义，减少启动噪音
+
+### Phase 10（v1.4.0 — 统一矩阵执行器 + Compare 结果视图）
+
+把 Batch 与 Compare 的运行执行层统一为矩阵执行器，复用并发/重试/取消能力；同时补齐 Compare 的结果查看与跨运行对比视图。
+
+- [x] **统一矩阵执行器**：新增 `backend/app/services/matrix_executor.py`，Batch / Compare 均通过 `_MatrixRunSpec` / `_MatrixVariant` 执行；`batch_executor.py` / `compare_executor.py` 退化为薄适配器
+- [x] **Compare 运行能力补齐**：`POST /api/compare-runs` 支持 `max_concurrency`、`max_retries`、`limit_strategy`、`name`，与 Batch 运行保持同一套执行控制
+- [x] **Compare payload 规范化**：前端改用 `variants` 字段描述对比列；后端同时兼容旧 `task_versions` 字段，避免历史调用 422
+- [x] **Compare 结果视图**：新增 `frontend/src/views/CompareResultsView.tsx` 与 `frontend/src/components/results/CompareOverlay.tsx`，支持矩阵结果查看、按样本维度对比、覆盖/并排展示
+- [x] **跨运行分析入口**：Compare 视图支持两种工作流：创建新的 Compare 运行，或直接对已完成运行做跨运行分析（cross-run）
+- [x] **共享运行控制组件**：新增 `frontend/src/components/runs/RunExecutionControls.tsx`，统一 Batch / Compare 的并发、重试、抽样策略、运行命名 UI
+- [x] **Task 族版本批量添加**：TasksView 支持一键添加同一任务族（task family）的全部当前版本到 Compare 矩阵
+- [x] **多语言比较元数据**：Compare 运行与结果展示支持多语言任务版本元数据展示，i18n 字典补齐相关 key
+- [x] **回归测试**：`backend/tests/test_compare_runs.py` 增加 Compare 取消、并发、重试、随机抽样等用例
+
 ### 待实现
 - [ ] Python Import Script
 - [ ] 更多原生 adapter（阿里百炼）
 - [ ] 系统 keychain 集成
-- [ ] Electron 打包分发
 
 ## 7. 开发指南
 

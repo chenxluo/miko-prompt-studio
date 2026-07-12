@@ -332,7 +332,10 @@ async def _seed_out_of_range() -> None:
 
 def test_rating_dist_excludes_out_of_range(client: TestClient) -> None:
     asyncio.run(_seed_out_of_range())
-    resp = client.post("/api/analytics/review-summary", json={"run_ids": ["rx"], "group_by": "variant"})
+    resp = client.post(
+        "/api/analytics/review-summary",
+        json={"run_ids": ["rx"], "group_by": "variant"},
+    )
     assert resp.status_code == 200
     row = _rows_by_key(resp.json())["X"]
     # Every non-None rating feeds sum/count (5 + 6 + 0 = 11 over 3)...

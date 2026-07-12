@@ -26,6 +26,21 @@ class SlowAdapter(FakeAdapter):
         return await super().execute(request, api_key, base_url, timeout)
 
 
+class TrackingAdapter(FakeAdapter):
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+
+    async def execute(self, request, api_key: str, base_url: str | None = None, timeout: int = 120):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.05)
+            return await super().execute(request, api_key, base_url, timeout)
+        finally:
+            self.active -= 1
+
+
 def _patch_adapter(monkeypatch, adapter) -> None:
     import app.adapters.registry as registry
     import app.services.run_executor as run_executor
@@ -139,6 +154,41 @@ def test_compare_run_completes_with_axes_and_matrix(client: TestClient, monkeypa
     assert set(status["matrix"]["items_by_sample"]["s2"].keys()) == {"A", "B"}
 
 
+def test_compare_run_accepts_frontend_task_versions_contract(
+    client: TestClient, monkeypatch
+) -> None:
+    """Regression: CompareView historically sent task_versions and got HTTP 422."""
+    _patch_adapter(monkeypatch, FakeAdapter())
+    sample_set_id, task_a, task_b = _setup_compare(client)
+    import app.main as main
+
+    monkeypatch.setattr(main.random, "shuffle", lambda values: values.reverse())
+
+    response = client.post(
+        "/api/compare-runs",
+        json={
+            "sample_set_id": sample_set_id,
+            "task_versions": [
+                {"task_id": task_a, "label": "A"},
+                {"task_id": task_b, "label": "B"},
+            ],
+            "limit": 1,
+            "limit_strategy": "random",
+            "max_concurrency": 2,
+            "max_retries": 1,
+            "name": "ZH vs EN regression",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    session = response.json()["session"]
+    assert session["name"] == "ZH vs EN regression"
+    assert session["source"]["sample_ids"] == ["s2"]
+    assert session["source"]["limit_strategy"] == "random"
+    assert session["source"]["max_concurrency"] == 2
+    assert session["source"]["max_retries"] == 1
+
+
 def test_compare_cancel_works(client: TestClient, monkeypatch) -> None:
     _patch_adapter(monkeypatch, SlowAdapter())
     sample_set_id, task_a, task_b = _setup_compare(client)
@@ -158,3 +208,17 @@ def test_compare_cancel_works(client: TestClient, monkeypatch) -> None:
     assert status["session"]["status"] == "cancelled"
     assert status["summary"]["total_items"] == 4
     assert any(item["status"] == "cancelled" for item in status["items"])
+
+
+def test_compare_run_uses_shared_concurrency_option(client: TestClient, monkeypatch) -> None:
+    adapter = TrackingAdapter()
+    _patch_adapter(monkeypatch, adapter)
+    sample_set_id, task_a, task_b = _setup_compare(client)
+    payload = _compare_payload(sample_set_id, task_a, task_b)
+    payload["max_concurrency"] = 2
+
+    response = client.post("/api/compare-runs", json=payload)
+    assert response.status_code == 200, response.text
+    _wait_for_terminal_status(client, response.json()["session"]["run_id"])
+
+    assert adapter.max_active == 2

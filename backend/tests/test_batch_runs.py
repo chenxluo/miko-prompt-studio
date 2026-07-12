@@ -150,16 +150,16 @@ def test_map_sample_images_to_prompt_slots_missing_required_fails() -> None:
 
 def test_batch_run_retries_rate_limited_then_succeeds(client: TestClient, monkeypatch) -> None:
     import app.adapters.registry as registry
-    import app.services.batch_executor as batch_executor
+    import app.services.matrix_executor as matrix_executor
     import app.services.run_executor as run_executor
 
     # Make backoff effectively instant so the test does not wait seconds.
     monkeypatch.setattr(
-        batch_executor,
+        matrix_executor,
         "_BACKOFF_BASE_SECONDS",
         {"rate_limit": 0.0, "timeout": 0.0, "network_error": 0.0},
     )
-    monkeypatch.setattr(batch_executor, "_BACKOFF_JITTER_SECONDS", 0.0)
+    monkeypatch.setattr(matrix_executor, "_BACKOFF_JITTER_SECONDS", 0.0)
 
     fail_counts: dict[str, int] = {}
 

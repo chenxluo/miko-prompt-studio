@@ -100,9 +100,12 @@ def test_task_language_family_metadata_round_trip_and_clear(client: TestClient) 
     assert body["family_id"] == base["task_id"]
     assert body["language"] == "en-US"
     assert body["translated_from_version_id"] == base["current_version_id"]
+    reflected_base = client.get(f"/api/tasks/{base['task_id']}").json()
+    assert reflected_base["family_id"] == base["task_id"]
 
     listed = client.get("/api/tasks").json()
-    assert next(item for item in listed if item["task_id"] == body["task_id"])["language"] == "en-US"
+    listed_translation = next(item for item in listed if item["task_id"] == body["task_id"])
+    assert listed_translation["language"] == "en-US"
 
     cleared = client.put(
         f"/api/tasks/{body['task_id']}",
@@ -112,6 +115,29 @@ def test_task_language_family_metadata_round_trip_and_clear(client: TestClient) 
     assert "family_id" not in cleared.json()
     assert "language" not in cleared.json()
     assert "translated_from_version_id" not in cleared.json()
+
+    third = client.post(
+        "/api/tasks",
+        json={
+            "name": "Caption JA",
+            "language": "ja-JP",
+            "version": _version(provider_config_id),
+        },
+    ).json()
+    client.put(f"/api/tasks/{body['task_id']}", json={"family_id": base["task_id"]})
+    merged = client.put(
+        f"/api/tasks/{base['task_id']}", json={"family_id": third["task_id"]}
+    )
+    assert merged.status_code == 200, merged.text
+    assert client.get(f"/api/tasks/{body['task_id']}").json()["family_id"] == third["task_id"]
+
+    detached_root = client.put(
+        f"/api/tasks/{third['task_id']}", json={"family_id": None}
+    ).json()
+    remaining_base = client.get(f"/api/tasks/{base['task_id']}").json()
+    remaining_translation = client.get(f"/api/tasks/{body['task_id']}").json()
+    assert "family_id" not in detached_root
+    assert remaining_base["family_id"] == remaining_translation["family_id"]
 
 
 def test_task_version_cost_stats_aggregates_completed_run_items(client: TestClient) -> None:

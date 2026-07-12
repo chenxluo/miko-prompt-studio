@@ -27,10 +27,17 @@ import { resolveImageUrl } from '../components/lab/ImagePanel';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
 import { MappingPanel } from '../components/batch/MappingPanel';
+import {
+  RunExecutionControls,
+  type RunConcurrency,
+  type RunLimit,
+  type RunLimitStrategy,
+  type RunRetries,
+} from '../components/runs/RunExecutionControls';
 import type { CrossRunColumn, CrossRunResponse, CrossRunRow, ImagePreprocessConfig, ImageRef, RunItemSummary, Task, TaskVersion } from '../types';
 
 type Phase = 'setup' | 'running' | 'results';
-type LimitOption = 10 | 50 | 'all';
+type LimitOption = RunLimit;
 type CompareMode = 'new-run' | 'cross-run';
 
 const POLL_INTERVAL_MS = 2000;
@@ -66,12 +73,28 @@ interface VersionColumn {
   providerConfigId: string | null;
 }
 
-export function CompareView() {
+export function CompareRunView() {
+  return <CompareWorkspace workflow="create-run" />;
+}
+
+export function CrossRunAnalysisView({ onExit }: { onExit: () => void }) {
+  return <CompareWorkspace workflow="analyze-runs" onExit={onExit} />;
+}
+
+function CompareWorkspace({
+  workflow,
+  onExit,
+}: {
+  workflow: 'create-run' | 'analyze-runs';
+  onExit?: () => void;
+}) {
   const { t } = useI18n();
   const lab = useLabStore();
 
   const [phase, setPhase] = useState<Phase>('setup');
-  const [mode, setMode] = useState<CompareMode>('new-run');
+  const [mode, setMode] = useState<CompareMode>(
+    workflow === 'analyze-runs' ? 'cross-run' : 'new-run',
+  );
 
   // new-run mode state
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -82,6 +105,10 @@ export function CompareView() {
   const [selectedSetId, setSelectedSetId] = useState<string>('');
   const [sampleRecords, setSampleRecords] = useState<api.SampleListItem[]>([]);
   const [limit, setLimit] = useState<LimitOption>(10);
+  const [limitStrategy, setLimitStrategy] = useState<RunLimitStrategy>('first');
+  const [concurrency, setConcurrency] = useState<RunConcurrency>(1);
+  const [maxRetries, setMaxRetries] = useState<RunRetries>(0);
+  const [runName, setRunName] = useState('');
 
   const [selectedTaskIdForAdd, setSelectedTaskIdForAdd] = useState<string>('');
   const [taskDetailForAdd, setTaskDetailForAdd] = useState<
@@ -290,7 +317,7 @@ export function CompareView() {
   function buildPayload(): api.CreateCompareRunPayload {
     return {
       sample_set_id: selectedSetId,
-      task_versions: selectedVersions.map((v) => {
+      variants: selectedVersions.map((v) => {
         const variableMappingPayload: Record<string, string> = {};
         for (const [key, value] of Object.entries(v.variableMapping)) {
           if (value) variableMappingPayload[key] = value;
@@ -309,6 +336,10 @@ export function CompareView() {
         };
       }),
       limit: limit === 'all' ? null : limit,
+      limit_strategy: limit === 'all' ? undefined : limitStrategy,
+      max_concurrency: concurrency,
+      max_retries: maxRetries,
+      name: runName.trim(),
     };
   }
 
@@ -429,6 +460,69 @@ export function CompareView() {
     ]);
   }
 
+  async function handleAddAllFamilyVersions(familyTasks: Task[]) {
+    if (familyTasks.length === 0) return;
+    const tasksToFetch: Task[] = [];
+    const versionsToAdd: SelectedVersion[] = [];
+
+    for (const task of familyTasks) {
+      const version = task.current_version;
+      if (version && version.task_version_id) {
+        const exists = selectedVersions.some((v) => v.taskVersionId === version.task_version_id);
+        if (!exists) {
+          versionsToAdd.push({
+            taskId: task.task_id,
+            taskVersionId: version.task_version_id,
+            label: version.version_label || null,
+            taskName: task.name,
+            version,
+            variableMapping: {},
+            imageRoleMapping: {},
+          });
+        }
+      } else {
+        tasksToFetch.push(task);
+      }
+    }
+
+    if (tasksToFetch.length > 0) {
+      setIsDetailLoading(true);
+      try {
+        const details = await Promise.all(tasksToFetch.map((t) => api.getTask(t.task_id)));
+        for (const [index, task] of tasksToFetch.entries()) {
+          const detail = details[index];
+          const version = detail.current_version ?? detail.versions[0];
+          if (!version || !version.task_version_id) {
+            setError(t('compare.noCurrentVersion'));
+            continue;
+          }
+          const exists = selectedVersions.some((v) => v.taskVersionId === version.task_version_id);
+          if (!exists) {
+            versionsToAdd.push({
+              taskId: task.task_id,
+              taskVersionId: version.task_version_id,
+              label: version.version_label || null,
+              taskName: task.name,
+              version,
+              variableMapping: {},
+              imageRoleMapping: {},
+            });
+          }
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t('compare.addFamilyFailed'));
+        return;
+      } finally {
+        setIsDetailLoading(false);
+      }
+    }
+
+    if (versionsToAdd.length > 0) {
+      setSelectedVersions((current) => [...current, ...versionsToAdd]);
+      setSelectedTaskIdForAdd(familyTasks[0]?.task_id ?? '');
+    }
+  }
+
   function handleRemoveVersion(taskVersionId: string) {
     setSelectedVersions((current) => current.filter((v) => v.taskVersionId !== taskVersionId));
   }
@@ -478,18 +572,22 @@ export function CompareView() {
       <header className="flex items-center justify-between border-b border-surface-800 bg-surface-900/50 px-6 py-3 backdrop-blur">
         <div>
           <h1 className="text-sm font-semibold uppercase tracking-wider text-ink-muted">
-            {t('compare.title')}
+            {workflow === 'analyze-runs' ? t('compare.crossRunTitle') : t('compare.title')}
           </h1>
-          <p className="mt-1 text-xs text-ink-dim">{t('compare.description')}</p>
+          <p className="mt-1 text-xs text-ink-dim">
+            {workflow === 'analyze-runs'
+              ? t('compare.crossRunDescription')
+              : t('compare.description')}
+          </p>
         </div>
-        {phase !== 'setup' && (
+        {(phase !== 'setup' || onExit) && (
           <button
             type="button"
-            onClick={handleBackToSetup}
+            onClick={phase !== 'setup' ? handleBackToSetup : onExit}
             className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted transition-colors hover:bg-surface-800 hover:text-ink"
           >
             <ArrowLeft size={14} />
-            {t('batch.setup')}
+            {phase !== 'setup' ? t('batch.setup') : t('results.backToResults')}
           </button>
         )}
       </header>
@@ -504,6 +602,7 @@ export function CompareView() {
 
         {phase === 'setup' && (
           <div className="mx-auto max-w-3xl animate-fade-in space-y-5">
+            {workflow === 'create-run' && (
             <div className="flex gap-1 border-b border-surface-800">
               <ModeTabButton
                 isActive={mode === 'new-run'}
@@ -518,6 +617,7 @@ export function CompareView() {
                 label={t('compare.modeCrossRun')}
               />
             </div>
+            )}
 
             {mode === 'new-run' && (
               <SetupPanel
@@ -527,6 +627,7 @@ export function CompareView() {
                 isLoadingSets={isLoadingSets}
                 selectedTaskId={selectedTaskIdForAdd}
                 onSelectTask={setSelectedTaskIdForAdd}
+                onAddAllFamilyVersions={handleAddAllFamilyVersions}
                 taskDetail={taskDetailForAdd}
                 isDetailLoading={isDetailLoading}
                 selectedVersionId={selectedVersionIdForAdd}
@@ -538,6 +639,14 @@ export function CompareView() {
                 onSelectSet={setSelectedSetId}
                 limit={limit}
                 onChangeLimit={setLimit}
+                limitStrategy={limitStrategy}
+                onChangeLimitStrategy={setLimitStrategy}
+                concurrency={concurrency}
+                onChangeConcurrency={setConcurrency}
+                maxRetries={maxRetries}
+                onChangeMaxRetries={setMaxRetries}
+                runName={runName}
+                onChangeRunName={setRunName}
                 providerNames={providerNames}
                 sampleVarsKeys={sampleVarsKeys}
                 sampleImageRoles={sampleImageRoles}
@@ -616,34 +725,264 @@ export function CompareView() {
   );
 }
 
+/// Language codes used for name-suffix heuristic grouping.
+const NAME_LANGUAGE_CODES = [
+  'en', 'jp', 'ja', 'zh', 'ko', 'fr', 'de', 'es', 'pt', 'it',
+  'ru', 'ar', 'hi', 'th', 'vi', 'id', 'ms', 'tr', 'nl', 'pl',
+];
+
+interface DetectedLanguage {
+  baseName: string;
+  language: string;
+}
+
+/// Detect a trailing language code in a task name.
+/// e.g. "ins描述en" → { baseName: "ins描述", language: "en" }
+function detectLanguageFromName(name: string): DetectedLanguage | null {
+  const trimmed = name.trim();
+  for (const code of NAME_LANGUAGE_CODES) {
+    const match = trimmed.match(new RegExp(`(.+?)[-\\s_/~]?${code}$`, 'i'));
+    if (match && match[1].trim().length > 0) {
+      return { baseName: match[1].trim(), language: code.toLowerCase() };
+    }
+  }
+  return null;
+}
+
+function getTaskDisplayLanguage(task: Task): string | null {
+  if (task.language) return task.language;
+  return detectLanguageFromName(task.name)?.language ?? null;
+}
+
+interface PickerGroup {
+  key: string;
+  label: string;
+  members: Task[];
+  isInferred: boolean;
+}
+
+interface TaskFamilyPickerProps {
+  tasks: Task[];
+  selectedTaskId: string;
+  onSelectTask: (taskId: string) => void;
+  onAddAllFamilyVersions: (familyTasks: Task[]) => void;
+}
+
+function TaskFamilyPicker({
+  tasks,
+  selectedTaskId,
+  onSelectTask,
+  onAddAllFamilyVersions,
+}: TaskFamilyPickerProps) {
+  const { t } = useI18n();
+  const [openFamilies, setOpenFamilies] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  const { groups, ungrouped } = useMemo(() => {
+    const explicitFamilies = new Map<string, Task[]>();
+    const inferredMap = new Map<string, { baseName: string; members: Task[] }>();
+    const ungrouped: Task[] = [];
+
+    for (const task of tasks) {
+      if (task.family_id) {
+        const current = explicitFamilies.get(task.family_id);
+        if (current) {
+          current.push(task);
+        } else {
+          explicitFamilies.set(task.family_id, [task]);
+        }
+      } else {
+        // Fallback: detect language from name suffix to infer family grouping.
+        const detected = detectLanguageFromName(task.name);
+        if (detected) {
+          const key = detected.baseName.toLowerCase();
+          const existing = inferredMap.get(key);
+          if (existing) {
+            existing.members.push(task);
+          } else {
+            inferredMap.set(key, { baseName: detected.baseName, members: [task] });
+          }
+        } else {
+          ungrouped.push(task);
+        }
+      }
+    }
+
+    // Sort members within each group by language for stable display.
+    for (const members of explicitFamilies.values()) {
+      members.sort((a, b) => (a.language || '').localeCompare(b.language || ''));
+    }
+    for (const { members } of inferredMap.values()) {
+      members.sort((a, b) => (a.language || '').localeCompare(b.language || ''));
+    }
+    ungrouped.sort((a, b) => a.name.localeCompare(b.name));
+
+    const resultGroups: PickerGroup[] = [];
+    for (const [familyId, members] of explicitFamilies.entries()) {
+      resultGroups.push({
+        key: familyId,
+        label: members[0]?.name ?? familyId,
+        members,
+        isInferred: false,
+      });
+    }
+    // Only promote inferred groups with 2+ members; singles go to ungrouped.
+    for (const { baseName, members } of inferredMap.values()) {
+      if (members.length >= 2) {
+        resultGroups.push({
+          key: `inferred:${baseName.toLowerCase()}`,
+          label: baseName,
+          members,
+          isInferred: true,
+        });
+      } else {
+        ungrouped.push(members[0]);
+      }
+    }
+    resultGroups.sort((a, b) => a.label.localeCompare(b.label));
+
+    return { groups: resultGroups, ungrouped };
+  }, [tasks]);
+
+  function toggleFamily(familyId: string) {
+    setOpenFamilies((prev) => {
+      const next = new Set(prev);
+      if (next.has(familyId)) {
+        next.delete(familyId);
+      } else {
+        next.add(familyId);
+      }
+      return next;
+    });
+  }
+
+  const renderTaskButton = (task: Task, showLanguage: boolean) => {
+    const displayLanguage = getTaskDisplayLanguage(task);
+    return (
+      <button
+        key={task.task_id}
+        type="button"
+        onClick={() => onSelectTask(task.task_id)}
+        className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors ${
+          selectedTaskId === task.task_id
+            ? 'bg-accent/10 text-accent'
+            : 'text-ink hover:bg-surface-800'
+        }`}
+      >
+        <span className="truncate">{task.name}</span>
+        {showLanguage && displayLanguage && (
+          <span className="shrink-0 rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">
+            {displayLanguage}
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  return (
+    <div className="max-h-72 overflow-auto rounded-md border border-surface-700 bg-surface-900 text-xs">
+      {groups.length === 0 && ungrouped.length === 0 && (
+        <div className="px-3 py-2 text-ink-dim">{t('batch.taskPlaceholder')}</div>
+      )}
+      <div className="divide-y divide-surface-800">
+        {groups.map((group) => {
+          const isOpen = openFamilies.has(group.key);
+          return (
+            <div key={group.key} className="bg-surface-950">
+              <div className="flex items-center justify-between border-b border-surface-800 px-3 py-2">
+                <button
+                  type="button"
+                  onClick={() => toggleFamily(group.key)}
+                  className="flex flex-1 items-center gap-2 text-left text-xs font-medium text-ink transition-colors hover:text-accent"
+                >
+                  <span
+                    className={`transition-transform ${isOpen ? 'rotate-90' : ''}`}
+                  >
+                    <ChevronRight size={14} />
+                  </span>
+                  <span className="truncate">
+                    {t('compare.familyLabel')}: {group.label}
+                  </span>
+                  {group.isInferred && (
+                    <span className="shrink-0 rounded border border-violet-400/30 bg-violet-500/10 px-1 py-0.5 text-[9px] text-violet-300">
+                      {t('compare.inferredFamily')}
+                    </span>
+                  )}
+                  <span className="shrink-0 rounded-full bg-surface-800 px-1.5 py-0.5 text-[10px] text-ink-muted">
+                    {group.members.length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onAddAllFamilyVersions(group.members)}
+                  className="ml-2 inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[10px] text-accent transition-colors hover:bg-accent/10"
+                  title={t('compare.selectAllLanguages')}
+                >
+                  <Plus size={10} />
+                  {t('compare.selectAllLanguages')}
+                </button>
+              </div>
+              {isOpen && (
+                <div className="divide-y divide-surface-800">
+                  {group.members.map((task) => renderTaskButton(task, true))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {ungrouped.length > 0 && (
+        <div className="border-t border-surface-700">
+          <div className="bg-surface-950 px-3 py-2 text-[10px] font-medium uppercase tracking-wider text-ink-muted">
+            {t('task.noGroup')}
+          </div>
+          <div className="divide-y divide-surface-800">
+            {ungrouped.map((task) => renderTaskButton(task, false))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface SetupPanelProps {
   tasks: Task[];
   sampleSets: api.SampleSetListItem[];
   isLoadingTasks: boolean;
   isLoadingSets: boolean;
   selectedTaskId: string;
-  onSelectTask: (id: string) => void;
+  onSelectTask: (taskId: string) => void;
+  onAddAllFamilyVersions: (familyTasks: Task[]) => void;
   taskDetail: (Task & { versions: TaskVersion[] }) | null;
   isDetailLoading: boolean;
   selectedVersionId: string | null;
-  onSelectVersion: (id: string | null) => void;
+  onSelectVersion: (versionId: string | null) => void;
   selectedVersions: SelectedVersion[];
   onAddVersion: () => void;
   onRemoveVersion: (taskVersionId: string) => void;
   selectedSetId: string;
-  onSelectSet: (id: string) => void;
+  onSelectSet: (setId: string) => void;
   limit: LimitOption;
   onChangeLimit: (value: LimitOption) => void;
+  limitStrategy: RunLimitStrategy;
+  onChangeLimitStrategy: (value: RunLimitStrategy) => void;
+  concurrency: RunConcurrency;
+  onChangeConcurrency: (value: RunConcurrency) => void;
+  maxRetries: RunRetries;
+  onChangeMaxRetries: (value: RunRetries) => void;
+  runName: string;
+  onChangeRunName: (value: string) => void;
   providerNames: Map<string, string>;
   sampleVarsKeys: string[];
   sampleImageRoles: string[];
   onChangeVersionVariableMapping: (
     taskVersionId: string,
-    mapping: Record<string, string>,
+    variableMapping: Record<string, string>,
   ) => void;
   onChangeVersionImageRoleMapping: (
     taskVersionId: string,
-    mapping: Record<string, string>,
+    imageRoleMapping: Record<string, string>,
   ) => void;
   onStart: () => void;
   isStarting: boolean;
@@ -657,6 +996,7 @@ function SetupPanel({
   isLoadingSets,
   selectedTaskId,
   onSelectTask,
+  onAddAllFamilyVersions,
   taskDetail,
   isDetailLoading,
   selectedVersionId,
@@ -668,6 +1008,14 @@ function SetupPanel({
   onSelectSet,
   limit,
   onChangeLimit,
+  limitStrategy,
+  onChangeLimitStrategy,
+  concurrency,
+  onChangeConcurrency,
+  maxRetries,
+  onChangeMaxRetries,
+  runName,
+  onChangeRunName,
   providerNames,
   sampleVarsKeys,
   sampleImageRoles,
@@ -678,12 +1026,6 @@ function SetupPanel({
   canStart,
 }: SetupPanelProps) {
   const { t } = useI18n();
-
-  const limitOptions: { value: LimitOption; labelKey: string }[] = [
-    { value: 10, labelKey: 'batch.limit10' },
-    { value: 50, labelKey: 'batch.limit50' },
-    { value: 'all', labelKey: 'batch.limitAll' },
-  ];
 
   const versions = taskDetail?.versions ?? [];
 
@@ -722,30 +1064,18 @@ function SetupPanel({
               </select>
             </div>
 
-            <div>
-              <label className="mb-1.5 block text-xs text-ink-muted">{t('batch.limit')}</label>
-              <div className="flex flex-wrap gap-2">
-                {limitOptions.map((option) => (
-                  <button
-                    key={String(option.value)}
-                    type="button"
-                    onClick={() => onChangeLimit(option.value)}
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs transition-colors ${
-                      limit === option.value
-                        ? 'border-accent/50 bg-accent/10 text-accent'
-                        : 'border-surface-700 text-ink-muted hover:bg-surface-800 hover:text-ink'
-                    }`}
-                  >
-                    {limit === option.value ? (
-                      <CheckCircle2 size={12} className="text-accent" />
-                    ) : (
-                      <Square size={12} />
-                    )}
-                    {t(option.labelKey)}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <RunExecutionControls
+              name={runName}
+              onChangeName={onChangeRunName}
+              limit={limit}
+              onChangeLimit={onChangeLimit}
+              limitStrategy={limitStrategy}
+              onChangeLimitStrategy={onChangeLimitStrategy}
+              concurrency={concurrency}
+              onChangeConcurrency={onChangeConcurrency}
+              maxRetries={maxRetries}
+              onChangeMaxRetries={onChangeMaxRetries}
+            />
           </div>
         )}
       </section>
@@ -768,18 +1098,12 @@ function SetupPanel({
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
                 <label className="mb-1.5 block text-xs text-ink-muted">{t('batch.task')}</label>
-                <select
-                  value={selectedTaskId}
-                  onChange={(event) => onSelectTask(event.target.value)}
-                  className="w-full rounded-md border border-surface-700 bg-surface-900 px-3 py-2 text-xs text-ink focus:border-accent focus:outline-none"
-                >
-                  <option value="">{t('batch.taskPlaceholder')}</option>
-                  {tasks.map((task) => (
-                    <option key={task.task_id} value={task.task_id}>
-                      {task.name}
-                    </option>
-                  ))}
-                </select>
+                <TaskFamilyPicker
+                  tasks={tasks}
+                  selectedTaskId={selectedTaskId}
+                  onSelectTask={onSelectTask}
+                  onAddAllFamilyVersions={onAddAllFamilyVersions}
+                />
               </div>
 
               <div>
@@ -1350,6 +1674,16 @@ function CrossRunSetupPanel({
 }: CrossRunSetupPanelProps) {
   const { t } = useI18n();
   const canStart = selectedRunIds.length >= 2 && selectedRunIds.length <= 4;
+  const orderedRuns = useMemo(
+    () =>
+      [...runs].sort((a, b) => {
+        const aFamily = String(a.summary?.family_id || a.summary?.task_id || '');
+        const bFamily = String(b.summary?.family_id || b.summary?.task_id || '');
+        if (aFamily !== bFamily) return aFamily.localeCompare(bFamily);
+        return (b.completed_at ?? b.created_at).localeCompare(a.completed_at ?? a.created_at);
+      }),
+    [runs],
+  );
 
   return (
     <div className="space-y-5">
@@ -1373,12 +1707,14 @@ function CrossRunSetupPanel({
                 <thead className="sticky top-0 z-10 bg-surface-900">
                   <tr className="border-b border-surface-700 text-ink-muted">
                     <th className="w-12 px-4 py-3 font-semibold uppercase tracking-wider"></th>
-                    <th className="px-4 py-3 font-semibold uppercase tracking-wider">Run</th>
+                    <th className="px-4 py-3 font-semibold uppercase tracking-wider">
+                      {t('runs.runName')}
+                    </th>
                     <th className="px-4 py-3 font-semibold uppercase tracking-wider">
                       {t('task.model')}
                     </th>
                     <th className="px-4 py-3 font-semibold uppercase tracking-wider">
-                      {t('runs.column.type')}
+                      {t('batch.sampleSet')}
                     </th>
                     <th className="px-4 py-3 font-semibold uppercase tracking-wider">
                       {t('task.updatedAt')}
@@ -1386,13 +1722,19 @@ function CrossRunSetupPanel({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-800">
-                  {runs.map((run) => {
+                  {orderedRuns.map((run) => {
                     const isSelected = selectedRunIds.includes(run.run_id);
                     const summary = run.summary ?? {};
                     const taskName =
                       typeof summary.task_name === 'string' ? summary.task_name : '';
                     const modelId =
                       typeof summary.model_id === 'string' ? summary.model_id : '';
+                    const language =
+                      typeof summary.language === 'string' ? summary.language : '';
+                    const sampleSetName =
+                      typeof summary.sample_set_name === 'string' ? summary.sample_set_name : '';
+                    const familyId =
+                      typeof summary.family_id === 'string' ? summary.family_id : '';
                     const itemCount =
                       typeof summary.item_count === 'number'
                         ? summary.item_count
@@ -1417,10 +1759,8 @@ function CrossRunSetupPanel({
                           />
                         </td>
                         <td className="px-4 py-3 align-middle">
-                          <div className="font-mono text-ink">{run.run_id}</div>
-                          {run.name ? (
-                            <div className="text-[11px] text-ink-dim">{run.name}</div>
-                          ) : null}
+                          <div className="font-medium text-ink">{run.name || taskName || run.run_id}</div>
+                          <div className="font-mono text-[10px] text-ink-dim">{run.run_id}</div>
                           {itemCount !== null ? (
                             <div className="text-[11px] text-ink-dim">
                               {itemCount} {t('runs.column.sampleCount')}
@@ -1429,10 +1769,18 @@ function CrossRunSetupPanel({
                         </td>
                         <td className="px-4 py-3 align-middle">
                           <div className="text-ink">{taskName || '—'}</div>
-                          <div className="text-[11px] text-ink-dim">{modelId || '—'}</div>
+                          <div className="flex gap-2 text-[11px] text-ink-dim">
+                            {language && <span className="text-accent">{language}</span>}
+                            <span>{modelId || '—'}</span>
+                          </div>
+                          {familyId && (
+                            <div className="mt-0.5 truncate text-[10px] text-violet-300/70" title={familyId}>
+                              {t('task.translationFamily')}
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-3 align-middle text-ink-dim">
-                          {runTypeLabel(run.run_type, t)}
+                          {sampleSetName || '—'}
                         </td>
                         <td className="px-4 py-3 align-middle text-ink-dim">
                           {formatDate(run.completed_at ?? run.created_at)}
@@ -2232,15 +2580,6 @@ function formatDuration(ms: number): string {
 
 function pad(value: number): string {
   return value.toString().padStart(2, '0');
-}
-
-function runTypeLabel(
-  runType: string,
-  t: (key: string, params?: Record<string, string | number>) => string,
-): string {
-  const key = `runs.type.${runType}`;
-  const label = t(key);
-  return label === key ? runType : label;
 }
 
 function formatDate(iso: string | null): string {

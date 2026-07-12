@@ -3,6 +3,7 @@
 import type {
   ApiErrorBody,
   CompareRunCreationResponse,
+  CompareRunMatrix,
   CreateCompareRunPayload,
   CrossRunResponse,
   ImageSlotSpec,
@@ -634,6 +635,7 @@ export interface RunDetail {
     notes: string;
   };
   items: RunItemSummary[];
+  matrix?: CompareRunMatrix;
 }
 
 export async function getRun(runId: string): Promise<RunDetail> {
@@ -709,6 +711,7 @@ export interface CreateBatchRunPayload {
   limit_strategy?: 'first' | 'random';
   max_concurrency?: number;
   max_retries?: number;
+  name?: string;
   variable_mapping?: Record<string, string>;
   image_role_mapping?: Record<string, string>;
 }
@@ -806,7 +809,7 @@ export async function listCompletedRuns(): Promise<RunListItem[]> {
     listRuns({ status: 'completed_with_errors', limit: 200 }),
   ]);
   return [...completed.runs, ...partial.runs]
-    .filter((run) => run.run_type !== 'compare')
+    .filter((run) => run.run_type === 'batch')
     .sort((a, b) =>
       (b.completed_at ?? b.created_at).localeCompare(a.completed_at ?? a.created_at),
     );

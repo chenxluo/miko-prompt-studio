@@ -5,19 +5,26 @@ import {
   ChevronRight,
   Circle,
   Columns3,
+  GitCompare,
   ImageIcon,
   Loader2,
   Search,
   Star,
   X,
-  XCircle,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import * as api from '../api/client';
 import type { UpdateReviewPayload } from '../api/payloads';
 import { resolveImageSrc } from '../components/lab/ImagePanel';
 import { CollapsibleSection } from '../components/results/CollapsibleSection';
+import {
+  CompareOverlay,
+  ReviewBadge,
+  ReviewToggleButton,
+  StatusBadge,
+  extractReview,
+} from '../components/results/CompareOverlay';
 import { ParsedOutputView } from '../components/results/ParsedOutputView';
 import { ReasoningBlock } from '../components/results/ReasoningBlock';
 import { ReviewStatsPanel } from '../components/results/ReviewStatsPanel';
@@ -25,6 +32,7 @@ import { RunSelector } from '../components/results/RunSelector';
 import type { I18n } from '../i18n';
 import { useI18n } from '../i18n';
 import type { ImageRef, RequestImage, RunItemSummary } from '../types';
+import { CrossRunAnalysisView } from './CompareView';
 
 interface ResultsViewProps {
   initialRunId?: string | null;
@@ -53,13 +61,35 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
   const [compareMode, setCompareMode] = useState(false);
   const [compareSelection, setCompareSelection] = useState<Set<string>>(new Set());
   const [showCompare, setShowCompare] = useState(false);
+  const [showCrossRunAnalysis, setShowCrossRunAnalysis] = useState(false);
 
-  // Keep selected run in sync with external navigation.
+  // Keep selected run in sync with external navigation, and redirect compare runs
+  // to the dedicated compare-results view.
   useEffect(() => {
-    if (initialRunId && initialRunId !== selectedRunId) {
-      setSelectedRunId(initialRunId);
+    if (!initialRunId || initialRunId === selectedRunId) return;
+    const run = runs.find((r) => r.run_id === initialRunId);
+    if (run?.run_type === 'compare') {
+      window.dispatchEvent(
+        new CustomEvent('miko:navigate', {
+          detail: { view: 'compareResults', runId: initialRunId },
+        }),
+      );
+      return;
     }
-  }, [initialRunId]);
+    setSelectedRunId(initialRunId);
+  }, [initialRunId, runs, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRunId) return;
+    const run = runs.find((r) => r.run_id === selectedRunId);
+    if (run?.run_type === 'compare') {
+      window.dispatchEvent(
+        new CustomEvent('miko:navigate', {
+          detail: { view: 'compareResults', runId: selectedRunId },
+        }),
+      );
+    }
+  }, [runs, selectedRunId]);
 
   // Load the list of runs once on mount.
   useEffect(() => {
@@ -247,6 +277,10 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
     [filteredItems, compareSelection],
   );
 
+  if (showCrossRunAnalysis) {
+    return <CrossRunAnalysisView onExit={() => setShowCrossRunAnalysis(false)} />;
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-surface-950">
       <header className="relative z-20 flex flex-col gap-4 border-b border-surface-800 bg-surface-900/50 px-6 py-4 backdrop-blur">
@@ -262,7 +296,22 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
             <RunSelector
               runs={runs}
               selectedRunId={selectedRunId}
-              onSelect={setSelectedRunId}
+              onSelect={(nextRunId) => {
+                if (!nextRunId) {
+                  setSelectedRunId(null);
+                  return;
+                }
+                const run = runs.find((r) => r.run_id === nextRunId);
+                if (run?.run_type === 'compare') {
+                  window.dispatchEvent(
+                    new CustomEvent('miko:navigate', {
+                      detail: { view: 'compareResults', runId: nextRunId },
+                    }),
+                  );
+                  return;
+                }
+                setSelectedRunId(nextRunId);
+              }}
               disabled={loadingRuns}
               t={t}
             />
@@ -298,6 +347,15 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
               className="w-full rounded-md border border-surface-700 bg-surface-900 py-2 pl-9 pr-3 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none sm:w-64"
             />
           </div>
+
+          <button
+            type="button"
+            onClick={() => setShowCrossRunAnalysis(true)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 px-3 py-2 text-xs text-ink-muted transition-colors hover:bg-surface-800 hover:text-ink"
+          >
+            <GitCompare size={14} />
+            {t('compare.modeCrossRun')}
+          </button>
 
           {items.length > 0 && (
             <button
@@ -836,273 +894,6 @@ function DetailOverlay({
   );
 }
 
-interface CompareOverlayProps {
-  items: RunItemSummary[];
-  savingReview: boolean;
-  onAccepted: (item: RunItemSummary, value: boolean | null) => void;
-  onRating: (item: RunItemSummary, value: number) => void;
-  onClose: () => void;
-  t: I18n['t'];
-}
-
-function CompareOverlay({
-  items,
-  savingReview,
-  onAccepted,
-  onRating,
-  onClose,
-  t,
-}: CompareOverlayProps) {
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex flex-col bg-surface-950/90 backdrop-blur"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div className="flex items-center justify-between border-b border-surface-800 bg-surface-900/80 px-4 py-3">
-        <div className="flex items-center gap-2 text-sm font-semibold text-ink">
-          <Columns3 size={16} className="text-accent" />
-          {t('results.compare')} · {items.length}
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="inline-flex items-center justify-center rounded-md p-1.5 text-ink-muted transition-colors hover:bg-surface-800 hover:text-ink"
-        >
-          <X size={18} />
-        </button>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto">
-        <div className="flex h-full gap-4 p-4">
-          {items.map((item) => {
-            const images = extractImagesFromSnapshot(item.internal_request_snapshot);
-            const firstImage = images[0];
-            const src = firstImage ? resolveImageSrc(firstImage) : '';
-            const review = extractReview(item.review);
-            const rawText = extractRawText(item.response);
-            const parsed = item.response.parsed;
-            const parseStatus = extractParseStatus(item.response);
-            const reasoningText = extractReasoningText(item.response);
-
-            return (
-              <div
-                key={item.run_item_id}
-                className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-surface-700 bg-surface-900"
-              >
-                {/* Image */}
-                <div className="h-40 shrink-0 bg-surface-950">
-                  {src ? (
-                    <img src={src} alt="" className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-ink-dim">
-                      <ImageIcon size={24} />
-                    </div>
-                  )}
-                </div>
-
-                {/* sample_id */}
-                <div className="border-b border-surface-800 px-3 py-2">
-                  <span className="truncate font-mono text-[10px] text-ink-dim">
-                    {item.sample_id}
-                  </span>
-                  <span className="ml-2">
-                    <StatusBadge status={item.status} />
-                  </span>
-                </div>
-
-                {/* Response */}
-                <div className="min-h-0 flex-1 overflow-auto p-3">
-                  <ParsedOutputView
-                    parsed={parsed}
-                    parseStatus={parseStatus}
-                    fallbackText={rawText}
-                  />
-                  {reasoningText && <ReasoningBlock reasoningText={reasoningText} />}
-                </div>
-
-                {/* Review toolbar */}
-                <div className="border-t border-surface-800 p-3">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onAccepted(item, review.accepted === true ? null : true)}
-                      disabled={savingReview}
-                      className={`rounded p-1.5 transition-colors disabled:opacity-50 ${
-                        review.accepted === true
-                          ? 'bg-emerald-500/10 text-emerald-400'
-                          : 'text-ink-muted hover:text-emerald-400'
-                      }`}
-                    >
-                      <Check size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onAccepted(item, review.accepted === false ? null : false)}
-                      disabled={savingReview}
-                      className={`rounded p-1.5 transition-colors disabled:opacity-50 ${
-                        review.accepted === false
-                          ? 'bg-danger/10 text-danger'
-                          : 'text-ink-muted hover:text-danger'
-                      }`}
-                    >
-                      <X size={14} />
-                    </button>
-                    <div className="ml-2 flex items-center gap-0.5">
-                      {[1, 2, 3, 4, 5].map((star) => (
-                        <button
-                          key={star}
-                          type="button"
-                          onClick={() => onRating(item, star)}
-                          disabled={savingReview}
-                          className={`rounded p-0.5 transition-colors disabled:opacity-50 ${
-                            review.rating !== null && star <= review.rating
-                              ? 'text-cost'
-                              : 'text-surface-600 hover:text-ink-muted'
-                          }`}
-                        >
-                          <Star
-                            size={14}
-                            fill={review.rating !== null && star <= review.rating ? 'currentColor' : 'none'}
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface ReviewToggleButtonProps {
-  active: boolean;
-  onClick: () => void;
-  disabled: boolean;
-  icon: ReactNode;
-  label: string;
-  color: 'success' | 'danger' | 'muted';
-}
-
-function ReviewToggleButton({ active, onClick, disabled, icon, label, color }: ReviewToggleButtonProps) {
-  const colorClasses = {
-    success: active
-      ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
-      : 'border-surface-700 text-ink-muted hover:border-emerald-500/30 hover:text-emerald-400',
-    danger: active
-      ? 'border-danger/50 bg-danger/10 text-danger'
-      : 'border-surface-700 text-ink-muted hover:border-danger/30 hover:text-danger',
-    muted: active
-      ? 'border-surface-500 bg-surface-800 text-ink'
-      : 'border-surface-700 text-ink-muted hover:border-surface-500 hover:text-ink',
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={label}
-      className={`inline-flex items-center justify-center rounded-md border p-1.5 transition-colors disabled:opacity-50 ${colorClasses[color]}`}
-      aria-label={label}
-    >
-      {icon}
-    </button>
-  );
-}
-
-function ReviewBadge({ review }: { review: ReviewState }) {
-  const { t } = useI18n();
-  if (review.accepted === true) {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
-        <Check size={10} />
-        {t('results.accepted')}
-      </span>
-    );
-  }
-  if (review.accepted === false) {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger">
-        <XCircle size={10} />
-        {t('results.rejected')}
-      </span>
-    );
-  }
-  return null;
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const { t } = useI18n();
-  const normalized = status.toLowerCase();
-
-  if (normalized === 'succeeded' || normalized === 'completed') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
-        <Check size={10} />
-        {t('result.succeeded')}
-      </span>
-    );
-  }
-  if (normalized === 'failed') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-[10px] font-medium text-danger">
-        <XCircle size={10} />
-        {t('result.failed')}
-      </span>
-    );
-  }
-  if (normalized === 'running') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
-        <Loader2 size={10} className="animate-spin" />
-        {t('result.running')}
-      </span>
-    );
-  }
-  if (normalized === 'cancelled') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-        {t('result.cancelled')}
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-surface-800 px-2 py-0.5 text-[10px] font-medium text-ink-muted">
-      {t('result.pending')}
-    </span>
-  );
-}
-
-interface ReviewState {
-  accepted: boolean | null;
-  rating: number | null;
-  notes: string;
-}
-
-function extractReview(review: Record<string, unknown>): ReviewState {
-  const accepted = review.accepted;
-  const rating = review.rating;
-  const notes = review.notes;
-  return {
-    accepted: typeof accepted === 'boolean' ? accepted : null,
-    rating: typeof rating === 'number' ? rating : null,
-    notes: typeof notes === 'string' ? notes : '',
-  };
-}
-
 function extractRawText(response: Record<string, unknown>): string {
   const raw = response.raw_text;
   if (typeof raw === 'string') return raw;
@@ -1166,4 +957,3 @@ function formatLatency(ms: number | null): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
 }
-

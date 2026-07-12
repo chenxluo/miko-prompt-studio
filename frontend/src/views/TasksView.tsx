@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   BookOpen,
   ChevronDown,
+  ChevronRight,
   Copy,
   FileText,
   GitBranch,
@@ -65,6 +66,7 @@ export function TasksView() {
   const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
   const [groupError, setGroupError] = useState<string | null>(null);
   const [groupSaving, setGroupSaving] = useState(false);
+  const [collapsedFamilyIds, setCollapsedFamilyIds] = useState<Set<string>>(new Set());
 
   const providerConfigs = useLabStore((state) => state.providerConfigs);
   const loadProviderConfigs = useLabStore((state) => state.loadProviderConfigs);
@@ -102,6 +104,24 @@ export function TasksView() {
     if (selectedGroupId === 'ungrouped') return tasks.filter((task) => !task.group_id);
     return tasks.filter((task) => task.group_id === selectedGroupId);
   }, [tasks, selectedGroupId]);
+
+  const taskFamilies = useMemo(() => {
+    const groupsByFamily = new Map<string, Task[]>();
+    for (const task of filteredTasks) {
+      const key = task.family_id || task.task_id;
+      const members = groupsByFamily.get(key) ?? [];
+      members.push(task);
+      groupsByFamily.set(key, members);
+    }
+    return Array.from(groupsByFamily.entries()).map(([familyId, members]) => ({
+      familyId,
+      members: [...members].sort((a, b) => {
+        if (a.task_id === familyId) return -1;
+        if (b.task_id === familyId) return 1;
+        return (a.language || a.name).localeCompare(b.language || b.name);
+      }),
+    }));
+  }, [filteredTasks]);
 
   async function refreshTasks(groupId?: string | null) {
     setIsLoading(true);
@@ -197,6 +217,23 @@ export function TasksView() {
     window.dispatchEvent(new CustomEvent('miko:navigate', { detail: 'lab' }));
   }
 
+  function renderTaskCard(task: Task) {
+    return (
+      <TaskListCard
+        key={task.task_id}
+        task={task}
+        groups={groups}
+        providerNames={providerNames}
+        isDeleting={deletingId === task.task_id}
+        onClick={() => setSelectedTask(task)}
+        onDelete={() => void handleDelete(task)}
+        onLoad={() => void handleLoad(task, task.current_version ?? undefined)}
+        onMoveGroup={(groupId) => void handleMoveTask(task, groupId)}
+        translationDrift={isTranslationDrifted(task, tasks)}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-surface-950">
       <header className="flex items-center justify-between border-b border-surface-800 bg-surface-900/50 px-6 py-3 backdrop-blur">
@@ -242,20 +279,49 @@ export function TasksView() {
           </div>
         ) : (
           <div className="grid gap-3">
-            {filteredTasks.map((task) => (
-              <TaskListCard
-                key={task.task_id}
-                task={task}
-                groups={groups}
-                providerNames={providerNames}
-                isDeleting={deletingId === task.task_id}
-                onClick={() => setSelectedTask(task)}
-                onDelete={() => void handleDelete(task)}
-                onLoad={() => void handleLoad(task, task.current_version ?? undefined)}
-                onMoveGroup={(groupId) => void handleMoveTask(task, groupId)}
-                translationDrift={isTranslationDrifted(task, tasks)}
-              />
-            ))}
+            {taskFamilies.map(({ familyId, members }) => {
+              const isFamily = members.length > 1;
+              const isCollapsed = collapsedFamilyIds.has(familyId);
+              const root = members.find((task) => task.task_id === familyId) ?? members[0];
+              if (!isFamily) {
+                return renderTaskCard(members[0]);
+              }
+              return (
+                <section key={familyId} className="rounded-lg border border-violet-500/25 bg-violet-500/[0.03] p-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCollapsedFamilyIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(familyId)) next.delete(familyId);
+                        else next.add(familyId);
+                        return next;
+                      })
+                    }
+                    className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs text-violet-200"
+                  >
+                    {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    <GitBranch size={13} />
+                    <span className="font-semibold">{root.name}</span>
+                    <span className="text-violet-300/70">
+                      {t('task.languageCount', { count: members.length })}
+                    </span>
+                    <span className="ml-auto flex gap-1">
+                      {members.map((task) => (
+                        <span key={task.task_id} className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[10px]">
+                          {task.language || '—'}
+                        </span>
+                      ))}
+                    </span>
+                  </button>
+                  {!isCollapsed && (
+                    <div className="ml-5 grid gap-2 border-l border-violet-500/20 pl-3 pt-2">
+                      {members.map(renderTaskCard)}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
           </div>
         )}
       </section>
@@ -699,10 +765,14 @@ function TaskDetailDrawer({
                   >
                     <option value="">{t('task.noTranslationFamily')}</option>
                     {allTasks
-                      .filter((candidate) => candidate.task_id !== task.task_id)
+                      .filter(
+                        (candidate) =>
+                          candidate.task_id !== task.task_id || task.family_id === task.task_id,
+                      )
                       .map((candidate) => (
                         <option key={candidate.task_id} value={candidate.task_id}>
                           {candidate.name}{candidate.language ? ` · ${candidate.language}` : ''}
+                          {candidate.task_id === task.task_id ? ` · ${t('task.familyRoot')}` : ''}
                         </option>
                       ))}
                   </select>

@@ -698,6 +698,12 @@ export interface CrossRunRow {
   items: Record<string, RunItemSummary>;  // run_id → item
 }
 
+export interface CompareRunMatrix {
+  sample_ids: string[];
+  variant_labels: string[];
+  items_by_sample: Record<string, Record<string, RunItemSummary>>;
+}
+
 // ---------------------------------------------------------------------------
 // Result snapshots
 // ---------------------------------------------------------------------------
@@ -809,8 +815,12 @@ export interface CompareTaskVersionPayload {
 
 export interface CreateCompareRunPayload {
   sample_set_id: string;
-  task_versions: CompareTaskVersionPayload[];
+  variants: CompareTaskVersionPayload[];
   limit?: number | null;
+  limit_strategy?: 'first' | 'random';
+  max_concurrency?: number;
+  max_retries?: number;
+  name?: string;
 }
 
 export interface CompareRunCreationResponse {

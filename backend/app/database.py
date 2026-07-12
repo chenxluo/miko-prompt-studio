@@ -162,6 +162,16 @@ async def _migrate_task_language_family_columns(conn) -> None:
         await conn.execute(
             text(f"CREATE INDEX IF NOT EXISTS ix_tasks_{column} ON tasks ({column})")
         )
+    # Backfill roots created by the original one-way relationship model so
+    # every family is immediately observable from all of its members.
+    await conn.execute(
+        text(
+            "UPDATE tasks SET family_id = task_id "
+            "WHERE family_id IS NULL AND task_id IN ("
+            "SELECT DISTINCT family_id FROM tasks WHERE family_id IS NOT NULL"
+            ")"
+        )
+    )
 
 
 async def _migrate_prompt_version_library_columns(conn) -> None:
@@ -884,20 +894,33 @@ async def _recreate_tasks_table_without_legacy_columns(conn) -> None:
             "current_version_id VARCHAR, "
             "tags JSON DEFAULT '[]', "
             "group_id VARCHAR, "
+            "family_id VARCHAR, "
+            "language VARCHAR, "
+            "translated_from_version_id VARCHAR, "
             "created_at VARCHAR, "
             "updated_at VARCHAR"
             ")"
         )
     )
+
+    # Conditionally copy family/language columns only if they exist in the
+    # source table (they were added by a later migration on fresh databases).
+    family_select = (
+        "family_id, language, translated_from_version_id"
+        if {"family_id", "language", "translated_from_version_id"}.issubset(columns)
+        else "NULL, NULL, NULL"
+    )
     await conn.execute(
         text(
             "INSERT INTO tasks_new "
-            "(task_id, name, description, current_version_id, tags, group_id, created_at, updated_at) "  # noqa: E501
+            "(task_id, name, description, current_version_id, tags, group_id, "
+            "family_id, language, translated_from_version_id, created_at, updated_at) "
             "SELECT task_id, name, "
             "COALESCE(description, ''), "
             "current_version_id, "
             "COALESCE(tags, '[]'), "
             "group_id, "
+            f"{family_select}, "
             "created_at, updated_at "
             "FROM tasks"
         )

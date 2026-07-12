@@ -2,10 +2,8 @@
 
 from pathlib import Path
 
-import pytest
-
-from app.services.importer import ColumnMapping, _image_ref_from_value, import_csv
 from app.schemas.sample_record import ImageRef
+from app.services.importer import ColumnMapping, _image_ref_from_value, import_csv
 
 
 def test_image_ref_from_value_strips_whitespace_from_url():

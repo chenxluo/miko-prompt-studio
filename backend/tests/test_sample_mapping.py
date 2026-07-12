@@ -1,4 +1,3 @@
-import pytest
 
 from app.schemas.prompt import ImageSlotSpec, VariableSpec
 from app.schemas.sample_record import ImageRef, SampleRecord
