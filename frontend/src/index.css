@@ -50,6 +50,13 @@ body,
   height: 100%;
 }
 
+html,
+body {
+  /* Prevent scroll chaining from inner scroll containers to the document,
+     and disable Chrome's rubber-band overscroll glow at viewport edges. */
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   background-color: var(--surface-950);

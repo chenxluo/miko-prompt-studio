@@ -21,7 +21,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
@@ -83,6 +83,15 @@ from app.services.batch_executor import (
     BatchRunSpec,
     request_cancel,
     start_batch_run,
+)
+from app.services.bundle import (
+    ExportOptions,
+    ExportScope,
+    ImportOptions,
+    export_bundle,
+    import_bundle,
+    read_bundle,
+    write_bundle,
 )
 from app.services.compare_executor import (
     CompareRunSpec,
@@ -2608,6 +2617,100 @@ async def export_run_html(run_id: str, db: AsyncSession = Depends(get_db)):
         media_type="text/html",
         headers={"Content-Disposition": f'attachment; filename="run_{run_id}.html"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Bundle export / import (portable workspace bundles)
+# ---------------------------------------------------------------------------
+
+
+class BundleExportPayload(BaseModel):
+    task_ids: list[str] = Field(default_factory=list)
+    sample_set_ids: list[str] = Field(default_factory=list)
+    prompt_ids: list[str] = Field(default_factory=list)
+    provider_config_ids: list[str] = Field(default_factory=list)
+    all: bool = False
+    include_assets: bool = True
+
+
+@app.post("/api/bundle/export")
+async def export_bundle_endpoint(
+    payload: BundleExportPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export a portable bundle file containing tasks, samples, prompts, etc."""
+    if not payload.all and not any(
+        (
+            payload.task_ids,
+            payload.sample_set_ids,
+            payload.prompt_ids,
+            payload.provider_config_ids,
+        )
+    ):
+        raise HTTPException(400, "no export scope given")
+
+    scope = ExportScope(
+        task_ids=payload.task_ids,
+        sample_set_ids=payload.sample_set_ids,
+        prompt_ids=payload.prompt_ids,
+        provider_config_ids=payload.provider_config_ids,
+        all_=payload.all,
+    )
+    options = ExportOptions(include_assets=payload.include_assets)
+    envelope = await export_bundle(db, scope, options)
+
+    temp_dir = settings.data_dir / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".zip" if envelope.assets else ".mikobundle"
+    timestamp = utc_now().strftime("%Y%m%d-%H%M%S")
+    filename = f"miko-bundle-{timestamp}{suffix}"
+    temp_path = temp_dir / f"export_{uuid4().hex[:12]}{suffix}"
+    try:
+        write_bundle(envelope, temp_path)
+        body = temp_path.read_bytes()
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    media_type = "application/zip" if envelope.assets else "application/json"
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/bundle/import")
+async def import_bundle_endpoint(
+    file: UploadFile = File(...),
+    mode: str = Query("skip", pattern="^(skip|overwrite|duplicate)$"),
+    dry_run: bool = Query(False),
+    include_assets: bool = Query(True),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import a portable bundle file uploaded as multipart form data."""
+    temp_path = await _save_upload_to_temp(file)
+    try:
+        try:
+            envelope = read_bundle(temp_path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        options = ImportOptions(
+            mode=mode, dry_run=dry_run, include_assets=include_assets
+        )
+        report = await import_bundle(db, envelope, options)
+    finally:
+        await run_in_threadpool(_remove_file, temp_path)
+
+    return {
+        "created": report.created,
+        "updated": report.updated,
+        "skipped": report.skipped,
+        "duplicated": report.duplicated,
+        "renamed": [list(p) for p in report.renamed],
+        "conflicts": report.conflicts,
+        "warnings": report.warnings,
+        "redactions_needed": report.redactions_needed,
+    }
 
 
 @app.get("/api/runs/{run_id}/items/{run_item_id}")

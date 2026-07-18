@@ -8,6 +8,7 @@ import {
   GitBranch,
   ImageIcon,
   Loader2,
+  Package,
   Plus,
   Tag,
   Trash2,
@@ -21,6 +22,7 @@ import {
   deleteTask,
   deleteTaskGroup,
   deleteTaskVersion,
+  exportBundle,
   exportTaskDoc,
   forkTask,
   getTask,
@@ -432,6 +434,8 @@ function TaskDetailDrawer({
   const [versionDeleteError, setVersionDeleteError] = useState<string | null>(null);
   const [isExportingDoc, setIsExportingDoc] = useState(false);
   const [exportDocError, setExportDocError] = useState<string | null>(null);
+  const [isExportingBundle, setIsExportingBundle] = useState(false);
+  const [exportBundleError, setExportBundleError] = useState<string | null>(null);
   const [language, setLanguage] = useState(task.language ?? '');
   const [familyTaskId, setFamilyTaskId] = useState(task.family_id ?? '');
   const [isSavingLanguage, setIsSavingLanguage] = useState(false);
@@ -452,6 +456,17 @@ function TaskDetailDrawer({
       setExportDocError(err instanceof Error ? err.message : t('task.exportDocFailed'));
     } finally {
       setIsExportingDoc(false);
+    }
+  };
+  const handleExportBundle = async () => {
+    setIsExportingBundle(true);
+    setExportBundleError(null);
+    try {
+      await exportBundle({ task_ids: [task.task_id] });
+    } catch (err) {
+      setExportBundleError(err instanceof Error ? err.message : t('task.exportDocFailed'));
+    } finally {
+      setIsExportingBundle(false);
     }
   };
 
@@ -688,8 +703,23 @@ function TaskDetailDrawer({
                 {t('task.exportDoc')}
               </button>
             )}
+            {viewLevel === 'version' && !selectedExample && selectedVersion && (
+              <button
+                type="button"
+                onClick={() => void handleExportBundle()}
+                disabled={isExportingBundle}
+                className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-2 py-1.5 text-xs text-ink-muted hover:bg-surface-800 hover:text-ink disabled:opacity-50"
+                title={t('task.exportBundle')}
+              >
+                {isExportingBundle ? <Loader2 size={12} className="animate-spin" /> : <Package size={12} />}
+                {t('task.exportBundle')}
+              </button>
+            )}
             {exportDocError && (
               <span className="text-xs text-danger">{exportDocError}</span>
+            )}
+            {exportBundleError && (
+              <span className="text-xs text-danger">{exportBundleError}</span>
             )}
             <div className="relative">
               <button

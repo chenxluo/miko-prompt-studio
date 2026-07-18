@@ -1,6 +1,7 @@
 """Command-line interface for Miko Prompt Studio.
 
-Exposes the read + run loop (Tier 1 + 2) for external agents and scripts.
+Exposes the read + run loop (Tier 1 + 2) for external agents and scripts, plus
+portable bundle export/import for cross-device migration.
 Architecture: in-process — imports the FastAPI route handlers and the batch
 executor directly and drives them with a SQLAlchemy session against the same
 SQLite database the desktop GUI uses (~/.miko_prompt_studio/miko.db). No server
@@ -26,6 +27,14 @@ from typing import Any
 
 from app.database import init_db, session_scope
 from app.services.batch_executor import _running_tasks
+from app.services.bundle import (
+    ExportOptions,
+    ExportScope,
+    ImportOptions,
+    export_to_file,
+    import_bundle,
+    read_bundle,
+)
 from app.services.filter_eval import FilterError, apply_filter, build_item_context
 from app.services.refs import (
     RefResolutionError,
@@ -816,7 +825,7 @@ async def cmd_sset_import_csv(args: argparse.Namespace) -> None:
             "imported_count": len(records),
             **({"validation": report.model_dump(mode="json")} if report is not None else {}),
         },
-        human=_human_import,
+        human=_human_sset_import,
     )
 
 
@@ -860,7 +869,7 @@ async def cmd_sset_import_jsonl(args: argparse.Namespace) -> None:
             "imported_count": len(records),
             **({"validation": report.model_dump(mode="json")} if report is not None else {}),
         },
-        human=_human_import,
+        human=_human_sset_import,
     )
 
 
@@ -945,6 +954,66 @@ async def cmd_api(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Export / import (portable bundles)
+# ---------------------------------------------------------------------------
+
+
+async def cmd_export(args: argparse.Namespace) -> None:
+    if not args.all_ and not any(
+        (args.task, args.sample_set, args.prompt, args.provider)
+    ):
+        raise ValueError(
+            "no export scope given; use --task/--sample-set/--prompt/--provider or --all"
+        )
+
+    async with session_scope() as db:
+        if args.all_:
+            scope = ExportScope(all_=True)
+        else:
+            task_ids: list[str] = []
+            for ref in args.task:
+                task, _ = await resolve_task_ref(db, ref)
+                task_ids.append(task.task_id)
+            sample_set_ids: list[str] = []
+            for ref in args.sample_set:
+                sset = await resolve_sset_ref(db, ref)
+                sample_set_ids.append(sset.sample_set_id)
+            scope = ExportScope(
+                task_ids=task_ids,
+                sample_set_ids=sample_set_ids,
+                prompt_ids=args.prompt,
+                provider_config_ids=args.provider,
+            )
+        options = ExportOptions(include_assets=not args.no_assets)
+        summary = await export_to_file(db, scope, options, args.out)
+    _emit(summary, human=_human_export)
+
+
+async def cmd_import(args: argparse.Namespace) -> None:
+    envelope = read_bundle(args.path)
+    async with session_scope() as db:
+        options = ImportOptions(
+            mode=args.mode,
+            dry_run=args.dry_run,
+            include_assets=not args.no_assets,
+        )
+        report = await import_bundle(db, envelope, options)
+
+    report_dict = {
+        "created": report.created,
+        "updated": report.updated,
+        "skipped": report.skipped,
+        "duplicated": report.duplicated,
+        "renamed": [[kind_id, new_name] for kind_id, new_name in report.renamed],
+        "conflicts": report.conflicts,
+        "warnings": report.warnings,
+        "redactions_needed": report.redactions_needed,
+        "dry_run": options.dry_run,
+    }
+    _emit(report_dict, human=_human_import)
+
+
+# ---------------------------------------------------------------------------
 # Tier 3 human printers
 # ---------------------------------------------------------------------------
 
@@ -958,7 +1027,7 @@ def _human_task_brief(task: dict) -> None:
         print(f"model:             {cv.get('model_id')}")
 
 
-def _human_import(result: dict) -> None:
+def _human_sset_import(result: dict) -> None:
     print(f"sample_set_id: {result.get('sample_set_id')}")
     print(f"imported:      {result.get('imported_count')}")
     v = result.get("validation")
@@ -967,6 +1036,37 @@ def _human_import(result: dict) -> None:
         invalid = v.get("invalid_rows") or []
         if invalid:
             print(f"invalid rows:  {len(invalid)} (use --json to see them)")
+
+
+def _human_export(s: dict) -> None:
+    print(f"wrote:    {s.get('path')}")
+    print(f"entities: {s.get('entities')}")
+    print(f"assets:   {s.get('assets')}")
+    print(f"bytes:    {s.get('bytes')}")
+
+
+def _human_import(r: dict) -> None:
+    if r.get("dry_run"):
+        print("(dry run — no changes applied)")
+    print(f"created:    {len(r.get('created', []))}")
+    print(f"updated:    {len(r.get('updated', []))}")
+    print(f"skipped:    {len(r.get('skipped', []))}")
+    print(f"duplicated: {len(r.get('duplicated', []))}")
+    renamed = r.get("renamed") or []
+    if renamed:
+        print("renamed:")
+        for item in renamed:
+            print(f"  {item[0]}  ->  {item[1]}")
+    warnings = r.get("warnings") or []
+    if warnings:
+        print("warnings:")
+        for w in warnings:
+            print(f"  - {w}")
+    redactions = r.get("redactions_needed") or []
+    if redactions:
+        print("redactions needed (reconfigure on this machine):")
+        for item in redactions:
+            print(f"  - {item}")
 
 
 def _human_task_spec(spec: dict) -> None:
@@ -1332,6 +1432,41 @@ def _build_parser() -> argparse.ArgumentParser:
     api.add_argument("-d", "--data", default=None, help="JSON body (inline).")
     api.add_argument("--data-file", dest="data_file", default=None, help="JSON body from file.")
     api.set_defaults(_handler=cmd_api)
+
+    # --- export / import (portable bundles) ---
+    exp = sub.add_parser("export", help="Export tasks/samples/prompts to a portable bundle file.")
+    exp.add_argument("--task", action="append", default=[], help="Task id/name/#index. Repeatable.")
+    exp.add_argument(
+        "--sample-set",
+        "--sset",
+        dest="sample_set",
+        action="append",
+        default=[],
+        help="Sample set id/name. Repeatable.",
+    )
+    exp.add_argument("--prompt", action="append", default=[], help="Prompt id. Repeatable.")
+    exp.add_argument(
+        "--provider", action="append", default=[], help="Provider config id. Repeatable."
+    )
+    exp.add_argument("--all", dest="all_", action="store_true", help="Export the full workspace.")
+    exp.add_argument("-o", "--out", required=True, help="Output file path (.mikobundle or .zip).")
+    exp.add_argument(
+        "--no-assets", dest="no_assets", action="store_true", help="Do not bundle image assets."
+    )
+    exp.set_defaults(_handler=cmd_export)
+
+    imp = sub.add_parser("import", help="Import a portable bundle file.")
+    imp.add_argument("path", help="Bundle file path (.mikobundle or .zip).")
+    imp.add_argument(
+        "--mode", choices=["skip", "overwrite", "duplicate"], default="skip"
+    )
+    imp.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", help="Preview without writing."
+    )
+    imp.add_argument(
+        "--no-assets", dest="no_assets", action="store_true", help="Do not restore image assets."
+    )
+    imp.set_defaults(_handler=cmd_import)
 
     return p
 

@@ -87,7 +87,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-surface-950">
+    <div className="relative flex h-screen w-screen overflow-hidden bg-surface-950">
       <aside className="flex w-64 flex-col border-r border-surface-800 bg-surface-900">
         <div className="flex items-center gap-3 border-b border-surface-800 px-5 py-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-accent text-surface-950 shadow-glow">

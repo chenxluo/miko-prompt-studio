@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Plus, Trash2, AlertCircle, Check, Server, RefreshCw, Loader2, Pencil, X } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, Check, Server, RefreshCw, Loader2, Pencil, X, Download, Upload } from 'lucide-react';
 
 import { useI18n } from '../i18n';
 import * as api from '../api/client';
@@ -49,6 +49,8 @@ export function SettingsView() {
   const [pricingDiscount, setPricingDiscount] = useState('1');
   const [pricingCurrency, setPricingCurrency] = useState('USD');
   const [pricingNotes, setPricingNotes] = useState('');
+  const [editingPricingId, setEditingPricingId] = useState<string | null>(null);
+  const [pricingSaving, setPricingSaving] = useState(false);
 
   useEffect(() => {
     loadProviderConfigs();
@@ -323,10 +325,47 @@ export function SettingsView() {
     [manualModelInput, loadProviderConfigs],
   );
 
+  const resetPricingForm = useCallback(() => {
+    setEditingPricingId(null);
+    setPricingProviderConfigId('');
+    setPricingModelId('');
+    setPricingInput('0');
+    setPricingOutput('0');
+    setPricingCached('');
+    setPricingImageMode('token');
+    setPricingImagePrice('0');
+    setPricingDiscount('1');
+    setPricingCurrency('USD');
+    setPricingNotes('');
+  }, []);
+
+  const startEditPricing = useCallback((row: PricingListItem) => {
+    setEditingPricingId(row.pricing_profile_id);
+    setPricingProviderConfigId(row.provider_config_id ?? '');
+    setPricingModelId(row.model_id);
+    setPricingInput(String(row.input_token_price ?? 0));
+    setPricingOutput(String(row.output_token_price ?? 0));
+    setPricingCached(row.cached_input_price == null ? '' : String(row.cached_input_price));
+    const mode = typeof row.image_pricing?.mode === 'string' ? row.image_pricing.mode : 'token';
+    setPricingImageMode(mode);
+    if (mode === 'per_request') {
+      setPricingImagePrice(String(Number(row.image_pricing?.image_per_request_price ?? 0)));
+    } else if (mode === 'token') {
+      setPricingImagePrice(String(Number(row.image_pricing?.image_token_price ?? 0)));
+    } else {
+      setPricingImagePrice('0');
+    }
+    setPricingDiscount(String(row.batch_discount ?? 1));
+    setPricingCurrency(row.currency || 'USD');
+    setPricingNotes(row.notes ?? '');
+    setPricingError(null);
+  }, []);
+
   const handleSavePricing = useCallback(async () => {
     if (!pricingProviderConfigId || !pricingModelId.trim()) return;
     const selected = providerConfigs.find((c) => c.provider_config_id === pricingProviderConfigId);
     const imagePrice = parseFloat(pricingImagePrice || '0') || 0;
+    setPricingSaving(true);
     setPricingError(null);
     try {
       await api.savePricing({
@@ -345,18 +384,14 @@ export function SettingsView() {
         },
         notes: pricingNotes.trim(),
       });
-      setPricingModelId('');
-      setPricingInput('0');
-      setPricingOutput('0');
-      setPricingCached('');
-      setPricingImagePrice('0');
-      setPricingDiscount('1');
-      setPricingNotes('');
+      resetPricingForm();
       await loadPricing();
     } catch (err) {
       setPricingError(err instanceof Error ? err.message : 'Failed to save pricing');
+    } finally {
+      setPricingSaving(false);
     }
-  }, [loadPricing, pricingCached, pricingCurrency, pricingDiscount, pricingImageMode, pricingImagePrice, pricingInput, pricingModelId, pricingNotes, pricingOutput, pricingProviderConfigId, providerConfigs]);
+  }, [loadPricing, pricingCached, pricingCurrency, pricingDiscount, pricingImageMode, pricingImagePrice, pricingInput, pricingModelId, pricingNotes, pricingOutput, pricingProviderConfigId, providerConfigs, resetPricingForm]);
 
   const handleDeletePricing = useCallback(async (pricingProfileId: string) => {
     setPricingError(null);
@@ -369,7 +404,8 @@ export function SettingsView() {
   }, [loadPricing]);
 
   return (
-    <section className="flex-1 overflow-y-auto bg-surface-950">
+    <div className="flex h-full flex-col overflow-hidden bg-surface-950">
+    <section className="flex-1 overflow-y-auto overscroll-y-contain">
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       {/* Provider configs section */}
       <div>
@@ -737,9 +773,26 @@ export function SettingsView() {
                       <td className="px-3 py-2 text-ink-muted">{Math.round(row.batch_discount * 100)}%</td>
                       <td className="px-3 py-2 text-ink-muted">{row.currency}</td>
                       <td className="px-3 py-2 text-right">
-                        <button onClick={() => void handleDeletePricing(row.pricing_profile_id)} className="rounded p-1.5 text-ink-dim transition-colors hover:bg-surface-800 hover:text-danger" title={t('settings.remove')}>
-                          <Trash2 size={15} />
-                        </button>
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => startEditPricing(row)}
+                            disabled={editingPricingId !== null}
+                            className="rounded p-1.5 text-ink-dim transition-colors hover:bg-surface-800 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                            title={t('settings.edit')}
+                          >
+                            <Pencil size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeletePricing(row.pricing_profile_id)}
+                            disabled={editingPricingId !== null}
+                            className="rounded p-1.5 text-ink-dim transition-colors hover:bg-surface-800 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
+                            title={t('settings.remove')}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -751,15 +804,37 @@ export function SettingsView() {
       </div>
 
       <div className="panel space-y-3 p-4">
-        <h3 className="text-sm font-semibold text-ink">{t('pricing.add')}</h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-ink">
+            {editingPricingId ? t('pricing.edit') : t('pricing.add')}
+          </h3>
+          {editingPricingId && (
+            <span className="rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-accent">
+              {t('pricing.editing')}
+            </span>
+          )}
+        </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <select value={pricingProviderConfigId} onChange={(e) => { setPricingProviderConfigId(e.target.value); setPricingModelId(''); }} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none">
+          <select
+            value={pricingProviderConfigId}
+            onChange={(e) => { setPricingProviderConfigId(e.target.value); setPricingModelId(''); }}
+            disabled={editingPricingId !== null}
+            className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+          >
             <option value="" disabled>{t('pricing.providerConfig')}</option>
             {providerConfigs.map((config) => <option key={config.provider_config_id} value={config.provider_config_id}>{config.name}</option>)}
           </select>
-          <select value={pricingModelId} onChange={(e) => setPricingModelId(e.target.value)} disabled={!pricingProviderConfigId || pricingModelOptions.length === 0} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-40">
+          <select
+            value={pricingModelId}
+            onChange={(e) => setPricingModelId(e.target.value)}
+            disabled={editingPricingId !== null || !pricingProviderConfigId || pricingModelOptions.length === 0}
+            className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+          >
             <option value="" disabled>{pricingModelOptions.length > 0 ? t('pricing.model') : t('model.noModels')}</option>
             {pricingModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
+            {editingPricingId && pricingModelId && !pricingModelOptions.includes(pricingModelId) && (
+              <option value={pricingModelId}>{pricingModelId}</option>
+            )}
           </select>
           <input value={pricingCurrency} onChange={(e) => setPricingCurrency(e.target.value)} placeholder={t('pricing.currency')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none" />
           <input type="number" step="0.01" value={pricingInput} onChange={(e) => setPricingInput(e.target.value)} placeholder={t('pricing.input')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none" />
@@ -774,13 +849,264 @@ export function SettingsView() {
           <input type="number" step="0.01" value={pricingDiscount} onChange={(e) => setPricingDiscount(e.target.value)} placeholder={t('pricing.discount')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none" />
           <input value={pricingNotes} onChange={(e) => setPricingNotes(e.target.value)} placeholder={t('settings.notes')} className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none sm:col-span-3" />
         </div>
-        <button onClick={handleSavePricing} disabled={!pricingProviderConfigId || !pricingModelId.trim()} className="btn-primary disabled:cursor-not-allowed disabled:opacity-40">
-          <Plus size={16} /> {t('pricing.save')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleSavePricing}
+            disabled={pricingSaving || !pricingProviderConfigId || !pricingModelId.trim()}
+            className="btn-primary disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {pricingSaving ? <Loader2 size={16} className="animate-spin" /> : editingPricingId ? <Check size={16} /> : <Plus size={16} />}
+            {editingPricingId ? t('pricing.update') : t('pricing.save')}
+          </button>
+          {editingPricingId && (
+            <button
+              type="button"
+              onClick={resetPricingForm}
+              disabled={pricingSaving}
+              className="inline-flex items-center gap-1 rounded-md border border-surface-700 px-3 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-800 hover:text-ink disabled:opacity-40"
+            >
+              <X size={14} />
+              {t('settings.cancelEdit')}
+            </button>
+          )}
+        </div>
       </div>
+
+      <MigrationSection />
 
     </div>
     </section>
+    </div>
+  );
+}
+
+function MigrationSection() {
+  const { t } = useI18n();
+  const [includeAssets, setIncludeAssets] = useState(true);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const [file, setFile] = useState<File | null>(null);
+  const [mode, setMode] = useState<'skip' | 'overwrite' | 'duplicate'>('skip');
+  const [dryRun, setDryRun] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [report, setReport] = useState<api.BundleImportReport | null>(null);
+
+  async function handleExportWorkspace() {
+    setExportLoading(true);
+    setExportError(null);
+    try {
+      await api.exportBundle({ all: true, include_assets: includeAssets });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExportLoading(false);
+    }
+  }
+
+  async function handleImport() {
+    if (!file) {
+      setImportError(t('migration.noFile'));
+      return;
+    }
+    setImportLoading(true);
+    setImportError(null);
+    setReport(null);
+    try {
+      const result = await api.importBundle(file, {
+        mode,
+        dryRun,
+        includeAssets: true,
+      });
+      setReport(result);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="border-t border-surface-800 pt-6">
+        <h2 className="text-lg font-semibold text-ink">{t('migration.title')}</h2>
+        <p className="mt-1 text-sm text-ink-muted">{t('migration.exportDesc')}</p>
+      </div>
+
+      <div className="panel space-y-4 p-4">
+        <div className="flex items-start gap-3">
+          <div className="rounded-md border border-surface-700 bg-surface-950 p-2">
+            <Download size={18} className="text-accent" />
+          </div>
+          <div className="flex-1 space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold text-ink">{t('migration.exportWorkspace')}</h3>
+              <p className="text-xs text-ink-muted">{t('migration.exportDesc')}</p>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-muted">
+              <input
+                type="checkbox"
+                checked={includeAssets}
+                onChange={(e) => setIncludeAssets(e.target.checked)}
+                className="h-3.5 w-3.5 accent-accent"
+              />
+              {t('migration.includeAssets')}
+            </label>
+            <button
+              type="button"
+              onClick={() => void handleExportWorkspace()}
+              disabled={exportLoading}
+              className="btn-primary text-xs disabled:opacity-50"
+            >
+              {exportLoading ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Download size={14} />
+              )}
+              {t('migration.exportWorkspace')}
+            </button>
+            {exportError && <p className="text-xs text-danger">{exportError}</p>}
+          </div>
+        </div>
+
+        <div className="border-t border-surface-800" />
+
+        <div className="flex items-start gap-3">
+          <div className="rounded-md border border-surface-700 bg-surface-950 p-2">
+            <Upload size={18} className="text-accent" />
+          </div>
+          <div className="flex-1 space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold text-ink">{t('migration.importBundle')}</h3>
+              <p className="text-xs text-ink-muted">{t('migration.importDesc')}</p>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-ink-muted">{t('migration.selectFile')}</label>
+              <input
+                type="file"
+                accept=".mikobundle,.zip"
+                onChange={(e) => {
+                  setFile(e.target.files?.[0] ?? null);
+                  setReport(null);
+                }}
+                className="block w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-xs text-ink file:mr-3 file:rounded-md file:border-0 file:bg-surface-800 file:px-3 file:py-1 file:text-xs file:text-ink hover:file:bg-surface-700"
+              />
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs text-ink-muted">{t('migration.mode')}</span>
+              <div className="flex flex-wrap gap-2">
+                {(['skip', 'overwrite', 'duplicate'] as const).map((m) => (
+                  <label
+                    key={m}
+                    className={`cursor-pointer inline-flex items-center gap-1 rounded-md border px-2 py-1.5 text-xs transition-colors ${
+                      mode === m
+                        ? 'border-accent bg-surface-800 text-ink'
+                        : 'border-surface-700 text-ink-muted hover:bg-surface-800'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="bundleImportMode"
+                      value={m}
+                      checked={mode === m}
+                      onChange={() => setMode(m)}
+                      className="sr-only"
+                    />
+                    {t(`migration.mode${m.charAt(0).toUpperCase() + m.slice(1)}`)}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-muted">
+              <input
+                type="checkbox"
+                checked={dryRun}
+                onChange={(e) => setDryRun(e.target.checked)}
+                className="h-3.5 w-3.5 accent-accent"
+              />
+              {t('migration.dryRun')}
+            </label>
+            <button
+              type="button"
+              onClick={() => void handleImport()}
+              disabled={importLoading}
+              className="btn-primary text-xs disabled:opacity-50"
+            >
+              {importLoading ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Upload size={14} />
+              )}
+              {t('migration.import')}
+            </button>
+            {importError && (
+              <div className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+                {importError}
+              </div>
+            )}
+            {report && !importError && (
+              <div className="space-y-3 rounded-md border border-surface-700 bg-surface-950 p-3">
+                <h4 className="flex items-center gap-1.5 text-xs font-semibold text-ink">
+                  <Check size={14} className="text-accent" />
+                  {t('migration.importSuccess')}
+                </h4>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {[
+                    { key: 'created', value: report.created.length },
+                    { key: 'updated', value: report.updated.length },
+                    { key: 'skipped', value: report.skipped.length },
+                    { key: 'duplicated', value: report.duplicated.length },
+                  ].map(({ key, value }) => (
+                    <div key={key} className="rounded-md border border-surface-800 bg-surface-900 p-2 text-center">
+                      <div className="text-sm font-semibold text-ink">{value}</div>
+                      <div className="text-[10px] text-ink-muted">{t(`migration.${key}`)}</div>
+                    </div>
+                  ))}
+                </div>
+                {report.renamed.length > 0 && (
+                  <div className="space-y-1">
+                    <span className="text-xs font-medium text-ink-muted">{t('migration.renamed')}</span>
+                    <ul className="space-y-1 text-xs text-ink-muted">
+                      {report.renamed.map(([original, newName]) => (
+                        <li key={`${original}-${newName}`} className="font-mono">
+                          <span className="text-ink">{original}</span> → {newName}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {report.warnings.length > 0 && (
+                  <div className="space-y-1">
+                    <span className="text-xs font-medium text-ink-muted">{t('migration.warnings')}</span>
+                    <ul className="list-disc space-y-1 pl-4 text-xs text-ink-muted">
+                      {report.warnings.map((warning, index) => (
+                        <li key={index}>{warning}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {report.redactions_needed.length > 0 && (
+                  <div className="rounded-md border border-cost/40 bg-cost/10 p-3 text-xs text-cost">
+                    <div className="mb-1 flex items-center gap-1.5 font-semibold">
+                      <AlertCircle size={14} />
+                      {t('migration.redactionsTitle')}
+                    </div>
+                    <p className="mb-2 text-cost/90">{t('migration.redactionsDesc')}</p>
+                    <ul className="list-disc space-y-1 pl-4 font-mono text-cost/80">
+                      {report.redactions_needed.map((item, index) => (
+                        <li key={index}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 

@@ -1137,6 +1137,99 @@ export async function importJsonlFile(
 }
 
 // ---------------------------------------------------------------------------
+// Bundle export / import (cross-device migration)
+// ---------------------------------------------------------------------------
+
+export interface BundleExportPayload {
+  task_ids?: string[];
+  sample_set_ids?: string[];
+  prompt_ids?: string[];
+  provider_config_ids?: string[];
+  all?: boolean;
+  include_assets?: boolean;
+}
+
+export interface BundleImportReport {
+  created: string[];
+  updated: string[];
+  skipped: string[];
+  duplicated: string[];
+  renamed: [string, string][];
+  conflicts: unknown[];
+  warnings: string[];
+  redactions_needed: string[];
+}
+
+function formatBundleTimestamp(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const h = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  return `${y}${m}${d}-${h}${min}${s}`;
+}
+
+function extractBundleFilename(header: string | null, fallback: string): string {
+  if (!header) return fallback;
+  const utf8 = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8) return decodeURIComponent(utf8[1]);
+  const quoted = header.match(/filename\s*=\s*"([^"]+)"/i);
+  if (quoted) return quoted[1];
+  const simple = header.match(/filename\s*=\s*([^;]+)/i);
+  if (simple) return simple[1].trim();
+  return fallback;
+}
+
+export async function exportBundle(
+  payload: BundleExportPayload,
+): Promise<{ blob: Blob; filename: string }> {
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+  const response = await fetch(`${baseUrl}/api/bundle/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorBody = await parseErrorBody(response);
+    const message =
+      typeof errorBody?.detail === 'string'
+        ? errorBody.detail
+        : `POST /api/bundle/export failed with status ${response.status}`;
+    throw new ApiError(message, response.status, errorBody);
+  }
+  const blob = await response.blob();
+  const isZip = blob.type === 'application/zip';
+  const fallbackName = `miko-bundle-${formatBundleTimestamp()}.${isZip ? 'zip' : 'mikobundle'}`;
+  const filename = extractBundleFilename(response.headers.get('Content-Disposition'), fallbackName);
+  triggerDownload(blob, filename, isZip ? 'application/zip' : 'application/json');
+  return { blob, filename };
+}
+
+export async function importBundle(
+  file: File,
+  options: {
+    mode?: 'skip' | 'overwrite' | 'duplicate';
+    dryRun?: boolean;
+    includeAssets?: boolean;
+  } = {},
+): Promise<BundleImportReport> {
+  const params = new URLSearchParams();
+  params.set('mode', options.mode ?? 'skip');
+  params.set('dry_run', String(options.dryRun ?? false));
+  params.set('include_assets', String(options.includeAssets ?? true));
+  const formData = new FormData();
+  formData.append('file', file);
+  return request<BundleImportReport>(
+    'POST',
+    `/api/bundle/import?${params.toString()}`,
+    formData,
+    true,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Result snapshots
 // ---------------------------------------------------------------------------
 

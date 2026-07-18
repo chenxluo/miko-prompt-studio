@@ -43,3 +43,6 @@ electron/dist-electron/
 packaging/dist/
 packaging/*.log
 temp_research
+
+# Tool artifacts
+.playwright-cli/
