@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.bbox import BBox
 from app.schemas.common import (
     AttemptStatus,
     NormalizedError,
@@ -156,6 +157,7 @@ class ParsedResponse(BaseModel):
     parse_status: ParseStatus = ParseStatus.NOT_PARSED
     parse_errors: list[dict[str, Any]] = Field(default_factory=list)
     reasoning_text: str | None = None
+    boxes: list[BBox] | None = None     # 新增；None 表示未启用 bbox 解析
 
 
 class StreamEvent(BaseModel):

@@ -1,12 +1,13 @@
 import { Check, Columns3, ImageIcon, Loader2, Star, X, XCircle } from 'lucide-react';
 import { useEffect, type ReactNode } from 'react';
 
-import { resolveImageSrc } from '../lab/ImagePanel';
+import { AnnotatedImage } from './AnnotatedImage';
 import { ParsedOutputView } from './ParsedOutputView';
 import { ReasoningBlock } from './ReasoningBlock';
 import type { I18n } from '../../i18n';
 import { useI18n } from '../../i18n';
 import type { ImageRef, RequestImage, RunItemSummary } from '../../types';
+import { extractBoxes } from '../../utils/bbox';
 
 export interface CompareOverlayProps {
   items: RunItemSummary[];
@@ -58,7 +59,7 @@ export function CompareOverlay({
           {items.map((item) => {
             const images = extractImagesFromSnapshot(item.internal_request_snapshot);
             const firstImage = images[0];
-            const src = firstImage ? resolveImageSrc(firstImage) : '';
+            const boxes = extractBoxes(item.response);
             const review = extractReview(item.review);
             const rawText = extractRawText(item.response);
             const parsed = item.response.parsed;
@@ -70,16 +71,20 @@ export function CompareOverlay({
                 key={item.run_item_id}
                 className="flex h-full min-w-[20rem] flex-1 flex-col overflow-hidden rounded-lg border border-surface-700 bg-surface-900"
               >
-                {/* Image */}
-                <div className="h-40 shrink-0 bg-surface-950">
-                  {src ? (
-                    <img src={src} alt="" className="h-full w-full object-contain" />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-ink-dim">
-                      <ImageIcon size={24} />
-                    </div>
-                  )}
-                </div>
+                {/* Image (bbox overlay attaches to the first input image) */}
+                {firstImage ? (
+                  <AnnotatedImage
+                    framed={false}
+                    image={firstImage}
+                    boxes={boxes}
+                    maxHeight={150}
+                    className="h-40 shrink-0 items-center bg-surface-950"
+                  />
+                ) : (
+                  <div className="flex h-40 shrink-0 items-center justify-center bg-surface-950 text-ink-dim">
+                    <ImageIcon size={24} />
+                  </div>
+                )}
 
                 {/* sample_id */}
                 <div className="border-b border-surface-800 px-3 py-2">

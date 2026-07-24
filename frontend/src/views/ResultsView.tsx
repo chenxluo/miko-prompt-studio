@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api/client';
 import type { UpdateReviewPayload } from '../api/payloads';
 import { resolveImageSrc } from '../components/lab/ImagePanel';
+import { AnnotatedImage } from '../components/results/AnnotatedImage';
 import { CollapsibleSection } from '../components/results/CollapsibleSection';
 import {
   CompareOverlay,
@@ -32,6 +33,7 @@ import { RunSelector } from '../components/results/RunSelector';
 import type { I18n } from '../i18n';
 import { useI18n } from '../i18n';
 import type { ImageRef, RequestImage, RunItemSummary } from '../types';
+import { extractBoxes } from '../utils/bbox';
 import { CrossRunAnalysisView } from './CompareView';
 
 interface ResultsViewProps {
@@ -620,6 +622,8 @@ function DetailOverlay({
   const parsed = item.response.parsed;
   const parseStatus = extractParseStatus(item.response);
   const reasoningText = extractReasoningText(item.response);
+  // V1: boxes are drawn on the first input image only.
+  const boxes = extractBoxes(item.response);
 
   const inputTokens = getNumberField(item.usage, 'input_tokens');
   const outputTokens = getNumberField(item.usage, 'output_tokens');
@@ -663,20 +667,31 @@ function DetailOverlay({
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-muted">
               {t('results.inputImages')}
             </h2>
-            <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-surface-800 bg-surface-900/50 p-2">
-              {mainSrc ? (
-                <img
-                  src={mainSrc}
-                  alt=""
-                  className="max-h-full max-w-full rounded-md object-contain"
+            {mainImage && mainSrc ? (
+              mainImageIndex === 0 ? (
+                <AnnotatedImage
+                  image={mainImage}
+                  boxes={boxes}
+                  maxHeight="55vh"
+                  className="min-h-0 flex-1 items-center"
                 />
               ) : (
+                <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-surface-800 bg-surface-900/50 p-2">
+                  <img
+                    src={mainSrc}
+                    alt=""
+                    className="max-h-full max-w-full rounded-md object-contain"
+                  />
+                </div>
+              )
+            ) : (
+              <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-surface-800 bg-surface-900/50 p-2">
                 <div className="flex flex-col items-center gap-2 text-ink-dim">
                   <ImageIcon size={32} />
                   <span className="text-xs">{t('results.noImages')}</span>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
 
             {images.length > 1 && (
               <div className="mt-3 flex gap-2 overflow-x-auto pb-1">

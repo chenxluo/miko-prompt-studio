@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 
 import { resolveImageUrl } from '../components/lab/ImagePanel';
+import { AnnotatedImage } from '../components/results/AnnotatedImage';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
 import { useSnapshotStore } from '../store/snapshotStore';
@@ -29,6 +30,7 @@ import type {
   ResultSnapshotDetail,
   RunItemSummary,
 } from '../types';
+import { extractBoxes, extractFirstInputImage } from '../utils/bbox';
 
 export function SnapshotsView() {
   const { t } = useI18n();
@@ -872,6 +874,8 @@ function SnapshotResultDisplay({ item }: { item: RunItemSummary }) {
   const parseStatus =
     typeof response.parse_status === 'string' ? response.parse_status : undefined;
   const reasoningText = extractReasoningText(response);
+  const boxes = extractBoxes(response);
+  const inputImage = extractFirstInputImage(item.internal_request_snapshot);
 
   return (
     <div className="space-y-4">
@@ -884,6 +888,15 @@ function SnapshotResultDisplay({ item }: { item: RunItemSummary }) {
           <div className="markdown-body text-xs text-ink">
             <ReactMarkdown>{reasoningText}</ReactMarkdown>
           </div>
+        </div>
+      )}
+
+      {boxes.length > 0 && inputImage && (
+        <div>
+          <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-muted">
+            {t('result.bboxOverlay')}
+          </div>
+          <AnnotatedImage image={inputImage} boxes={boxes} maxHeight="40vh" />
         </div>
       )}
 

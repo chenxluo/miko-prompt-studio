@@ -30,6 +30,7 @@ import { useI18n } from '../../i18n';
 import { type ImageSlot, buildPromptWithImageSlots } from '../../store/labStore';
 import { useLabStore } from '../../store/labStore';
 import type { ImageRef, ImageSlotSpec, OutputContract, OutputMode, VariableSpec } from '../../types';
+import { BBoxParserConfig } from './BBoxParserConfig';
 import { resolveImageSrc } from './ImagePanel';
 
 const VARIABLE_RE = /\{\{\s*#?\s*vars\.([A-Za-z0-9_]+)\s*\}\}/g;
@@ -954,6 +955,14 @@ export function PromptPanel() {
             )}
           </div>
         )}
+
+        <BBoxParserConfig
+          value={outputContract.bbox_parser ?? null}
+          imageSlots={templateImageSlotSpecs}
+          onChange={(bboxParser) =>
+            setOutputContract({ ...outputContract, bbox_parser: bboxParser })
+          }
+        />
       </div>
     </section>
   );

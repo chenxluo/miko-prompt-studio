@@ -19,8 +19,10 @@ import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 
 import * as api from '../api/client';
+import { AnnotatedImage } from '../components/results/AnnotatedImage';
 import { useI18n } from '../i18n';
 import type { RunItemSummary, RunSessionStatus, RunType } from '../types';
+import { extractBoxes, extractFirstInputImage } from '../utils/bbox';
 
 const PAGE_SIZE = 20;
 
@@ -711,6 +713,8 @@ function RunItemModal({ item, onClose }: RunItemModalProps) {
   const usage = item.usage || {};
   const cost = item.cost || {};
   const error = item.error;
+  const boxes = extractBoxes(item.response);
+  const inputImage = extractFirstInputImage(item.internal_request_snapshot);
 
   return (
     <div
@@ -741,6 +745,15 @@ function RunItemModal({ item, onClose }: RunItemModalProps) {
         </div>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
+          {boxes.length > 0 && inputImage && (
+            <div>
+              <div className="mb-1 text-xs font-medium text-ink-muted">
+                {t('result.bboxOverlay')}
+              </div>
+              <AnnotatedImage image={inputImage} boxes={boxes} maxHeight="40vh" />
+            </div>
+          )}
+
           {rawText && (
             <div>
               <div className="mb-1 text-xs font-medium text-ink-muted">{t('history.rawText')}</div>

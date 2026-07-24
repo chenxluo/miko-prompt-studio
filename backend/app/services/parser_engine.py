@@ -9,6 +9,7 @@ from typing import Any
 from app.schemas.common import OutputMode, ParseStatus
 from app.schemas.output_contract import OutputContract
 from app.schemas.run_record import ParsedResponse
+from app.services.bbox_extractor import extract_bboxes
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 _HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s*)?([^:\n：]{1,80})\s*[:：]\s*(.*)$")
@@ -16,6 +17,12 @@ _HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s*)?([^:\n：]{1,80})\s*[:：]\s*(.*)$"
 
 def parse_response(raw_text: str, contract: OutputContract) -> ParsedResponse:
     """Parse raw model text according to the output contract mode."""
+    parsed = _parse_response_inner(raw_text, contract)
+    return _apply_bbox_extraction(parsed, contract)
+
+
+def _parse_response_inner(raw_text: str, contract: OutputContract) -> ParsedResponse:
+    """Inner parsing logic without bbox extraction."""
 
     mode = contract.mode
     if mode == OutputMode.FREE_TEXT:
@@ -190,3 +197,15 @@ def _json_candidates(raw_text: str) -> list[tuple[str, str]]:
     if array_start != -1 and array_end > array_start:
         candidates.append(("repaired", raw_text[array_start : array_end + 1]))
     return [(source, text) for source, text in candidates if text]
+
+
+def _apply_bbox_extraction(parsed: ParsedResponse, contract: OutputContract) -> ParsedResponse:
+    """Apply bbox extraction as a post-processing step. Mutates and returns parsed."""
+    bp = contract.bbox_parser
+    if bp is None:
+        return parsed
+    boxes, warns = extract_bboxes(parsed.raw_text, bp)
+    parsed.boxes = boxes
+    if warns:
+        parsed.parse_errors.extend(warns)
+    return parsed

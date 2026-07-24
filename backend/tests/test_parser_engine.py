@@ -1,6 +1,13 @@
+from app.schemas.bbox import BBoxParser
 from app.schemas.common import OutputMode, ParseStatus
 from app.schemas.output_contract import OutputContract, ParserConfig
 from app.services.parser_engine import parse_response
+
+_QWEN_BBOX_TEXT = (
+    "The image shows a person.\n"
+    "bbox:[45,55,570,960]: A dominant full-body front view of a woman in white dress.\n"
+    "bbox:[600,400,750,800]: A handbag held in her right hand.\n"
+)
 
 
 def _soft_contract(section_names: list[str] | None = None) -> OutputContract:
@@ -92,3 +99,50 @@ def test_soft_sections_reads_legacy_sections_option_key() -> None:
 
     assert parsed.parse_status == ParseStatus.PARSED
     assert parsed.parsed == {"分类": "拼接图", "理由": "两张独立照片"}
+
+
+def test_free_text_with_bbox_parser_extracts_boxes() -> None:
+    contract = OutputContract(
+        mode=OutputMode.FREE_TEXT,
+        bbox_parser=BBoxParser(image_slot="image", preset="qwen_inline"),
+    )
+    parsed = parse_response(_QWEN_BBOX_TEXT, contract)
+
+    assert parsed.parse_status == ParseStatus.NOT_PARSED
+    assert parsed.parsed == _QWEN_BBOX_TEXT
+    assert parsed.boxes is not None
+    assert len(parsed.boxes) == 2
+    assert parsed.boxes[0].x1 == 0.045
+    assert parsed.boxes[0].label == "A dominant full-body front view of a woman in white dress."
+    assert parsed.parse_errors == []
+
+
+def test_free_text_without_bbox_parser_keeps_boxes_none() -> None:
+    contract = OutputContract(mode=OutputMode.FREE_TEXT)
+    parsed = parse_response("No boxes here", contract)
+
+    assert parsed.boxes is None
+    assert parsed.parse_errors == []
+
+
+def test_soft_sections_with_bbox_parser_keeps_both_results() -> None:
+    text = (
+        "分类: 拼接图\n\n"
+        "理由\n"
+        "该图像由两张独立照片水平拼接而成\n"
+        "bbox:[10,20,30,40]: extra annotation"
+    )
+    contract = _soft_contract(["分类", "理由"])
+    contract.bbox_parser = BBoxParser(image_slot="image", preset="qwen_inline")
+    parsed = parse_response(text, contract)
+
+    assert parsed.parse_status == ParseStatus.PARSED
+    # 主解析按原样保留文本；bbox 行作为理由区段内容的一部分被保留。
+    assert parsed.parsed == {
+        "分类": "拼接图",
+        "理由": "该图像由两张独立照片水平拼接而成\nbbox:[10,20,30,40]: extra annotation",
+    }
+    assert parsed.boxes is not None
+    assert len(parsed.boxes) == 1
+    assert parsed.boxes[0].x1 == 0.010
+    assert parsed.boxes[0].label == "extra annotation"

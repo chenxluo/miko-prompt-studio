@@ -20,6 +20,7 @@ export const DEFAULT_OUTPUT_CONTRACT: OutputContract = {
   mode: 'free_text',
   json_schema: null,
   parser: null,
+  bbox_parser: null,
 };
 
 export const DEFAULT_MODEL_PARAMETERS: ModelParameters = {

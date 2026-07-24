@@ -133,6 +133,7 @@ def _serialize_item(item_data: dict[str, Any]) -> dict[str, Any]:
             "raw_text": raw_text,
             "parsed": parsed,
             "reasoning_text": reasoning_text,
+            "boxes": response.get("boxes"),
         },
         "usage": item_data.get("usage") or {},
         "cost": item_data.get("cost") or {},
@@ -279,6 +280,24 @@ header.bar .sub{margin-top:2px;font-size:11px;color:#6b6b74}
 .pane.right{flex:1}
 .main-img{display:flex;align-items:center;justify-content:center;background:#0a0a0b;border:1px solid #1f1f23;border-radius:8px;min-height:200px;max-height:50vh;margin-bottom:12px}
 .main-img img{max-width:100%;max-height:50vh;object-fit:contain;border-radius:6px}
+.main-img .img-wrap{position:relative;display:inline-block;max-width:100%;max-height:50vh;line-height:0}
+.main-img .img-wrap img{display:block;max-width:100%;max-height:50vh;border-radius:6px;margin:0 auto}
+.bbox-overlay{position:absolute;inset:0;pointer-events:none;z-index:1}
+.bbox-overlay svg{width:100%;height:100%;overflow:visible;display:block}
+.bbox-overlay svg rect{transition:fill-opacity .15s}
+.bbox-overlay svg rect:hover{fill-opacity:0.22}
+.bbox-label{position:absolute;transform:translate(0,-100%);margin-top:-3px;padding:2px 6px;font-size:11px;font-weight:500;color:#0f172a;border-radius:2px;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.4;pointer-events:auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+.bbox-list{display:flex;flex-direction:column;gap:8px}
+.bbox-row{display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border-radius:4px;background:#0a0a0b;border:1px solid #1f1f23}
+.bbox-row:hover{border-color:#2a2a30}
+.bbox-swatch{flex:0 0 10px;width:10px;height:10px;border-radius:2px;margin-top:3px}
+.bbox-index{flex:0 0 auto;font-size:11px;color:#6b6b74;font-weight:600;margin-top:2px}
+.bbox-content{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.bbox-detail-label{display:block;position:static;transform:none;background:transparent;color:#e8e8ea;padding:0;font-size:12px;font-weight:500;max-width:none;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.4;font-family:inherit}
+.bbox-detail-label .bbox-unlabeled{color:#9a9aa3;font-style:italic}
+.bbox-coords{font-size:11px;color:#9a9aa3}
+.bbox-raw{font-size:10px;color:#6b6b74;white-space:pre-wrap;word-break:break-word;margin-top:2px}
+.bbox-unlabeled{color:#6b6b74;font-style:italic}
 .main-img .none{color:#4a4a52;font-size:12px}
 .thumbs{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
 .thumbs button{flex:0 0 auto;width:52px;height:52px;border-radius:6px;overflow:hidden;border:2px solid transparent;background:transparent;padding:0;cursor:pointer}
@@ -383,13 +402,64 @@ _JS = r"""
     return cur + ' ' + Number(amount).toFixed(6);
   }
 
+  function truncate(s, n){
+    s = String(s || '');
+    return s.length > n ? s.slice(0, n-1) + '…' : s;
+  }
+
+  function renderBBoxOverlay(boxes){
+    var palette = ['#2dd4bf', '#fbbf24', '#38bdf8', '#a78bfa'];
+    var parts = [];
+    boxes.forEach(function(b, i){
+      if (!b || typeof b.x1 !== 'number') return;
+      var color = palette[i % palette.length];
+      var x = Math.max(0, Math.min(1, b.x1));
+      var y = Math.max(0, Math.min(1, b.y1));
+      var x2 = Math.max(0, Math.min(1, b.x2));
+      var y2 = Math.max(0, Math.min(1, b.y2));
+      var w = x2 - x;
+      var h = y2 - y;
+      if (w <= 0 || h <= 0) return;
+      parts.push(
+        '<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+h+'" '
+        + 'fill="'+color+'" fill-opacity="0.08" '
+        + 'stroke="'+color+'" stroke-width="2" '
+        + 'vector-effect="non-scaling-stroke" '
+        + 'stroke-linejoin="round" />'
+      );
+      if (b.label) {
+        var labelText = truncate(b.label, 40);
+        var labelTop = y < 0.09 ? (y + 0.005) : (y - 0.005);
+        var labelStyle = 'left:'+(x*100)+'%;top:'+(labelTop*100)+'%;'
+                         + 'background:'+color+';'
+                         + 'transform:'+(y < 0.09 ? 'translate(0,0)' : 'translate(0,-100%)')+';';
+        parts.push(
+          '<div class="bbox-label" style="'+labelStyle+'" title="'+esc(b.label)+'">'
+          + esc(labelText) + '</div>'
+        );
+      }
+    });
+    if (!parts.length) return '';
+    return '<div class="bbox-overlay"><svg viewBox="0 0 1 1" '
+         + 'preserveAspectRatio="none" overflow="visible">'
+         + parts.filter(function(p){ return p.startsWith('<rect'); }).join('')
+         + '</svg>'
+         + parts.filter(function(p){ return p.startsWith('<div'); }).join('')
+         + '</div>';
+  }
+
   function renderImages(item){
     var imgs = item.images || [];
     if(!imgs.length){
       return '<div class="main-img"><span class="none">No images</span></div>';
     }
     var first = imgs[0];
-    var html = '<div class="main-img"><img id="o-mainimg" src="'+esc(first.src||'')+'" alt=""></div>';
+    var boxes = ((item.response || {}).boxes) || [];
+    var overlayHtml = boxes.length ? renderBBoxOverlay(boxes) : '';
+    var html = '<div class="main-img"><div class="img-wrap">'
+             + '<img id="o-mainimg" src="'+esc(first.src||'')+'" alt="">'
+             + overlayHtml
+             + '</div></div>';
     if(imgs.length > 1){
       html += '<div class="thumbs">';
       imgs.forEach(function(im, i){
@@ -434,6 +504,34 @@ _JS = r"""
     return body;
   }
 
+  function formatCoords(b){
+    var f = function(n){ return (typeof n === 'number') ? n.toFixed(4) : '—'; };
+    return '('+f(b.x1)+', '+f(b.y1)+', '+f(b.x2)+', '+f(b.y2)+')';
+  }
+
+  function renderBBoxDetails(boxes){
+    var palette = ['#2dd4bf', '#fbbf24', '#38bdf8', '#a78bfa'];
+    var rows = boxes.map(function(b, i){
+      if (!b || typeof b.x1 !== 'number') return '';
+      var color = palette[i % palette.length];
+      var label = b.label ? esc(truncate(b.label, 60)) : '<span class="bbox-unlabeled">未命名</span>';
+      var coords = formatCoords(b);
+      var raw = b.raw_match ? esc(truncate(b.raw_match, 80)) : '';
+      return (
+        '<div class="bbox-row">'
+        + '<span class="bbox-swatch" style="background:'+color+'"></span>'
+        + '<span class="bbox-index">#'+(i+1)+'</span>'
+        + '<div class="bbox-content">'
+        +   '<div class="bbox-detail-label">'+label+'</div>'
+        +   '<div class="bbox-coords mono">'+coords+'</div>'
+        +   (raw ? '<div class="bbox-raw mono">'+raw+'</div>' : '')
+        + '</div>'
+        + '</div>'
+      );
+    }).join('');
+    return '<div class="bbox-list">'+rows+'</div>';
+  }
+
   function renderDetail(idx){
     var item = items[idx];
     var html = '';
@@ -452,6 +550,11 @@ _JS = r"""
     var raw = (item.response || {}).raw_text;
     if(raw){
       html += '<details><summary>Raw text</summary><div class="inner"><pre class="raw">'+esc(raw)+'</pre></div></details>';
+    }
+    var boxes = (item.response || {}).boxes;
+    if(Array.isArray(boxes) && boxes.length){
+      html += '<details><summary>Bounding Boxes ('+boxes.length+')</summary>';
+      html += '<div class="inner">' + renderBBoxDetails(boxes) + '</div></details>';
     }
     // Metadata — kept compact per scope decision.
     var u = item.usage || {};

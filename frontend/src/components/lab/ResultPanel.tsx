@@ -9,6 +9,7 @@ import {
   ImageIcon,
   Layers,
   Loader2,
+  ScanSearch,
   Terminal,
   XCircle,
 } from 'lucide-react';
@@ -19,7 +20,9 @@ import { useI18n } from '../../i18n';
 import { useSnapshotStore } from '../../store/snapshotStore';
 import { useLabStore } from '../../store/labStore';
 import type { RunItemType, RunSession, RunItemSummary } from '../../types';
+import { extractBoxes, extractFirstInputImage } from '../../utils/bbox';
 import type { CreateResultSnapshotPayload } from '../../api/payloads';
+import { AnnotatedImage } from '../results/AnnotatedImage';
 import { CollapsibleSection } from '../results/CollapsibleSection';
 import { ParsedOutputView } from '../results/ParsedOutputView';
 import { ReasoningBlock } from '../results/ReasoningBlock';
@@ -68,6 +71,11 @@ export function ResultPanel() {
       : undefined;
 
   const reasoningText = extractReasoningText(response);
+
+  // BBox overlay: only shown when the backend bbox parser produced boxes.
+  // V1 limitation: boxes always attach to the first input image.
+  const boxes = extractBoxes(response);
+  const annotatedImage = extractFirstInputImage(lastRunItem.internal_request_snapshot);
 
   return (
     <div className="panel flex flex-col overflow-hidden">
@@ -142,6 +150,19 @@ export function ResultPanel() {
           </div>
           <ParsedOutputView parsed={parsed} parseStatus={parseStatus} fallbackText={rawText} />
         </div>
+
+        {boxes.length > 0 && annotatedImage && (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
+              <ScanSearch size={12} />
+              {t('result.bboxOverlay')}
+              <span className="rounded-full bg-surface-800 px-1.5 py-0.5 text-[10px] text-ink-dim">
+                {boxes.length}
+              </span>
+            </div>
+            <AnnotatedImage image={annotatedImage} boxes={boxes} />
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <UsageBlock usage={usage} />

@@ -166,10 +166,31 @@ export interface ParserConfig {
   options?: Record<string, unknown>;
 }
 
+export interface BBoxFormat {
+  order?: 'xyxy' | 'yxyx' | 'xywh' | 'cxcywh';
+  space?: 'normalized_1000' | 'normalized_1';
+}
+
+/**
+ * Declarative bbox extractor config (mirrors backend schemas/bbox.py).
+ * `preset` and `pattern` are mutually exclusive — the backend rejects
+ * payloads that carry both. In preset mode `format` is ignored (each
+ * preset ships its own default); it only applies to custom patterns.
+ */
+export interface BBoxParser {
+  image_slot: string;
+  preset?: string | null;
+  pattern?: string | null;
+  coord_groups?: number[] | null;
+  label_group?: number | null;
+  format?: BBoxFormat;
+}
+
 export interface OutputContract {
   mode?: OutputMode;
   json_schema?: Record<string, unknown> | null;
   parser?: ParserConfig | null;
+  bbox_parser?: BBoxParser | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -561,12 +582,24 @@ export interface NormalizedResponse {
   reasoning_text?: string | null;
 }
 
+export interface BBox {
+  /** Normalized [0,1] xyxy coordinates (backend contract, see schemas/bbox.py). */
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  label?: string | null;
+  raw_match?: string;
+}
+
 export interface ParsedResponse {
   raw_text?: string;
   parsed?: unknown;
   parse_status?: ParseStatus;
   parse_errors?: Record<string, unknown>[];
   reasoning_text?: string | null;
+  /** null/undefined = bbox parsing disabled; [] = enabled but no matches. */
+  boxes?: BBox[] | null;
 }
 
 export interface AdapterInfo {

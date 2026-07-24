@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.bbox import BBoxParser
 from app.schemas.common import OutputMode
 
 
@@ -35,3 +36,4 @@ class OutputContract(BaseModel):
     mode: OutputMode = OutputMode.FREE_TEXT
     json_schema: dict[str, Any] | None = None
     parser: ParserConfig | None = None
+    bbox_parser: BBoxParser | None = None     # 新增；可选；None 时所有行为不变
