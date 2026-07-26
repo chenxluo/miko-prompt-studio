@@ -30,6 +30,7 @@
   "build": {
     "appId": "com.miko.prompt-studio",
     "productName": "Miko Prompt Studio",
+    "artifactName": "Miko.Prompt.Studio.Setup.${version}.${ext}",
     "directories": {
       "output": "release"
     },
