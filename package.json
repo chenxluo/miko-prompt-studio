@@ -14,7 +14,7 @@
     "build:backend": "node packaging/build_nuitka.mjs",
     "start": "npm run build:electron && electron .",
     "pack": "npm run build && npm run build:backend && electron-builder --dir",
-    "dist": "npm run build && npm run build:backend && electron-builder",
+    "dist": "npm run build && npm run build:backend && electron-builder --publish never",
     "bump": "node scripts/bump.mjs"
   },
   "author": "",

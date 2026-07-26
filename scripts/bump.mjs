@@ -59,11 +59,30 @@ function setMarkdownHeaderVersion(file) {
     changes++;
   }
 }
+function setUvLockSelfVersion(file) {
+  // The local editable project is the only lockfile block carrying
+  // `source = { editable = "." }`; its version line sits directly above.
+  // Touch only that line — dependency pins stay frozen. uv.lock has no
+  // content hash, so a hand-edit is safe; if the format ever moves this
+  // anchor, fall back to running `uv lock` in backend/.
+  const p = resolve(ROOT, file);
+  const src = readFileSync(p, 'utf-8');
+  const next = src.replace(
+    /(version\s*=\s*")[^"]*("\s*\n\s*source\s*=\s*\{\s*editable\s*=\s*"\."\s*\})/,
+    `$1${version}$2`,
+  );
+  if (next !== src) {
+    writeFileSync(p, next);
+    console.log(`  ${file}: -> ${version} (self-version)`);
+    changes++;
+  }
+}
 
 console.log(`Bumping to ${version}:`);
 setJsonVersion('frontend/package.json');
 setTomlVersion('backend/pyproject.toml');
 setMarkdownHeaderVersion('DEVELOPMENT.md');
+setUvLockSelfVersion('backend/uv.lock');
 
 if (changes === 0) {
   console.log('  (already in sync)');
