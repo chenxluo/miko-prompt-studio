@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,7 @@ class TaskVersionData(BaseModel):
     model_parameters: ModelParameters = Field(default_factory=ModelParameters)
     output_contract: OutputContract = Field(default_factory=OutputContract)
     image_preprocess_config: dict[str, Any] = Field(default_factory=dict)
+    url_image_transport: Literal["auto", "direct", "inline"] = "auto"
     image_slot_specs: list[ImageSlotSpec] = Field(default_factory=list)
     variable_specs: list[VariableSpec] = Field(default_factory=list)
     pricing_profile_id: str | None = None
@@ -110,6 +111,7 @@ class TaskGroup(TimestampedModel):
     color: str = ""
     sort_order: int = 0
 
+
 class TaskSnapshot(BaseModel):
     task_id: str | None = None
     task_version_id: str | None = None
@@ -121,6 +123,7 @@ class TaskSnapshot(BaseModel):
     model_parameters: ModelParameters = Field(default_factory=ModelParameters)
     output_contract: OutputContract = Field(default_factory=OutputContract)
     image_preprocess_config: dict[str, Any] = Field(default_factory=dict)
+    url_image_transport: Literal["auto", "direct", "inline"] = "auto"
     pricing_profile_id: str | None = None
     tags: list[str] = Field(default_factory=list)
     notes: str = ""

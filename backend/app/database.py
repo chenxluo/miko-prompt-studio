@@ -57,6 +57,7 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
         )
     return _session_factory
 
+
 def _apply_sqlite_concurrency_pragmas(engine) -> None:
     """Enable WAL + busy_timeout so concurrent batch workers don't deadlock.
 
@@ -118,6 +119,7 @@ async def init_db() -> None:
         await _migrate_pricing_profiles_to_per_million_tokens(conn)
         await _migrate_unique_names(conn)
         await _migrate_pipeline_fields(conn)
+        await _migrate_task_version_url_image_transport(conn)
 
 
 async def _migrate_task_groups(conn) -> None:
@@ -711,6 +713,15 @@ async def _migrate_task_image_resolution_columns(conn) -> None:
         )
 
 
+async def _migrate_task_version_url_image_transport(conn) -> None:
+    """Add URL image transport policy to task versions."""
+    result = await conn.execute(text("PRAGMA table_info(task_versions)"))
+    if "url_image_transport" not in {row[1] for row in result.fetchall()}:
+        await conn.execute(
+            text("ALTER TABLE task_versions ADD COLUMN url_image_transport VARCHAR DEFAULT 'auto'")
+        )
+
+
 async def _migrate_tasks_to_versions(conn) -> None:
     """Convert legacy flat tasks into task headers plus v1 task versions."""
 
@@ -957,12 +968,8 @@ async def _migrate_unique_names(conn) -> None:
             "Cannot add unique name constraint; resolve duplicates first. " + "; ".join(parts)
         )
 
-    await conn.execute(
-        text("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_name ON tasks(name)")
-    )
-    await conn.execute(
-        text("CREATE UNIQUE INDEX IF NOT EXISTS idx_sset_name ON sample_sets(name)")
-    )
+    await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_name ON tasks(name)"))
+    await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_sset_name ON sample_sets(name)"))
 
 
 async def _migrate_pipeline_fields(conn) -> None:

@@ -2,7 +2,7 @@
  * Electron main process.
  *
  * Responsibilities:
- * 1. Start / manage the Python FastAPI backend as a child process.
+ * 1. Start / manage the bundled Python FastAPI backend in packaged builds.
  * 2. Create the application window and load the renderer (dev server or built files).
  * 3. Provide file-dialog IPC handlers.
  */
@@ -36,21 +36,6 @@ let mainWindow: BrowserWindow | null = null;
 // ---------------------------------------------------------------------------
 
 function getBackendCommand(): { command: string; args: string[]; cwd: string } {
-  const isPackaged = app.isPackaged;
-  const isDev = !isPackaged;
-
-  if (isDev) {
-    // Dev: run uvicorn directly from the backend source
-    return {
-      command: process.platform === 'win32' ? 'python' : 'python3',
-      args: ['-m', 'uvicorn', 'app.main:app', '--host', BACKEND_HOST, '--port', String(BACKEND_PORT)],
-      cwd: join(app.getAppPath(), 'backend'),
-    };
-  }
-
-  // Packaged: Nuitka-frozen backend bundled as extraResources/backend.
-  // The frozen exe reads host/port from env (MIKO_BACKEND_HOST/PORT) and binds
-  // directly — no uvicorn module args.
   const backendDir = join(process.resourcesPath, 'backend');
   const exeName = process.platform === 'win32' ? 'miko-backend.exe' : 'miko-backend';
   return {
@@ -179,7 +164,7 @@ function createWindow() {
 
   if (isDev) {
     // Load from Vite dev server
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL('http://127.0.0.1:21318');
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     // Load from built files
@@ -218,16 +203,18 @@ ipcMain.handle('dialog:saveFile', async (_event, options: SaveDialogOptions) => 
 // ---------------------------------------------------------------------------
 
 app.whenReady().then(async () => {
-  try {
-    console.log('Starting backend…');
-    await startBackend();
-    console.log('Backend is ready.');
-  } catch (err) {
-    console.error('Failed to start backend:', err);
-    dialog.showErrorBox(
-      'Backend Error',
-      `Failed to start the Python backend.\n\n${err instanceof Error ? err.message : String(err)}\n\nMake sure Python 3.10+ is installed and the backend dependencies are available.`,
-    );
+  if (app.isPackaged) {
+    try {
+      console.log('Starting backend…');
+      await startBackend();
+      console.log('Backend is ready.');
+    } catch (err) {
+      console.error('Failed to start backend:', err);
+      dialog.showErrorBox(
+        'Backend Error',
+        `Failed to start the Python backend.\n\n${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   createWindow();

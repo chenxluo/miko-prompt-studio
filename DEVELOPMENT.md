@@ -2,7 +2,7 @@
 
 > 随开发进度持续更新的配套文档。最后更新：2026-07-12
 
-**版本：1.5.0**
+**版本：1.6.0**
 
 ## 1. 项目定位
 
@@ -70,7 +70,7 @@ miko_prompt_studio/
 │       │   └── registry.py           # adapter 注册 + 元数据
 │       │
 │       └── services/           # 核心业务逻辑
-│           ├── prompt_renderer.py    # {{vars.x}} / {{#vars.x}} 模板渲染 + 条件块
+│           ├── prompt_renderer.py    # 变量 / 条件块 / 可变图组逐图模板渲染
 │           ├── image_preprocess.py   # Pillow 图片预处理 + sha256 + 总像素限制
 │           ├── request_builder.py    # 组装 InternalRequest
 │           ├── parser_engine.py      # 4 种输出模式解析（soft_sections 按 section_names 匹配）
@@ -147,11 +147,11 @@ miko_prompt_studio/
 ```
 用户在 Lab 中操作
   │
-  ├── 拖入图片 → POST /api/upload/image → 返回 url
-  ├── 写 system/user prompt（支持 {{image:N}} 图文混排）
+  ├── 拖入图片 → POST /api/upload/image → 返回 url；“从 URL 添加”保留原始 URL source，不先上传
+  ├── 写 system/user prompt（支持 {{image:N}} 与 {{#each images.slot_id}} 图文混排）
   ├── 选 ProviderConfig（绑定 adapter + base_url + 加密 key）
   ├── 选/拉取模型 ID
-  ├── 调参数（temperature、max_tokens、thinking 等）
+  ├── 调参数（temperature、max_tokens、thinking 等）并选择 URL 图片传输策略（Auto / Direct / Inline）
   └── 点击 Run
       │
       ▼
@@ -170,8 +170,8 @@ run_executor.execute_lab_run()
   │
   ├── request_builder.build_internal_request()
   │     ├── prompt_renderer.render_prompt()     → 渲染 {{vars.x}}
+  │     ├── URL 图片按 url_image_transport 与 adapter 能力决定直传或安全下载后内联
   │     └── image_preprocess.preprocess_image()  → resize/compress/sha256
-  │
   ├── 非流式：adapter.execute()
   │     ├── build_provider_request()  → OpenAI 格式（含 {{image:N}} 解析）
   │     ├── send()                    → httpx POST /v1/chat/completions
@@ -186,7 +186,7 @@ run_executor.execute_lab_run()
   ├── parser_engine.parse_response()  → 按输出模式解析
   ├── cost_engine.calculate_cost()    → 用 pricing snapshot 计算成本
   │
-  └── 持久化 RunSession + RunItem + Attempt → SQLite
+  └── 持久化 RunSession + RunItem + Attempt → SQLite；RunItem 快照保留所选策略与逐图实际传输方式/原因，并脱敏 URL query 与 base64
       │
       ▼
 返回 RunSession JSON（或 SSE 事件流） → 前端显示结果 + cost + history
@@ -421,6 +421,15 @@ run_executor.execute_lab_run()
 - [x] **多语言比较元数据**：Compare 运行与结果展示支持多语言任务版本元数据展示，i18n 字典补齐相关 key
 - [x] **回归测试**：`backend/tests/test_compare_runs.py` 增加 Compare 取消、并发、重试、随机抽样等用例
 
+### Phase 11（v1.5.0 — URL 图片、Lab 数据集样本与可变图组）
+
+- [x] **URL 图片输入与传输策略**：Lab“从 URL 添加”保留 URL source；Auto（默认）仅在 adapter 支持该 scheme 且无需本地预处理时直传，否则经 SSRF-safe downloader 落地并预处理后内联；Direct 始终不由后端下载，scheme 不支持、启用预处理或超过直传数量限制时直接报错，不降级；Inline 始终安全下载并应用预处理，不支持内联时直接报错。OpenAI / OpenAI-compatible 可直传 `http`/`https`；Vertex 仅可直传 `gs`，HTTP 在 Auto 下转为 Inline。
+- [x] **Lab 数据集样本选择**：Lab 可打开已导入的数据集、分页选择单条样本，并一次替换当前图片与任务变量；大数据集按 40 条懒加载
+- [x] **可变图组**：图片面板可创建 `min_count=1, max_count=null` 的可变图组；User Prompt 通过 `{{#each images.<slot_id>}}...{{/each}}` 在同一个 user message 中逐图展开
+- [x] **逐图片段局部值**：循环体仅提供 `{{number}}`（从 1 开始）与 `{{image}}`（当前图片）；运行时脱糖为现有绝对 `{{image:N}}`，Lab / Batch / Compare / CLI 共用同一渲染路径
+- [x] **数量约束**：图片槽统一执行 required/min/max 规则；模型 `max_images` 在普通与流式请求发出前硬性拦截，不静默截断
+- [x] **策略持久化与运行快照**：`TaskVersion.url_image_transport`（`auto` / `direct` / `inline`）由 Lab 保存并被 Batch、Compare 与 CLI 复用；`RunItem.internal_request_snapshot` 保留 `url_image_transport`，每张图片在 `images[].resolved.transport` / `transport_reason` 记录实际传输方式与原因，同时脱敏 URL query 和 base64 内容。
+
 ### 待实现
 - [ ] Python Import Script
 - [ ] 更多原生 adapter（阿里百炼）
@@ -452,11 +461,13 @@ npm install
 ```bash
 # 方式一：分别启动（推荐开发时用）
 cd backend && .venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 21317 --reload
-cd frontend && npm run dev    # Vite :5173，自动代理 /api 到后端
+cd frontend && npm run dev    # Vite :21318，自动代理 /api 到后端
 
 # 方式二：一键启动全部（含 Electron）
 npm run dev    # 项目根目录，concurrently 启动后端+前端+Electron
 ```
+
+`npm run dev` 使用后端 `21317`、前端 `21318` 两个专用端口；任一端口被占用时会直接失败，不会改用其他端口或连接到别的开发服务器。开发模式的后端只由根脚本启动，Electron 仅在打包版本中自行启动内置后端。
 
 ### CLI 工具（`mps`）
 
@@ -518,7 +529,7 @@ uv run mps task run <task_id> --sample-set <ss>   # 跑批量（阻塞到完成�
 | 模板渲染 | 自实现正则 | 不引入 Jinja2 |
 | i18n | 自实现 | 轻量，无 i18next 依赖 |
 | API key 存储 | Fernet 对称加密 | MVP 简化方案 |
-| 图文混排 | `{{image:N}}` token | adapter 层解析 |
+| 图文混排 | `{{image:N}}` + 单个非嵌套 `{{#each images.slot_id}}` | 后端展开为绝对图片 token，adapter 层解析 |
 | 流式传输 | Server-Sent Events (SSE) | OpenAI 兼容标准 |
 | 虚拟环境 | uv + .venv | 隔离系统 Python，避免依赖冲突 |
 | Prompt 文本存储 | 内联到 TaskVersion | Task 自包含，无外部 FK 依赖 |
@@ -530,6 +541,7 @@ uv run mps task run <task_id> --sample-set <ss>   # 跑批量（阻塞到完成�
 | 均价粒度 | 绑定 TaskVersion（非 Task） | Task 改配置后新建版本，旧版本均价不受影响 |
 | soft_sections 解析 | 按配置 section_names 匹配标题 | 精确匹配，不靠启发式猜测 |
 | 变量语法 | `{{vars.x}}` + `{{#vars.x}}...{{/vars.x}}` | 简单条件块，不引入模板引擎 |
+| 可变图组语法 | `{{#each images.<slot_id>}}` + `{{number}}` / `{{image}}` | 单个 user message 内按最终图片顺序展开，不引入模板引擎 |
 | 图像槽位模型 | 槽位即角色 | 消除独立 role 手填 |
 | 快照-Task 关联 | `linked_task_version_id` 1:1 | 简单够用 |
 | 模型参数持久化 | `exclude_none=True` + 前端合并默认值 | null 不入库 |

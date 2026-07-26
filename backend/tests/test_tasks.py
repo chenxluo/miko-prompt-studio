@@ -45,21 +45,54 @@ def test_create_list_get_update_version_and_delete_task(client: TestClient) -> N
     assert task["task_id"].startswith("task_")
     assert task["current_version"]["task_version_id"].startswith("tv_")
     assert task["current_version"]["version_label"] == "v1"
+    # url_image_transport omitted at create must round-trip as the legacy
+    # default value ``auto`` on the v1 row.
+    assert task["current_version"]["url_image_transport"] == "auto"
 
     listed = client.get("/api/tasks")
     assert listed.status_code == 200, listed.text
     assert listed.json()[0]["current_version"]["user_template"] == "Describe {{ prompt }}"
-
+    inline_version_payload = _version(provider_config_id, "test-model-2")
+    inline_version_payload["url_image_transport"] = "inline"
+    inline_version_payload["image_slot_specs"] = [
+        {"slot_id": "slot_a", "role_hint": "target", "required": True},
+    ]
     new_version = client.post(
         f"/api/tasks/{task['task_id']}/versions",
-        json=_version(provider_config_id, "test-model-2"),
+        json=inline_version_payload,
     )
     assert new_version.status_code == 200, new_version.text
     assert new_version.json()["version_label"] == "v2"
 
+    # Explicit policy at version-create time must persist through GET.
+    assert new_version.json()["url_image_transport"] == "inline"
+    # Insert v3 (direct) so all three policies round-trip through the API.
+    direct_payload = _version(provider_config_id, "test-model-direct")
+    direct_payload["url_image_transport"] = "direct"
+    direct_version_response = client.post(
+        f"/api/tasks/{task['task_id']}/versions",
+        json=direct_payload,
+    )
+    assert direct_version_response.status_code == 200, direct_version_response.text
+    assert direct_version_response.json()["version_label"] == "v3"
+    assert direct_version_response.json()["url_image_transport"] == "direct"
+
     detail = client.get(f"/api/tasks/{task['task_id']}")
     assert detail.status_code == 200, detail.text
-    assert [version["version_label"] for version in detail.json()["versions"]] == ["v1", "v2"]
+    versions = detail.json()["versions"]
+    assert [version["version_label"] for version in versions] == ["v1", "v2", "v3"]
+    by_label = {version["version_label"]: version for version in versions}
+    assert by_label["v1"]["url_image_transport"] == "auto"
+    assert by_label["v2"]["url_image_transport"] == "inline"
+    assert by_label["v3"]["url_image_transport"] == "direct"
+    # Regression: image_slot_specs must survive GET /api/tasks/{id} serialization
+    # (a missing field in _task_version_to_schema made the frontend MappingPanel vanish
+    # for any task whose only inputs were image slots).
+    assert [s["slot_id"] for s in by_label["v2"]["image_slot_specs"]] == ["slot_a"]
+
+    # List endpoint exposes the same exact value through current_version.
+    listed_task = next(item for item in listed.json() if item["task_id"] == task["task_id"])
+    assert listed_task["current_version"]["url_image_transport"] == "auto"
 
     updated = client.put(
         f"/api/tasks/{task['task_id']}",
@@ -125,15 +158,11 @@ def test_task_language_family_metadata_round_trip_and_clear(client: TestClient) 
         },
     ).json()
     client.put(f"/api/tasks/{body['task_id']}", json={"family_id": base["task_id"]})
-    merged = client.put(
-        f"/api/tasks/{base['task_id']}", json={"family_id": third["task_id"]}
-    )
+    merged = client.put(f"/api/tasks/{base['task_id']}", json={"family_id": third["task_id"]})
     assert merged.status_code == 200, merged.text
     assert client.get(f"/api/tasks/{body['task_id']}").json()["family_id"] == third["task_id"]
 
-    detached_root = client.put(
-        f"/api/tasks/{third['task_id']}", json={"family_id": None}
-    ).json()
+    detached_root = client.put(f"/api/tasks/{third['task_id']}", json={"family_id": None}).json()
     remaining_base = client.get(f"/api/tasks/{base['task_id']}").json()
     remaining_translation = client.get(f"/api/tasks/{body['task_id']}").json()
     assert "family_id" not in detached_root
@@ -185,6 +214,7 @@ def test_task_version_cost_stats_aggregates_completed_run_items(client: TestClie
                             status=RunItemType.SUCCEEDED.value,
                             completed_at=now,
                             estimated_cost=cost,
+                            usage={"image_count": 2},
                             pricing_snapshot={"currency": "CNY"},
                         )
                     )
@@ -226,6 +256,7 @@ def test_task_version_cost_stats_aggregates_completed_run_items(client: TestClie
                     status=RunItemType.SUCCEEDED.value,
                     completed_at=now,
                     estimated_cost=0.40,
+                    usage={"image_count": 2},
                     pricing_snapshot={"currency": "CNY"},
                 )
             )
@@ -249,9 +280,11 @@ def test_task_version_cost_stats_aggregates_completed_run_items(client: TestClie
     stats = response.json()
     assert stats["task_id"] == task_id
     assert stats["task_version_id"] == version_id
-    assert stats["total_images"] == 4
+    assert stats["total_images"] == 8
+    assert stats["total_requests"] == 4
     assert stats["total_cost"] == pytest.approx(1.00)
-    assert stats["avg_cost_per_image"] == pytest.approx(0.25)
+    assert stats["avg_cost_per_image"] == pytest.approx(0.125)
+    assert stats["avg_cost_per_request"] == pytest.approx(0.25)
     assert stats["run_count"] == 3
     assert stats["sample_count"] == 3
     assert stats["currency"] == "CNY"

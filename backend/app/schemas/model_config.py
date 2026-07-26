@@ -67,6 +67,7 @@ class ModelConfigSnapshot(BaseModel):
 # Provider capability (section 5.3 of 文件格式文档)
 # ---------------------------------------------------------------------------
 
+
 class ProviderCapability(BaseModel):
     """Describes what a provider/model can do.
 
@@ -82,8 +83,21 @@ class ProviderCapability(BaseModel):
     supports_system_prompt: bool = True
     supports_json_mode: bool = False
     supports_strict_json_schema: bool = False
-    supports_batch_api: bool = False
     max_images: int | None = None
     max_output_tokens: int | None = None
     known_quirks: list[str] = Field(default_factory=list)
     notes: str = ""
+
+    # URL image transport capability (shared contract) ----------------------
+    # ``direct_image_uri_schemes`` are bare lowercase URI scheme names the
+    # adapter can accept without the backend fetching the bytes
+    # (e.g. Vertex ``gs``, OpenAI ``http``/``https`` via ``image_url.url``).
+    direct_image_uri_schemes: list[str] = Field(default_factory=list)
+    # Whether the adapter accepts inline base64 / file bytes in the provider
+    # payload. When ``False``, ``url_image_transport`` must resolve to direct
+    # for every remote URL or the run aborts with a non-retryable capability
+    # error.
+    supports_inline_image_data: bool = True
+    # Maximum number of images that may be sent as direct URLs in a single
+    # request. ``None`` ⇒ unlimited / not enforced.
+    max_direct_images: int | None = None

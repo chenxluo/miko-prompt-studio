@@ -73,7 +73,7 @@ def _emit(obj: Any, *, human: Callable[[Any], None] | None = None) -> None:
 
 
 def _human_record(obj: Any) -> None:
-    for key, value in (obj.items() if isinstance(obj, dict) else []):
+    for key, value in obj.items() if isinstance(obj, dict) else []:
         if isinstance(value, dict | list):
             print(f"{key}:")
             print(json.dumps(value, ensure_ascii=False, indent=2))
@@ -101,7 +101,7 @@ def _table(rows: list[dict], columns: list[tuple[str, str]], *, empty: str = "(n
     print(fmt.format(*headers))
     print(fmt.format(*["-" * w for w in widths]))
     for cells in table:
-        print(fmt.format(*[c[: w] for c, w in zip(cells, widths, strict=False)]))
+        print(fmt.format(*[c[:w] for c, w in zip(cells, widths, strict=False)]))
 
 
 def _dig(row: Any, key: str) -> Any:
@@ -139,9 +139,7 @@ def _get_path(obj: Any, path: str) -> Any:
     return cur
 
 
-def _print_formatted_items(
-    items: list[dict], *, select: list[str] | None, fmt: str | None
-) -> None:
+def _print_formatted_items(items: list[dict], *, select: list[str] | None, fmt: str | None) -> None:
     """Render filtered items as JSON, JSONL or CSV."""
     if select:
         out = [{field: _get_path(item, field) for field in select} for item in items]
@@ -229,7 +227,6 @@ def _human_provider_list(providers: list[dict]) -> None:
             ("base_url", "BASE URL"),
         ],
     )
-
 
 
 def _human_run_list_compact(payload: dict) -> None:
@@ -334,6 +331,8 @@ def _human_run_summary(payload: dict) -> None:
     cost = summary.get("total_cost_estimated")
     if cost:
         print(f"cost:     {cost} {summary.get('currency', 'USD')}")
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -577,6 +576,7 @@ _VERSION_FIELDS = [
     "model_parameters",
     "output_contract",
     "image_preprocess_config",
+    "url_image_transport",
     "image_slot_specs",
     "variable_specs",
     "pricing_profile_id",
@@ -653,6 +653,8 @@ def _version_overlay(args: argparse.Namespace) -> dict:
         overlay["pricing_profile_id"] = args.pricing_profile
     if getattr(args, "notes", None) is not None:
         overlay["notes"] = args.notes
+    if getattr(args, "url_image_transport", None) is not None:
+        overlay["url_image_transport"] = args.url_image_transport
     param_overrides = _param_overrides(args)
     if param_overrides:
         overlay["model_parameters"] = param_overrides
@@ -959,9 +961,7 @@ async def cmd_api(args: argparse.Namespace) -> None:
 
 
 async def cmd_export(args: argparse.Namespace) -> None:
-    if not args.all_ and not any(
-        (args.task, args.sample_set, args.prompt, args.provider)
-    ):
+    if not args.all_ and not any((args.task, args.sample_set, args.prompt, args.provider)):
         raise ValueError(
             "no export scope given; use --task/--sample-set/--prompt/--provider or --all"
         )
@@ -1125,6 +1125,7 @@ def _human_task_spec(spec: dict) -> None:
         print("\nJSONL EXAMPLE:")
         print(json.dumps(spec["jsonl_example"], ensure_ascii=False, indent=2))
 
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -1150,6 +1151,12 @@ def _add_version_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--user-template-file", dest="user_template_file", default=None)
     p.add_argument("--notes", default=None)
     p.add_argument("--pricing-profile", dest="pricing_profile", default=None)
+    p.add_argument(
+        "--url-image-transport",
+        dest="url_image_transport",
+        choices=["auto", "direct", "inline"],
+        default=None,
+    )
     p.add_argument(
         "--from-file",
         dest="from_file",
@@ -1210,11 +1217,15 @@ def _build_parser() -> argparse.ArgumentParser:
     t_run.add_argument("--concurrency", type=int, default=1, help="Max concurrent requests.")
     t_run.add_argument("--retries", type=int, default=0, help="Retries on transient errors.")
     t_run.add_argument(
-        "--pipeline-id", dest="pipeline_id", default=None,
+        "--pipeline-id",
+        dest="pipeline_id",
+        default=None,
         help="Pipeline grouping key for chained runs.",
     )
     t_run.add_argument(
-        "--pipeline-step", dest="pipeline_step", default=None,
+        "--pipeline-step",
+        dest="pipeline_step",
+        default=None,
         help="Semantic label for this run's role in the pipeline.",
     )
     t_run.set_defaults(_handler=cmd_task_run)
@@ -1307,9 +1318,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     r_export = run.add_parser("export", help="Export a run to jsonl / csv / html.")
     r_export.add_argument("run_id")
-    r_export.add_argument(
-        "--format", choices=["jsonl", "csv", "html"], default="jsonl"
-    )
+    r_export.add_argument("--format", choices=["jsonl", "csv", "html"], default="jsonl")
     r_export.add_argument("--out", default=None, help="Write to file instead of stdout.")
     r_export.set_defaults(_handler=cmd_run_export)
 
@@ -1406,9 +1415,9 @@ def _build_parser() -> argparse.ArgumentParser:
     mc_list.set_defaults(_handler=cmd_mconfig_list)
 
     # --- compare ---
-    cmp = sub.add_parser(
-        "compare", help="Compare task variants on one sample set."
-    ).add_subparsers(dest="subcommand", required=True)
+    cmp = sub.add_parser("compare", help="Compare task variants on one sample set.").add_subparsers(
+        dest="subcommand", required=True
+    )
     c_run = cmp.add_parser(
         "run", help="Run multiple task variants over one sample set (blocks until done)."
     )
@@ -1457,9 +1466,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     imp = sub.add_parser("import", help="Import a portable bundle file.")
     imp.add_argument("path", help="Bundle file path (.mikobundle or .zip).")
-    imp.add_argument(
-        "--mode", choices=["skip", "overwrite", "duplicate"], default="skip"
-    )
+    imp.add_argument("--mode", choices=["skip", "overwrite", "duplicate"], default="skip")
     imp.add_argument(
         "--dry-run", dest="dry_run", action="store_true", help="Preview without writing."
     )

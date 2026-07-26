@@ -140,12 +140,48 @@ def test_map_sample_images_to_prompt_slots_by_role() -> None:
     ]
 
 
-def test_map_sample_images_to_prompt_slots_missing_required_fails() -> None:
-    sample = SampleRecord(sample_id="s1", images=[])
-    image_slot_specs = [ImageSlotSpec(slot_id="slot_target", role_hint="target", required=True)]
+def test_map_sample_images_to_prompt_slots_enforces_cardinality_without_truncation() -> None:
+    optional = ImageSlotSpec(
+        slot_id="context", role_hint="context", required=False, min_count=2, max_count=2
+    )
+    assert map_sample_images_to_prompt_slots(
+        SampleRecord(sample_id="zero", images=[]), [optional]
+    ).images == []
 
-    with pytest.raises(ValueError, match="missing image"):
-        map_sample_images_to_prompt_slots(sample, image_slot_specs)
+    with pytest.raises(
+        ValueError,
+        match="Sample 'one', image slot 'context': found 1; expected at least 2",
+    ):
+        map_sample_images_to_prompt_slots(
+            SampleRecord(sample_id="one", images=[ImageRef(role="context")]), [optional]
+        )
+    with pytest.raises(
+        ValueError,
+        match="Sample 'three', image slot 'context': found 3; expected at most 2",
+    ):
+        map_sample_images_to_prompt_slots(
+            SampleRecord(
+                sample_id="three", images=[ImageRef(role="context") for _ in range(3)]
+            ),
+            [optional],
+        )
+
+
+def test_map_sample_images_to_prompt_slots_preserves_all_when_unbounded() -> None:
+    mapped = map_sample_images_to_prompt_slots(
+        SampleRecord(
+            sample_id="many",
+            images=[ImageRef(image_id=str(index), role="context") for index in range(3)],
+        ),
+        [ImageSlotSpec(slot_id="context", role_hint="context", max_count=None)],
+    )
+
+    assert [image.image_id for image in mapped.images] == ["0", "1", "2"]
+    assert [image.slot_id for image in mapped.images] == [
+        "context",
+        "context",
+        "context",
+    ]
 
 
 def test_batch_run_retries_rate_limited_then_succeeds(client: TestClient, monkeypatch) -> None:

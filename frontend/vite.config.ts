@@ -18,8 +18,9 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkgVersion),
   },
   server: {
-    port: 5173,
-    strictPort: false,
+    host: '127.0.0.1',
+    port: 21318,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:21317',

@@ -13,6 +13,7 @@ import type {
   SampleRecord,
   Task,
   TaskVersion,
+  UrlImageTransport,
   VariableSpec,
 } from '../types';
 
@@ -50,6 +51,14 @@ export function buildDefaultVariables(specs: VariableSpec[]): Record<string, str
     vars[spec.var_id] = value;
   }
   return vars;
+}
+
+// Non-string variable values are carried as stable, readable JSON strings so
+// the Lab's string-only variable surface can hold them losslessly. Strings
+// pass through unchanged, preserving any {{image:N}} tokens they may contain.
+export function toStableVarString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
 }
 
 export function parseImageTokens(raw: string): { text: string; slots: ImageSlot[] } {
@@ -359,6 +368,7 @@ interface LabState {
   variables: Record<string, string>;
   imageResolutionEnabled: boolean;
   imageResolutionTarget: number;
+  urlImageTransport: UrlImageTransport;
 
   // Provider config
   providerConfigs: api.ProviderConfig[];
@@ -409,6 +419,7 @@ interface LabActions {
   setVariables: (vars: Record<string, string>) => void;
   setImageResolutionEnabled: (enabled: boolean) => void;
   setImageResolutionTarget: (target: number) => void;
+  setUrlImageTransport: (transport: UrlImageTransport) => void;
   setSelectedProviderConfigId: (id: string | null) => void;
   setModelId: (value: string) => void;
   loadActivePricing: () => Promise<void>;
@@ -437,6 +448,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
   variables: {},
   imageResolutionEnabled: false,
   imageResolutionTarget: 1024,
+  urlImageTransport: 'auto',
   providerConfigs: [],
   selectedProviderConfigId: null,
   modelId: '',
@@ -507,6 +519,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
   setVariables: (vars) => set({ variables: vars }),
   setImageResolutionEnabled: (enabled) => set({ imageResolutionEnabled: enabled }),
   setImageResolutionTarget: (target) => set({ imageResolutionTarget: target }),
+  setUrlImageTransport: (transport) => set({ urlImageTransport: transport }),
 
   addImage: (image) =>
     set((state) => {
@@ -695,6 +708,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         outputContract: resolvedVersion.output_contract ?? DEFAULT_OUTPUT_CONTRACT,
         imageResolutionEnabled: preprocess.enabled,
         imageResolutionTarget: preprocess.target,
+        urlImageTransport: resolvedVersion.url_image_transport ?? 'auto',
         activeTaskId: task.task_id,
         activeTaskVersionId: resolvedVersion.task_version_id,
         activePromptId: null,
@@ -737,6 +751,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
       templateVariableSpecs: [],
       imageResolutionEnabled: task.image_resolution_enabled ?? false,
       imageResolutionTarget: task.image_resolution_target ?? 1024,
+      urlImageTransport: 'auto',
       outputContract: task.output_contract ?? DEFAULT_OUTPUT_CONTRACT,
       activeTaskId: task.task_id,
       activeTaskVersionId: null,
@@ -856,6 +871,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         run_name: `Lab: ${sampleId}`,
         image_slot_specs: state.templateImageSlotSpecs,
         variable_specs: state.templateVariableSpecs,
+        url_image_transport: state.urlImageTransport,
       };
 
       if (isStreaming) {

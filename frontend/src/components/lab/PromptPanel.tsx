@@ -8,6 +8,7 @@ import {
   ImageIcon,
   Loader2,
   Plus,
+  Repeat,
   Save,
   ScanLine,
   Settings,
@@ -26,7 +27,7 @@ import {
 } from 'react';
 
 import * as api from '../../api/client';
-import { useI18n } from '../../i18n';
+import { useI18n, type I18n } from '../../i18n';
 import { type ImageSlot, buildPromptWithImageSlots } from '../../store/labStore';
 import { useLabStore } from '../../store/labStore';
 import type { ImageRef, ImageSlotSpec, OutputContract, OutputMode, VariableSpec } from '../../types';
@@ -34,6 +35,68 @@ import { BBoxParserConfig } from './BBoxParserConfig';
 import { resolveImageSrc } from './ImagePanel';
 
 const VARIABLE_RE = /\{\{\s*#?\s*vars\.([A-Za-z0-9_]+)\s*\}\}/g;
+
+const LOOP_OPEN_RE = /\{\{\s*#each\s+images\.([A-Za-z0-9_]+)\s*\}\}/g;
+const LOOP_CLOSE_RE = /\{\{\s*\/each\s*\}\}/g;
+const LOOP_BODY_TOKEN_RE = /(\{\{\s*number\s*\}\}|\{\{\s*image\s*\}\})/gi;
+const LOOP_IMAGE_TOKEN_RE = /\{\{\s*image\s*\}\}/gi;
+
+interface LoopBlock {
+  slotId: string;
+  body: string;
+}
+interface LoopDiagnostic {
+  kind: 'unknownSlot' | 'unpaired' | 'nested' | 'strayClose';
+  slotId?: string;
+}
+interface LoopParse {
+  blocks: LoopBlock[];
+  diagnostics: LoopDiagnostic[];
+}
+
+// Parse {{#each images.<slot>}}...{{/each}} blocks. The first version allows a
+// single non-nested loop; nested or unpaired syntax is reported as a diagnostic
+// so the editor surfaces it instead of silently mis-expanding.
+function parseImageLoops(text: string): LoopParse {
+  interface Marker {
+    type: 'open' | 'close';
+    pos: number;
+    end: number;
+    slotId?: string;
+  }
+  const markers: Marker[] = [];
+  for (const m of text.matchAll(LOOP_OPEN_RE)) {
+    markers.push({ type: 'open', pos: m.index ?? 0, end: (m.index ?? 0) + m[0].length, slotId: m[1] });
+  }
+  for (const m of text.matchAll(LOOP_CLOSE_RE)) {
+    markers.push({ type: 'close', pos: m.index ?? 0, end: (m.index ?? 0) + m[0].length });
+  }
+  markers.sort((a, b) => a.pos - b.pos);
+
+  const blocks: LoopBlock[] = [];
+  const diagnostics: LoopDiagnostic[] = [];
+  const stack: Marker[] = [];
+  for (const marker of markers) {
+    if (marker.type === 'open') {
+      if (stack.length > 0) {
+        diagnostics.push({ kind: 'nested', slotId: marker.slotId });
+      } else {
+        stack.push(marker);
+      }
+    } else {
+      const open = stack.pop();
+      if (!open) {
+        diagnostics.push({ kind: 'strayClose' });
+      } else {
+        blocks.push({ slotId: open.slotId ?? '', body: text.slice(open.end, marker.pos) });
+      }
+    }
+  }
+  for (const open of stack) {
+    diagnostics.push({ kind: 'unpaired', slotId: open.slotId });
+  }
+  return { blocks, diagnostics };
+}
 
 export function PromptPanel() {
   const { t } = useI18n();
@@ -61,11 +124,16 @@ export function PromptPanel() {
   const setImageSlots = useLabStore((state) => state.setImageSlots);
   const setVariable = useLabStore((state) => state.setVariable);
   const setTemplateVariableSpecs = useLabStore((state) => state.setTemplateVariableSpecs);
+  const providerConfigs = useLabStore((state) => state.providerConfigs);
+  const selectedProviderConfigId = useLabStore((state) => state.selectedProviderConfigId);
+  const modelId = useLabStore((state) => state.modelId);
 
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [conditionalPickerOpen, setConditionalPickerOpen] = useState(false);
   const [varPickerOpen, setVarPickerOpen] = useState(false);
   const [syntaxHelpOpen, setSyntaxHelpOpen] = useState(false);
+  const [loopPickerOpen, setLoopPickerOpen] = useState(false);
+  const [maxImages, setMaxImages] = useState<number | null>(null);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -128,6 +196,37 @@ export function PromptPanel() {
     setSectionNamesInput(extracted);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [outputContract.parser]);
+  const repeatableSlots = useMemo(
+    () =>
+      templateImageSlotSpecs.filter(
+        (spec) => spec.max_count == null || (spec.max_count ?? 0) > 1,
+      ),
+    [templateImageSlotSpecs],
+  );
+
+  // Load the selected model's image limit so the loop preview can warn when the
+  // expanded image count exceeds it. Failures are silent: the backend still
+  // authoritatively validates image limits before and after a run.
+  useEffect(() => {
+    const config = providerConfigs.find((c) => c.provider_config_id === selectedProviderConfigId);
+    const mid = modelId.trim();
+    if (!config || !mid) {
+      setMaxImages(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getProviderCapability(config.adapter_id, mid)
+      .then((cap) => {
+        if (!cancelled) setMaxImages(cap.max_images ?? null);
+      })
+      .catch(() => {
+        // Silent: backend enforces the hard limit at run time.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [providerConfigs, selectedProviderConfigId, modelId]);
 
   const jsonSchemaString = useMemo(() => {
     if (!outputContract.json_schema) return '';
@@ -624,6 +723,45 @@ export function PromptPanel() {
     serialize();
     setVarPickerOpen(false);
   }
+  function handleInsertImageLoop(slotId: string) {
+    if (!slotId) {
+      editorRef.current?.focus();
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    editor.focus();
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) return;
+
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) {
+      const endRange = document.createRange();
+      endRange.selectNodeContents(editor);
+      endRange.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(endRange);
+    }
+
+    const activeRange = selection.getRangeAt(0);
+    // ponytail: loop block is plain text — no chip is inserted, so fixed
+    // {{image:N}} slot indices are untouched; serialize() keeps state in sync.
+    const block = `{{#each images.${slotId}}}\n{{number}}. {{image}}\n{{/each}}`;
+    const textNode = document.createTextNode(block);
+    activeRange.deleteContents();
+    activeRange.insertNode(textNode);
+
+    const newRange = document.createRange();
+    newRange.setStartAfter(textNode);
+    newRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(newRange);
+
+    skipNextSyncRef.current = true;
+    serialize();
+    setLoopPickerOpen(false);
+  }
 
   return (
     <section className="panel flex flex-col overflow-hidden">
@@ -716,12 +854,12 @@ export function PromptPanel() {
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <label className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
               <Terminal size={12} />
               {t('prompt.userPrompt')}
             </label>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {/* Conditional block quick-insert dropdown */}
               <div className="relative">
                 <button
@@ -835,6 +973,50 @@ export function PromptPanel() {
                   </div>
                 )}
               </div>
+              {/* Per-image loop block quick-insert (repeatable image slots) */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (repeatableSlots.length === 1) handleInsertImageLoop(repeatableSlots[0].slot_id);
+                    else setLoopPickerOpen((v) => !v);
+                  }}
+                  disabled={repeatableSlots.length === 0}
+                  aria-expanded={loopPickerOpen}
+                  className={[
+                    'inline-flex h-7 items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
+                    repeatableSlots.length === 0
+                      ? 'cursor-not-allowed border-surface-800 bg-surface-900 text-ink-dim'
+                      : loopPickerOpen
+                        ? 'border-accent/50 bg-accent/10 text-accent'
+                        : 'border-surface-700 bg-surface-950 text-ink hover:border-surface-600 hover:text-ink',
+                  ].join(' ')}
+                  title={t('prompt.insertImageLoop')}
+                  aria-label={t('prompt.insertImageLoop')}
+                >
+                  <Repeat size={12} />
+                  <span className="max-w-[8rem] truncate sm:max-w-[12rem]">
+                    {repeatableSlots.length === 0
+                      ? `${t('prompt.insertImageLoop')} — ${t('prompt.imageLoopNoRepeatable')}`
+                      : t('prompt.insertImageLoop')}
+                  </span>
+                </button>
+                {repeatableSlots.length > 1 && loopPickerOpen && (
+                  <div className="absolute right-0 top-full z-10 mt-2 max-h-64 w-56 overflow-auto rounded-md border border-surface-700 bg-surface-900 p-1 shadow-panel animate-fade-in">
+                    {repeatableSlots.map((spec) => (
+                      <button
+                        key={spec.slot_id}
+                        type="button"
+                        onClick={() => handleInsertImageLoop(spec.slot_id)}
+                        className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs text-ink hover:bg-surface-800"
+                      >
+                        <span className="truncate font-mono text-ink-muted">{`{{#each images.${spec.slot_id}}}`}</span>
+                        <span className="ml-2 truncate text-ink-dim">{spec.label?.trim() || spec.role_hint?.trim() || spec.slot_id}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div ref={imagePickerRef} className="relative">
                 <button
                   type="button"
@@ -893,6 +1075,15 @@ export function PromptPanel() {
           />
 
           <p className="text-xs text-ink-dim">{t('prompt.imageRefHint')}</p>
+
+          <LoopExpansionPreview
+            text={userPrompt}
+            images={images}
+            specs={templateImageSlotSpecs}
+            fixedChipCount={imageSlots.length}
+            maxImages={maxImages}
+            t={t}
+          />
         </div>
 
         <UnifiedVariableEditor
@@ -1071,7 +1262,7 @@ function renderChip(
   const closeSvg =
     '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
 
-  return `<span contenteditable="false" draggable="true" data-slot-index="${slotIndex}" data-image-index="${slot.imageIndex}" class="inline-flex h-12 items-center gap-1 align-middle rounded-md border border-accent/30 bg-accent/10 px-1 text-accent select-none cursor-grab active:cursor-grabbing" title="${escapeHtml(title)}">${src ? `<img src="${src}" alt="" class="h-full w-12 rounded object-cover" draggable="false" />` : `<span class="flex h-full w-12 items-center justify-center rounded bg-surface-950">${imageIconSvg}</span>`}${role ? `<span class="max-w-[6rem] truncate text-[11px]">${escapeHtml(role)}</span>` : ''}<button type="button" data-remove-chip data-image-index="${slot.imageIndex}" class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-accent transition-colors hover:bg-accent/20 hover:text-ink" aria-label="${t('image.remove')}" draggable="false">${closeSvg}</button></span>`;
+  return `<span contenteditable="false" draggable="true" data-slot-index="${slotIndex}" data-image-index="${slot.imageIndex}" class="inline-flex h-12 items-center gap-1 align-middle rounded-md border border-accent/30 bg-accent/10 px-1 text-accent select-none cursor-grab active:cursor-grabbing" title="${escapeHtml(title)}">${src ? `<img src="${escapeHtml(src)}" alt="" class="h-full w-12 rounded object-cover" draggable="false" />` : `<span class="flex h-full w-12 items-center justify-center rounded bg-surface-950">${imageIconSvg}</span>`}${role ? `<span class="max-w-[6rem] truncate text-[11px]">${escapeHtml(role)}</span>` : ''}<button type="button" data-remove-chip data-image-index="${slot.imageIndex}" class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-accent transition-colors hover:bg-accent/20 hover:text-ink" aria-label="${t('image.remove')}" draggable="false">${closeSvg}</button></span>`;
 }
 
 function serializeEditor(editor: HTMLElement): { text: string; slots: ImageSlot[] } {
@@ -1287,12 +1478,12 @@ function UnifiedVariableEditor({
                       {t('prompt.optional')}
                     </span>
                   )}
-                  <input
-                    type="text"
+                  <textarea
+                    rows={1}
                     value={value}
                     onChange={(event) => onValueChange(spec.var_id, event.target.value)}
                     placeholder={spec.default_value ?? t('prompt.variableDefaultValueNone')}
-                    className="min-w-0 flex-1 rounded-md border border-surface-700 bg-surface-950 px-3 py-1.5 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                    className="min-w-0 flex-1 resize-y rounded-md border border-surface-700 bg-surface-950 px-3 py-1.5 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
                   />
                   <button
                     type="button"
@@ -1388,6 +1579,165 @@ function UnifiedVariableEditor({
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// Renders the body of a {{#each images.x}} loop for one iteration, expanding
+// {{number}} -> 1-based index and {{image}} -> the iteration's thumbnail.
+function renderLoopBody(body: string, image: ImageRef, number: number) {
+  const parts = body.split(LOOP_BODY_TOKEN_RE);
+  return parts.map((part, i) => {
+    if (/^\{\{\s*number\s*\}\}$/i.test(part)) {
+      return <span key={i} className="font-semibold text-accent">{number}</span>;
+    }
+    if (/^\{\{\s*image\s*\}\}$/i.test(part)) {
+      return (
+        <img
+          key={i}
+          src={resolveImageSrc(image)}
+          alt=""
+          className="mx-0.5 inline-block h-4 w-4 rounded-sm object-cover align-middle"
+          loading="lazy"
+          draggable={false}
+        />
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
+interface LoopExpansionPreviewProps {
+  text: string;
+  images: ImageRef[];
+  specs: ImageSlotSpec[];
+  fixedChipCount: number;
+  maxImages: number | null;
+  t: I18n['t'];
+}
+
+// Live preview of variable image group loops: matches each {{#each images.<slot>}}
+// block against the current specs/images, expands iterations in final order, and
+// surfaces unknown slot / unpaired / nested / required / min / max / model-limit
+// errors. Fixed {{image:N}} chips are left untouched (rendered in the editor).
+function LoopExpansionPreview({
+  text,
+  images,
+  specs,
+  fixedChipCount,
+  maxImages,
+  t,
+}: LoopExpansionPreviewProps) {
+  const { blocks, diagnostics } = useMemo(() => parseImageLoops(text), [text]);
+
+  const resolved = useMemo(
+    () =>
+      blocks.map((block) => {
+        const spec = specs.find((s) => s.slot_id === block.slotId) ?? null;
+        const slotImages = spec
+          ? images
+              .map((img, idx) => ({ img, idx }))
+              .filter((entry) => entry.img.slot_id === block.slotId)
+              .sort((a, b) => (a.img.order ?? a.idx) - (b.img.order ?? b.idx))
+              .map((entry) => entry.img)
+          : [];
+        return { block, spec, slotImages };
+      }),
+    [blocks, specs, images],
+  );
+
+  // Total images that would be sent: fixed chips + one per {{image}} token per
+  // loop iteration. The model max_images is a hard ceiling the backend enforces.
+  const loopImageSends = resolved.reduce((sum, r) => {
+    if (!r.spec) return sum;
+    const imageTokens = (r.block.body.match(LOOP_IMAGE_TOKEN_RE) || []).length;
+    return sum + imageTokens * r.slotImages.length;
+  }, 0);
+  const totalSends = fixedChipCount + loopImageSends;
+  const overMax = maxImages != null && totalSends > maxImages;
+
+  if (blocks.length === 0 && diagnostics.length === 0 && !overMax) return null;
+
+  return (
+    <div className="overflow-hidden rounded-md border border-surface-700 bg-surface-950/60 p-2.5">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-ink-muted">
+        <Repeat size={12} className="text-accent" />
+        {t('prompt.imageLoopPreview')}
+      </div>
+      <div className="space-y-2">
+        {diagnostics.map((diag, i) => {
+          const msg =
+            diag.kind === 'unpaired'
+              ? t('prompt.imageLoopUnpaired')
+              : diag.kind === 'nested'
+                ? t('prompt.imageLoopNested')
+                : t('prompt.imageLoopStrayClose');
+          return (
+            <p key={`diag-${i}`} className="text-xs text-danger">
+              {msg}
+            </p>
+          );
+        })}
+        {overMax && (
+          <p className="text-xs text-danger">
+            {t('prompt.imageLoopMaxImages', { count: totalSends, max: maxImages ?? 0 })}
+          </p>
+        )}
+        {resolved.map((r, i) => {
+          if (!r.spec) {
+            return (
+              <div key={`block-${i}`} className="space-y-1">
+                <p className="truncate font-mono text-[11px] text-ink-muted">{`{{#each images.${r.block.slotId}}}`}</p>
+                <p className="text-xs text-danger">
+                  {t('prompt.imageLoopUnknownSlot', { slot: r.block.slotId })}
+                </p>
+              </div>
+            );
+          }
+          const count = r.slotImages.length;
+          const errs: string[] = [];
+          if (r.spec.required && count === 0) errs.push(t('image.required'));
+          if (r.spec.min_count != null && count > 0 && count < r.spec.min_count) {
+            errs.push(t('image.underfilled', { count, min: r.spec.min_count }));
+          }
+          if (r.spec.max_count != null && count > r.spec.max_count) {
+            errs.push(t('image.overfilled', { count, max: r.spec.max_count }));
+          }
+          const label = r.spec.label?.trim() || r.spec.role_hint?.trim() || r.spec.slot_id;
+          return (
+            <div key={`block-${i}`} className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="truncate font-mono text-[11px] text-ink-muted">{`{{#each images.${r.spec.slot_id}}}`}</span>
+                <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-ink-dim">{label}</span>
+                <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-ink-dim">{count}</span>
+              </div>
+              {errs.map((e, j) => (
+                <p key={`err-${i}-${j}`} className="text-xs text-danger">{e}</p>
+              ))}
+              {count === 0 && errs.length === 0 && (
+                <p className="text-xs text-ink-dim">{t('prompt.imageLoopOptionalEmpty')}</p>
+              )}
+              {count > 0 && (
+                <div className="space-y-1">
+                  {r.slotImages.map((image, n) => (
+                    <div key={`iter-${i}-${n}`} className="flex items-start gap-1.5 overflow-hidden">
+                      <span className="mt-0.5 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded bg-accent/15 px-1 text-[10px] font-semibold text-accent">
+                        {n + 1}
+                      </span>
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded border border-surface-700 bg-surface-950">
+                        <img src={resolveImageSrc(image)} alt="" className="h-full w-full object-cover" loading="lazy" draggable={false} />
+                      </span>
+                      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px] text-ink-muted">
+                        {renderLoopBody(r.block.body, image, n + 1)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -46,3 +46,5 @@ temp_research
 
 # Tool artifacts
 .playwright-cli/
+# Review/scratch diffs at repo root (never source)
+/*.diff

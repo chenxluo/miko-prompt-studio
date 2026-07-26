@@ -8,7 +8,7 @@ import {
   buildPromptWithImageSlots,
   useLabStore,
 } from '../../store/labStore';
-import type { ImagePreprocessConfig, ImageSlotSpec, VariableSpec } from '../../types';
+import type { ImagePreprocessConfig, ImageSlotSpec, UrlImageTransport, VariableSpec } from '../../types';
 
 export interface SaveTaskDialogPrefill {
   system_prompt?: string;
@@ -20,6 +20,7 @@ export interface SaveTaskDialogPrefill {
   model_parameters?: Record<string, unknown>;
   output_contract?: Record<string, unknown>;
   image_preprocess_config?: ImagePreprocessConfig | null;
+  url_image_transport?: UrlImageTransport;
   pricing_profile_id?: string | null;
   notes?: string;
 }
@@ -81,6 +82,7 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
       const imagePreprocessConfig =
         prefill?.image_preprocess_config ??
         buildImagePreprocessConfig(state.imageResolutionEnabled, state.imageResolutionTarget);
+      const urlImageTransport = prefill?.url_image_transport ?? state.urlImageTransport;
 
       const versionPayload = {
         system_prompt: prefill?.system_prompt ?? state.systemPrompt,
@@ -90,6 +92,7 @@ export function SaveTaskDialog({ isOpen, onClose, prefill }: SaveTaskDialogProps
         model_parameters: modelParameters,
         output_contract: outputContract,
         image_preprocess_config: imagePreprocessConfig ?? {},
+        url_image_transport: urlImageTransport,
         pricing_profile_id:
           prefill?.pricing_profile_id ?? state.activePricing?.pricing_profile_id ?? null,
         notes,

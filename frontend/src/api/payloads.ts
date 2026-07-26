@@ -1,6 +1,6 @@
 /** Request payload types for POST/PUT endpoints. */
 
-import type { ImagePreprocessConfig, ImageSlotSpec, VariableSpec } from '../types';
+import type { ImagePreprocessConfig, ImageSlotSpec, UrlImageTransport, VariableSpec } from '../types';
 
 export interface CreateModelConfigPayload {
   name: string;
@@ -48,6 +48,7 @@ export interface CreateTaskVersionPayload {
   model_parameters?: Record<string, unknown>;
   output_contract?: Record<string, unknown>;
   image_preprocess_config?: ImagePreprocessConfig | null;
+  url_image_transport?: UrlImageTransport;
   pricing_profile_id?: string | null;
   notes?: string;
   image_slot_specs?: ImageSlotSpec[];

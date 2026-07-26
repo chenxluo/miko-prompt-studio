@@ -26,6 +26,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.common import ImageTransportKind, UrlImageTransport
 from app.schemas.model_config import ModelParameters
 from app.schemas.output_contract import OutputContract
 from app.schemas.pricing import PricingSnapshot
@@ -78,29 +79,41 @@ class ImagePreprocessConfig(BaseModel):
 
 
 class ResolvedImage(BaseModel):
-    """The actual image bytes/metadata that will be sent to the provider."""
+    """The actual image bytes/metadata that will be sent to the provider.
+
+    For direct transport, ``uri`` carries the *original* source URL (or
+    provider-native URI such as ``gs://``) so the adapter can hand it to the
+    provider untouched. For inline transport, ``uri`` is the generated
+    ``data:`` URI. ``transport`` and ``transport_reason`` record which path
+    the executor chose and why.
+    """
 
     path: str | None = None
-    uri: str | None = None  # data: URI (preferred for API calls)
+    uri: str | None = None  # data: URI for inline; original URL/gs:// for direct
     mime_type: str = "image/png"
     width: int | None = None
     height: int | None = None
     file_size: int | None = None
     sha256: str | None = None
+    transport: ImageTransportKind = ImageTransportKind.INLINE_DATA
+    transport_reason: str = ""
 
 
 class RequestImage(BaseModel):
     """An image entry inside an Internal Request.
 
     This is the preprocessed counterpart of an :class:`ImageRef`.  It
-    records both the *strategy* (``preprocess``) and the *result*
-    (``resolved``) for full reproducibility.
+    records the *strategy* (``preprocess``), the *result* (``resolved``),
+    and the *original source* (``source_uri``) so a Run Record can
+    reproduce exactly what was sent — even when the executor chose to
+    keep the URL unchanged.
     """
 
     request_image_id: str
     source_image_id: str | None = None
     role: str = "target"
-    path: str | None = None  # original path
+    path: str | None = None  # original local path
+    source_uri: str | None = None  # user-entered ImageRef.uri (URL or data:)
     mime_type: str | None = None
     order: int = 0
     preprocess: ImagePreprocessConfig = Field(default_factory=ImagePreprocessConfig)
@@ -127,9 +140,7 @@ class CostContext(BaseModel):
 
 class RetryPolicy(BaseModel):
     max_retries: int = 1
-    retry_on: list[str] = Field(
-        default_factory=lambda: ["rate_limit", "timeout", "network_error"]
-    )
+    retry_on: list[str] = Field(default_factory=lambda: ["rate_limit", "timeout", "network_error"])
 
 
 class RuntimeOptions(BaseModel):
@@ -146,7 +157,13 @@ class SampleRef(BaseModel):
 
 
 class InternalRequest(BaseModel):
-    """The full, provider-independent request that will be sent to an adapter."""
+    """The full, provider-independent request that will be sent to an adapter.
+
+    ``url_image_transport`` preserves the user-selected policy for this
+    request. The executor records each image's effective transport and
+    decision reason in ``RequestImage.resolved``; explicit ``direct`` never
+    downgrades to ``inline``.
+    """
 
     schema_version: str = "internal_request.v1"
     request_id: str
@@ -157,6 +174,7 @@ class InternalRequest(BaseModel):
     output_contract: OutputContract = Field(default_factory=OutputContract)
     cost_context: CostContext = Field(default_factory=CostContext)
     runtime: RuntimeOptions = Field(default_factory=RuntimeOptions)
+    url_image_transport: UrlImageTransport = UrlImageTransport.AUTO
 
     # Convenience accessors --------------------------------------------------
 

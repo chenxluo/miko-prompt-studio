@@ -316,6 +316,7 @@ async def _execute_one_cell(
         provider_config_id=template.provider_config_id,
         image_resolution_enabled=template.image_resolution_enabled,
         image_resolution_target=template.image_resolution_target,
+        url_image_transport=template.url_image_transport,
         image_slot_specs=template.image_slot_specs,
         variable_specs=template.variable_specs,
     )
@@ -403,8 +404,7 @@ async def _cancel_unfinished(
     has_axes = cells[0].variant.has_axes if cells else False
     existing_result = await db.execute(select(RunItemORM).where(RunItemORM.run_id == run_id))
     existing_by_key = {
-        _item_lookup_key(item, has_axes): item
-        for item in existing_result.scalars().all()
+        _item_lookup_key(item, has_axes): item for item in existing_result.scalars().all()
     }
     now = utc_now().isoformat()
     for cell in cells:
@@ -572,19 +572,29 @@ def map_sample_images_to_prompt_slots(
     order = 0
 
     for slot in slots:
-        role_hint = (slot.role_hint or "").strip()
-        matches = [image for image in remaining if role_hint and image.role == role_hint]
-        min_count = max(1, slot.min_count) if slot.required else max(0, slot.min_count)
-        if len(matches) < min_count:
+        role_hint = (slot.role_hint or slot.slot_id).strip()
+        matches = [
+            image
+            for image in remaining
+            if getattr(image, "slot_id", None) == slot.slot_id
+            or (getattr(image, "slot_id", None) is None and image.role == role_hint)
+        ]
+        count = len(matches)
+        if (slot.required or count > 0) and count < slot.min_count:
             raise ValueError(
-                f"Sample '{sample.sample_id}' is missing image for required prompt slot "
-                f"'{slot.slot_id or slot.label}' with role '{role_hint}'."
+                f"Sample '{sample.sample_id}', image slot '{slot.slot_id}': found {count}; "
+                f"expected at least {slot.min_count}."
             )
-        max_count = slot.max_count if slot.max_count is not None else len(matches)
-        selected = matches[:max_count]
-        for image in selected:
+        if slot.max_count is not None and count > slot.max_count:
+            raise ValueError(
+                f"Sample '{sample.sample_id}', image slot '{slot.slot_id}': found {count}; "
+                f"expected at most {slot.max_count}."
+            )
+        for image in matches:
             remaining.remove(image)
-            ordered_images.append(image.model_copy(update={"order": order}, deep=True))
+            ordered_images.append(
+                image.model_copy(update={"order": order, "slot_id": slot.slot_id}, deep=True)
+            )
             order += 1
 
     for image in sorted(remaining, key=lambda item: item.order):

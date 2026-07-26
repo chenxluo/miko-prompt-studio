@@ -10,6 +10,17 @@ from app.schemas.common import AttemptStatus
 from app.schemas.run_record import AdapterResult, NormalizedResponse, Usage
 
 
+def test_provider_capability_exposes_model_image_limit(client: TestClient) -> None:
+    response = client.get(
+        "/api/providers/openai/capability",
+        params={"model_id": "gpt-test"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["model_id"] == "gpt-test"
+    assert response.json()["max_images"] == 20
+
+
 class FakeAdapter:
     async def execute(self, request, api_key: str, base_url: str | None = None, timeout: int = 120):
         return AdapterResult(

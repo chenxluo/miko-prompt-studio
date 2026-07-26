@@ -39,6 +39,7 @@ from app.schemas.prompt import PromptSnapshot
 # Run Session
 # ---------------------------------------------------------------------------
 
+
 class RunSource(BaseModel):
     """Where the samples for this run came from."""
 
@@ -104,6 +105,7 @@ class RunSession(TimestampedModel):
 # Usage & Response (shared between Run Item and Attempt)
 # ---------------------------------------------------------------------------
 
+
 class Usage(BaseModel):
     """Token / image usage for a single request.
 
@@ -157,7 +159,7 @@ class ParsedResponse(BaseModel):
     parse_status: ParseStatus = ParseStatus.NOT_PARSED
     parse_errors: list[dict[str, Any]] = Field(default_factory=list)
     reasoning_text: str | None = None
-    boxes: list[BBox] | None = None     # 新增；None 表示未启用 bbox 解析
+    boxes: list[BBox] | None = None  # 新增；None 表示未启用 bbox 解析
 
 
 class StreamEvent(BaseModel):
@@ -173,6 +175,7 @@ class StreamEvent(BaseModel):
 # ---------------------------------------------------------------------------
 # Attempt (one actual API call)
 # ---------------------------------------------------------------------------
+
 
 class AdapterInfo(BaseModel):
     provider_id: str
@@ -216,6 +219,7 @@ class Review(BaseModel):
 # ---------------------------------------------------------------------------
 # Run Item (one sample × one config inside a Run Session)
 # ---------------------------------------------------------------------------
+
 
 class RunItemExportInfo(BaseModel):
     exportable: bool = True
@@ -265,6 +269,7 @@ class RunItem(TimestampedModel):
 # ---------------------------------------------------------------------------
 # Adapter result (returned by a provider adapter, before persistence)
 # ---------------------------------------------------------------------------
+
 
 class AdapterResult(BaseModel):
     """What a provider adapter returns after a single API call.

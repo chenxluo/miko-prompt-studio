@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from app.schemas.common import ImageTransportKind
 from app.schemas.internal_request import (
     ImagePreprocessConfig,
     RequestImage,
@@ -27,7 +28,13 @@ def preprocess_image(
     config: ImagePreprocessConfig,
     cache_dir: Path,
 ) -> RequestImage:
-    """Preprocess a local image and return its request image representation."""
+    """Preprocess a local image and return its request image representation.
+
+    URL-only refs (no local path) pass through with their original URI
+    preserved in ``resolved.uri`` and surfaced in ``source_uri`` so the
+    executor can later decide whether to keep the URL (direct transport) or
+    materialize it. Resolution never rewrites ``source_uri``.
+    """
 
     if image_ref.path is None:
         if image_ref.uri:
@@ -36,12 +43,15 @@ def preprocess_image(
                 source_image_id=image_ref.image_id,
                 role=image_ref.role,
                 path=None,
+                source_uri=image_ref.uri,
                 mime_type=image_ref.mime_type,
                 order=image_ref.order,
                 preprocess=config,
                 resolved=ResolvedImage(
                     uri=image_ref.uri,
                     mime_type=image_ref.mime_type or "image/png",
+                    transport=ImageTransportKind.INLINE_DATA,
+                    transport_reason="source_url_not_materialized",
                 ),
             )
         raise ValueError("ImageRef must include either path or uri.")
@@ -80,6 +90,7 @@ def preprocess_image(
         source_image_id=image_ref.image_id,
         role=image_ref.role,
         path=str(source_path),
+        source_uri=image_ref.uri,
         mime_type=image_ref.mime_type,
         order=image_ref.order,
         preprocess=config,
@@ -91,6 +102,8 @@ def preprocess_image(
             height=metadata.height,
             file_size=metadata.file_size,
             sha256=metadata.sha256,
+            transport=ImageTransportKind.INLINE_DATA,
+            transport_reason="local_preprocess",
         ),
     )
 

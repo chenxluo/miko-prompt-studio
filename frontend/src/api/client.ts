@@ -8,6 +8,7 @@ import type {
   CrossRunResponse,
   ImageSlotSpec,
   ModelConfig,
+  ProviderCapability,
   PricingProfile,
   ResultSnapshot,
   ResultSnapshotDetail,
@@ -21,6 +22,7 @@ import type {
   TaskVersionSnapshot,
   UploadImageResponse,
   VariableSpec,
+  UrlImageTransport,
 } from '../types';
 import type {
   CreateModelConfigPayload,
@@ -164,6 +166,16 @@ export async function listProviders(): Promise<{ providers: ProviderMetadata[] }
   return request<{ providers: ProviderMetadata[] }>('GET', '/api/providers');
 }
 
+export async function getProviderCapability(
+  adapterId: string,
+  modelId: string,
+): Promise<ProviderCapability> {
+  return request<ProviderCapability>(
+    'GET',
+    `/api/providers/${encodeURIComponent(adapterId)}/capability?model_id=${encodeURIComponent(modelId)}`,
+  );
+}
+
 export interface FetchModelsPayload {
   provider_config_id?: string;
   adapter_id?: string;
@@ -274,6 +286,7 @@ export interface LabRunPayload {
   run_name?: string;
   image_slot_specs?: ImageSlotSpec[];
   variable_specs?: VariableSpec[];
+  url_image_transport?: UrlImageTransport;
 }
 
 export async function runLab(payload: LabRunPayload, signal?: AbortSignal): Promise<RunSession> {
@@ -445,6 +458,7 @@ export interface CostStats {
   task_id: string;
   task_version_id: string;
   total_images: number;
+  total_requests: number;
   total_cost: number;
   avg_cost_per_image: number;
   avg_cost_per_request: number;
@@ -832,10 +846,12 @@ export interface SampleListItem {
 export async function listSamples(
   sampleSetId?: string,
   limit = 100,
+  offset = 0,
 ): Promise<SampleListItem[]> {
   const params = new URLSearchParams();
   if (sampleSetId) params.set('sample_set_id', sampleSetId);
   params.set('limit', String(limit));
+  params.set('offset', String(offset));
   return request<SampleListItem[]>('GET', `/api/samples?${params.toString()}`);
 }
 
@@ -996,6 +1012,10 @@ export async function uploadImage(
   const formData = new FormData();
   formData.append('file', file);
   return request<UploadImageResponse>('POST', '/api/upload/image', formData, true);
+}
+
+export async function uploadImageUrl(url: string): Promise<UploadImageResponse> {
+  return request<UploadImageResponse>('POST', '/api/upload/image-url', { url });
 }
 
 // ---------------------------------------------------------------------------

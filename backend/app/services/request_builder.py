@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.config import get_settings
+from app.schemas.common import UrlImageTransport
 from app.schemas.internal_request import (
     CostContext,
     ImagePreprocessConfig,
@@ -18,7 +19,7 @@ from app.schemas.internal_request import (
 from app.schemas.model_config import ModelConfig
 from app.schemas.output_contract import OutputContract
 from app.schemas.pricing import PricingProfile, PricingSnapshot
-from app.schemas.prompt import PromptVersion, PromptVersionData
+from app.schemas.prompt import ImageSlotSpec, PromptVersion, PromptVersionData
 from app.schemas.sample_record import SampleRecord
 from app.services.image_preprocess import preprocess_image
 from app.services.prompt_renderer import render_prompt
@@ -31,14 +32,22 @@ def build_internal_request(
     output_contract: OutputContract,
     pricing: PricingProfile | PricingSnapshot,
     preprocess_config: ImagePreprocessConfig | None = None,
+    image_slot_specs: list[ImageSlotSpec] | None = None,
+    url_image_transport: UrlImageTransport | None = None,
 ) -> InternalRequest:
-    """Build an InternalRequest from saved configuration and one sample."""
+    """Build an InternalRequest from saved configuration and one sample.
+
+    ``url_image_transport`` records the *user-requested* transport on the
+    returned :class:`InternalRequest`. The executor refines it against
+    provider capabilities/preprocess state before the adapter call.
+    """
 
     request_id = f"req_{uuid4().hex}"
     prompt = render_prompt(
         prompt_version.user_template,
         prompt_version.system_prompt,
         sample,
+        image_slot_specs=image_slot_specs,
     )
     if isinstance(prompt_version, PromptVersion):
         prompt.template_refs = TemplateRefs(
@@ -73,6 +82,7 @@ def build_internal_request(
             pricing_snapshot=snapshot,
         ),
         runtime=RuntimeOptions(),
+        url_image_transport=url_image_transport or UrlImageTransport.AUTO,
     )
 
 

@@ -9,14 +9,46 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.schemas.internal_request import PromptSpec, RenderContext, TemplateRefs
-from app.schemas.prompt import VariableSpec
-from app.schemas.sample_record import SampleRecord
+from app.schemas.prompt import ImageSlotSpec, VariableSpec
+from app.schemas.sample_record import ImageRef, SampleRecord
 
 _TOKEN_RE = re.compile(r"{{\s*([a-zA-Z_][\w]*(?:\.[^{}\s.]+)*)\s*}}")
 _CONDITIONAL_RE = re.compile(
     r"{{\s*([#^])\s*([a-zA-Z_][\w]*(?:\.[^{}\s.]+)*)\s*}}(.*?){{\s*/\s*\2\s*}}",
     re.DOTALL,
 )
+_IMAGE_TOKEN_RE = re.compile(r"{{\s*image\s*:\s*(\d+)\s*}}", re.IGNORECASE)
+_EACH_TAG_RE = re.compile(
+    r"{{\s*(?:#each\s+images\.([^{}\s.]+)|/each)\s*}}", re.IGNORECASE
+)
+_EACH_OPEN_RE = re.compile(r"{{\s*#each\s+images\.([^{}\s.]+)\s*}}", re.IGNORECASE)
+_EACH_CLOSE_RE = re.compile(r"{{\s*/each\s*}}", re.IGNORECASE)
+_EACH_LOCAL_RE = re.compile(r"{{\s*(number|image)\s*}}", re.IGNORECASE)
+
+
+def split_prompt_image_parts(prompt: str, image_count: int) -> list[str | int]:
+    """Split rendered prompt text into ordered text and image-index parts."""
+
+    parts: list[str | int] = []
+    referenced: set[int] = set()
+    last_end = 0
+    for match in _IMAGE_TOKEN_RE.finditer(prompt or ""):
+        text = prompt[last_end : match.start()].strip()
+        if text:
+            parts.append(text)
+        index = int(match.group(1))
+        if index < image_count:
+            parts.append(index)
+            referenced.add(index)
+        else:
+            parts.append(f"[image {index} not available]")
+        last_end = match.end()
+
+    trailing = prompt[last_end:].strip()
+    if trailing:
+        parts.append(trailing)
+    parts.extend(index for index in range(image_count) if index not in referenced)
+    return parts
 
 
 def extract_variable_specs(user_template: str, system_prompt: str = "") -> list[VariableSpec]:
@@ -96,10 +128,66 @@ def render_template_with_conditionals(template: str, context: dict[str, Any]) ->
     return render_template(rendered, context)
 
 
+def expand_image_loops(
+    template: str,
+    sample: SampleRecord,
+    image_slot_specs: list[ImageSlotSpec],
+) -> str:
+    """Expand the single supported image-slot loop into legacy image tokens."""
+
+    tags = list(_EACH_TAG_RE.finditer(template or ""))
+    if not tags:
+        if "#each" in (template or "") or _EACH_CLOSE_RE.search(template or ""):
+            raise ValueError(f"Sample '{sample.sample_id}': unmatched image each block.")
+        return template or ""
+    if (
+        len(tags) != 2
+        or not _EACH_OPEN_RE.fullmatch(tags[0].group())
+        or not _EACH_CLOSE_RE.fullmatch(tags[1].group())
+    ):
+        reason = "nested" if len(tags) > 2 else "unmatched"
+        raise ValueError(f"Sample '{sample.sample_id}': {reason} image each block.")
+
+    slot_id = tags[0].group(1)
+    specs = {spec.slot_id: spec for spec in image_slot_specs}
+    if slot_id not in specs:
+        raise ValueError(f"Sample '{sample.sample_id}': unknown image slot '{slot_id}'.")
+    spec = specs[slot_id]
+    role = spec.role_hint or spec.slot_id
+    ordered = sorted(sample.images, key=lambda image: image.order)
+    selected = [
+        (index, image)
+        for index, image in enumerate(ordered)
+        if _image_slot_id(image) == slot_id
+        or (_image_slot_id(image) is None and image.role == role)
+    ]
+    body = template[tags[0].end() : tags[1].start()]
+
+    def render_item(number: int, absolute_index: int) -> str:
+        return _EACH_LOCAL_RE.sub(
+            lambda match: (
+                str(number)
+                if match.group(1).lower() == "number"
+                else "{{image:" + str(absolute_index) + "}}"
+            ),
+            body,
+        )
+
+    return template[: tags[0].start()] + "".join(
+        render_item(number, absolute_index)
+        for number, (absolute_index, _) in enumerate(selected, start=1)
+    ) + template[tags[1].end() :]
+
+
+def _image_slot_id(image: ImageRef) -> str | None:
+    return getattr(image, "slot_id", None)
+
+
 def render_prompt(
     user_template: str,
     system_prompt: str,
     sample: SampleRecord,
+    image_slot_specs: list[ImageSlotSpec] | None = None,
 ) -> PromptSpec:
     """Render prompts for a sample."""
 
@@ -109,7 +197,13 @@ def render_prompt(
         "sample": sample_dict,
         "metadata": sample.metadata,
     }
-    rendered_user = render_template_with_conditionals(user_template, context)
+    if "#each" in (system_prompt or "") or _EACH_CLOSE_RE.search(system_prompt or ""):
+        raise ValueError(
+            f"Sample '{sample.sample_id}': image each blocks are only allowed in user_template."
+        )
+    rendered_user = render_template_with_conditionals(
+        expand_image_loops(user_template, sample, image_slot_specs or []), context
+    )
     rendered_system = render_template_with_conditionals(system_prompt, context)
 
     return PromptSpec(

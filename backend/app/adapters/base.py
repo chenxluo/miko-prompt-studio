@@ -88,6 +88,33 @@ class BaseAdapter(ABC):
     ) -> NormalizedError:
         """Convert provider HTTP errors or client exceptions to a normalized error."""
 
+    def _enforce_image_limit(self, request: InternalRequest) -> AdapterResult | None:
+        """Return a failed AdapterResult when the request exceeds the model's
+        ``max_images`` capability. Runs before build/send/stream so we never
+        reach the network. ``max_images=None`` means unknown/unlimited."""
+
+        capability = self.get_capability(request.model.model_id)
+        max_images = capability.max_images
+        if max_images is None:
+            return None
+        actual = len(request.images)
+        if actual <= max_images:
+            return None
+        # ponytail: single error type covers all "too many images" aborts;
+        # we never call build/send/stream here by construction.
+        error = NormalizedError(
+            type=ErrorType.UNSUPPORTED_CAPABILITY,
+            message=(
+                f"Model {request.model.model_id!r} accepts at most "
+                f"{max_images} images per request, got {actual}."
+            ),
+            retryable=False,
+        )
+        return AdapterResult(
+            status=AttemptStatus.FAILED,
+            error=error,
+        )
+
     async def execute(
         self,
         request: InternalRequest,
@@ -102,6 +129,9 @@ class BaseAdapter(ABC):
         snapshot: dict[str, Any] | None = None
 
         try:
+            blocked = self._enforce_image_limit(request)
+            if blocked is not None:
+                return blocked
             provider_request = self.build_provider_request(request)
             snapshot = self.redact_provider_request(provider_request)
             response = await self.send(provider_request, api_key, base_url, timeout)
@@ -129,8 +159,7 @@ class BaseAdapter(ABC):
                 status=self._status_from_error(error),
                 error=error,
                 latency_ms=self._elapsed_ms(started),
-                provider_request_snapshot=snapshot
-                or self.redact_provider_request(provider_request)
+                provider_request_snapshot=snapshot or self.redact_provider_request(provider_request)
                 if provider_request is not None
                 else None,
             )
@@ -150,6 +179,9 @@ class BaseAdapter(ABC):
         snapshot: dict[str, Any] | None = None
 
         try:
+            blocked = self._enforce_image_limit(request)
+            if blocked is not None:
+                return blocked
             provider_request = self.build_provider_request(request)
             provider_request["stream"] = True
             snapshot = self.redact_provider_request(provider_request)
@@ -166,8 +198,7 @@ class BaseAdapter(ABC):
                 status=self._status_from_error(error),
                 error=error,
                 latency_ms=self._elapsed_ms(started),
-                provider_request_snapshot=snapshot
-                or self.redact_provider_request(provider_request)
+                provider_request_snapshot=snapshot or self.redact_provider_request(provider_request)
                 if provider_request is not None
                 else None,
             )
@@ -288,7 +319,15 @@ class BaseAdapter(ABC):
     def redact_provider_request(
         self, provider_request: dict[str, Any] | None
     ) -> dict[str, Any] | None:
-        """Return a request snapshot with credential-looking values redacted."""
+        """Return a request snapshot with sensitive values redacted.
+
+        Scrubs: bearer/API keys (``Authorization``, ``api_key``, ``sk-...``),
+        raw image base64 payloads (``data:...;base64,...`` URIs, ``b64_json``
+        blobs, large inline base64 strings) and URL query strings so secrets
+        embedded as ``?token=...`` / ``?signature=...`` parameters never land
+        in the snapshot. The outgoing ``provider_request`` is NOT mutated —
+        only the returned deep-copy.
+        """
 
         if provider_request is None:
             return None
@@ -296,19 +335,147 @@ class BaseAdapter(ABC):
         self._redact_mapping(redacted)
         return redacted
 
-    def _redact_mapping(self, value: Any) -> None:
+    @staticmethod
+    def redact_internal_request_snapshot(
+        internal_request: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Return a redacted copy of an InternalRequest-shaped snapshot.
+
+        Persists the same shape as :meth:`redact_provider_request` but
+        tailored to ``RunItem.internal_request_snapshot``: the
+        ``images[*].resolved.uri`` and ``images[*].source_uri`` ``data:`` URI
+        base64 is stripped, and signed URL queries are removed from both
+        fields. Source URL path/host remain observable so reviewers can still
+        see what was referenced.
+        The original dict is NOT mutated. Lives on the base class so any
+        ``BaseAdapter`` subclass — including legacy fakes — gets it without
+        needing new methods.
+        """
+        if internal_request is None:
+            return None
+        redacted = copy.deepcopy(internal_request)
+        for image in redacted.get("images") or []:
+            if not isinstance(image, dict):
+                continue
+            resolved = image.get("resolved")
+            if isinstance(resolved, dict):
+                uri = resolved.get("uri")
+                if isinstance(uri, str) and uri.startswith("data:") and ";base64," in uri:
+                    resolved["uri"] = BaseAdapter._redact_data_uri(uri)
+                elif (
+                    isinstance(uri, str)
+                    and "?" in uri
+                    and ("://" in uri or uri.startswith(("http", "gs://")))
+                ):
+                    # Direct ``resolved.uri`` for gs/http(s) duplicates the
+                    # signed query — strip it from the snapshot too.
+                    image_resolved_uri = uri
+                    resolved["uri"] = BaseAdapter._redact_url_query(image_resolved_uri)
+            source_uri = image.get("source_uri")
+            if (
+                isinstance(source_uri, str)
+                and source_uri.startswith("data:")
+                and ";base64," in source_uri
+            ):
+                image["source_uri"] = BaseAdapter._redact_data_uri(source_uri)
+            elif (
+                isinstance(source_uri, str)
+                and "?" in source_uri
+                and ("://" in source_uri or source_uri.startswith(("http", "gs://")))
+            ):
+                image["source_uri"] = BaseAdapter._redact_url_query(source_uri)
+        return redacted
+
+    def _redact_mapping(
+        self, value: Any, parent_key: str | None = None, sibling_mime: str | None = None
+    ) -> None:
         if isinstance(value, dict):
+            mime_hint = self._sibling_mime(value, sibling_mime)
             for key, item in value.items():
-                lowered = str(key).lower()
-                if lowered in {"authorization", "api_key", "apikey", "x-api-key"}:
-                    value[key] = self._redact_secret(str(item))
-                elif isinstance(item, str) and item.startswith("sk-"):
-                    value[key] = "sk-***"
+                if isinstance(item, str):
+                    value[key] = self._redact_string(str(key).lower(), item, mime_hint)
                 else:
-                    self._redact_mapping(item)
+                    self._redact_mapping(item, str(key).lower(), mime_hint)
         elif isinstance(value, list):
-            for item in value:
-                self._redact_mapping(item)
+            for index, item in enumerate(value):
+                if isinstance(item, str):
+                    value[index] = self._redact_string(parent_key, item, sibling_mime)
+                else:
+                    self._redact_mapping(item, None, sibling_mime)
+
+    @staticmethod
+    def _sibling_mime(value: dict[str, Any], fallback: str | None) -> str | None:
+        """Pick up a ``mimeType`` / ``mime_type`` hint from a sibling dict so
+        short ``data:...;base64,...`` payloads (which can be <256 chars) still
+        get redacted when their context is an image part."""
+        for key in ("mimeType", "mime_type"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        return fallback
+
+    def _redact_string(self, key: str | None, text: str, sibling_mime: str | None = None) -> str:
+        if not text:
+            return text
+        normalized_key = (key or "").lower()
+        # Bearer / sk- API tokens always win.
+        if text.lower().startswith("bearer "):
+            return "Bearer sk-***"
+        if text.startswith("sk-"):
+            return "sk-***"
+        # Any ``data:...;base64,...`` string is an inline image payload;
+        # scrub it unconditionally regardless of key name or length.
+        if text.startswith("data:") and ";base64," in text:
+            return self._redact_data_uri(text)
+        # Image base64 by dict key — length-agnostic, catches short payloads.
+        if normalized_key in {"data", "b64_json"} and self._looks_like_image_payload(
+            text, sibling_mime
+        ):
+            return f"<redacted {len(text)}-char image base64>"
+        # ``b64_json`` OpenAI image-gen entries are always image blobs.
+        if normalized_key == "b64_json":
+            return f"<redacted {len(text)}-char b64_json>"
+        # URL query strings carry signed-access tokens (GCS, S3 pre-sign,
+        # CDN signatures). Strip them so secrets never land in the snapshot.
+        if "?" in text and ("://" in text or text.startswith(("http", "gs://"))):
+            return self._redact_url_query(text)
+        return text
+
+    @staticmethod
+    def _looks_like_image_payload(text: str, sibling_mime: str | None) -> bool:
+        """True when ``text`` is almost certainly an encoded image body."""
+        if not text:
+            return False
+        # data: URI image payload.
+        if text.startswith("data:image/"):
+            return True
+        # Sibling says it's an image part.
+        if sibling_mime and sibling_mime.lower().startswith("image/"):
+            return True
+        # Otherwise, treat as image data only if it looks like raw base64 with
+        # enough length to be a real blob — short tokens (e.g. ``"AAA"``)
+        # aren't worth scrubbing on a generic ``data`` key.
+        if len(text) < 256 or len(text) > 5_000_000:
+            return False
+        import re
+
+        return bool(re.fullmatch(r"[A-Za-z0-9+/=\s]+", text))
+
+    @staticmethod
+    def _redact_data_uri(text: str) -> str:
+        head, _, payload = text.partition(";base64,")
+        return f"{head};base64,<redacted {len(payload)}-char base64>"
+
+    @staticmethod
+    def _redact_url_query(text: str) -> str:
+        scheme_split = text.split("://", 1)
+        if len(scheme_split) != 2:
+            return text
+        scheme, rest = scheme_split
+        path, _, query = rest.partition("?")
+        if not query:
+            return text
+        return f"{scheme}://{path}?<redacted query>"
 
     def _redact_secret(self, value: str) -> str:
         if value.lower().startswith("bearer "):

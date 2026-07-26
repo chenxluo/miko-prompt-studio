@@ -514,7 +514,9 @@ async def generate_task_doc(
         "- `{{vars.<var_id>}}` — 替换为对应变量槽位的值\n"
         "- `{{#vars.<var_id>}}...{{/vars.<var_id>}}` — 条件块：变量为真（非空）时渲染内部内容\n"
         "- `{{^vars.<var_id>}}...{{/vars.<var_id>}}` — 条件块：变量为假或为空时渲染内部内容\n"
-        "- `{{image:<索引>}}` — 图文交错时，标记第 `<索引>` 张图像插入的位置（如 `{{image:0}}`）"
+        "- `{{image:<索引>}}` — 图文交错时，标记第 `<索引>` 张图像插入的位置（如 `{{image:0}}`）\n"
+        "- `{{#each images.<slot_id>}}...{{/each}}` — 按指定图片槽逐图展开；"
+        "循环体内仅支持从 1 开始的 `{{number}}` 与当前图片 `{{image}}`"
     )
     sections.append("\n\n".join(template_parts))
 

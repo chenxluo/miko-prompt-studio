@@ -39,16 +39,22 @@ def validate_sample_against_specs(
     errors: list[str] = []
 
     for slot in image_slot_specs:
-        if not slot.required:
-            continue
         role = slot.role_hint or slot.slot_id
-        if not role:
-            continue
-        count = sum(1 for image in sample.images if image.role == role)
-        if count < slot.min_count:
+        count = sum(
+            1
+            for image in sample.images
+            if getattr(image, "slot_id", None) == slot.slot_id
+            or (getattr(image, "slot_id", None) is None and image.role == role)
+        )
+        if (slot.required or count > 0) and count < slot.min_count:
             errors.append(
-                f"Required image slot '{role}' needs at least "
-                f"{slot.min_count} image(s), found {count}."
+                f"Sample '{sample.sample_id}', image slot '{slot.slot_id}': found {count}; "
+                f"expected at least {slot.min_count}."
+            )
+        if slot.max_count is not None and count > slot.max_count:
+            errors.append(
+                f"Sample '{sample.sample_id}', image slot '{slot.slot_id}': found {count}; "
+                f"expected at most {slot.max_count}."
             )
 
     for spec in variable_specs:

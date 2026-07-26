@@ -26,6 +26,8 @@ from typing import Any
 # Mirrors backend/tests/conftest.py. stdlib-only; harmless under pytest.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.adapters.base import BaseAdapter  # noqa: E402
+from app.adapters.openai_compat import OpenAICompatAdapter  # noqa: E402
 from app.adapters.vertex import (  # noqa: E402
     GEMINI_MODELS,
     VertexAdapter,
@@ -138,9 +140,7 @@ class _FakeResp:
 
 def test_build_basic_structure_with_system_instruction() -> None:
     adapter = VertexAdapter()
-    payload = adapter.build_provider_request(
-        _request(system_prompt="be brief", user_prompt="hi")
-    )
+    payload = adapter.build_provider_request(_request(system_prompt="be brief", user_prompt="hi"))
 
     assert payload["contents"] == [{"role": "user", "parts": [{"text": "hi"}]}]
     assert payload["systemInstruction"] == {"parts": [{"text": "be brief"}]}
@@ -172,6 +172,37 @@ def test_build_image_uses_raw_base64_inline_data() -> None:
     assert "data:" not in parts[1]["inlineData"]["data"]
 
 
+def test_build_interleaves_repeated_missing_and_unreferenced_images() -> None:
+    adapter = VertexAdapter()
+    images = [
+        RequestImage(
+            request_image_id=f"i{index}",
+            order=index,
+            resolved=ResolvedImage(uri=f"data:image/png;base64,{data}", mime_type="image/png"),
+        )
+        for index, data in enumerate(("AAAA", "BBBB", "CCCC"))
+    ]
+
+    payload = adapter.build_provider_request(
+        _request(
+            user_prompt="A {{image:1}} B {{image:1}} C {{image:9}} D",
+            images=images,
+        )
+    )
+
+    assert payload["contents"][0]["parts"] == [
+        {"text": "A"},
+        {"inlineData": {"mimeType": "image/png", "data": "BBBB"}},
+        {"text": "B"},
+        {"inlineData": {"mimeType": "image/png", "data": "BBBB"}},
+        {"text": "C"},
+        {"text": "[image 9 not available]"},
+        {"text": "D"},
+        {"inlineData": {"mimeType": "image/png", "data": "AAAA"}},
+        {"inlineData": {"mimeType": "image/png", "data": "CCCC"}},
+    ]
+
+
 def test_build_empty_prompt_and_no_images_emits_empty_text_part() -> None:
     adapter = VertexAdapter()
     payload = adapter.build_provider_request(_request(user_prompt=""))
@@ -183,9 +214,7 @@ def test_build_generation_config_camel_case() -> None:
     adapter = VertexAdapter()
     payload = adapter.build_provider_request(
         _request(
-            params=ModelParameters(
-                temperature=0.7, top_p=0.9, max_output_tokens=512, stop=["END"]
-            )
+            params=ModelParameters(temperature=0.7, top_p=0.9, max_output_tokens=512, stop=["END"])
         )
     )
     gc = payload["generationConfig"]
@@ -231,9 +260,7 @@ def test_build_strict_json_with_schema_uppercases_types() -> None:
         "required": ["label"],
     }
     payload = adapter.build_provider_request(
-        _request(
-            output_contract=OutputContract(mode=OutputMode.STRICT_JSON, json_schema=schema)
-        )
+        _request(output_contract=OutputContract(mode=OutputMode.STRICT_JSON, json_schema=schema))
     )
     gc = payload["generationConfig"]
     assert gc["responseMimeType"] == "application/json"
@@ -305,9 +332,7 @@ def test_thinking_default_omits_thinking_config() -> None:
 def test_thinking_budget_only_emits_with_budget() -> None:
     """A bare thinking_budget (enable_thinking=None) opts into thinking."""
     adapter = VertexAdapter()
-    payload = adapter.build_provider_request(
-        _request(params=ModelParameters(thinking_budget=1024))
-    )
+    payload = adapter.build_provider_request(_request(params=ModelParameters(thinking_budget=1024)))
     tc = payload["generationConfig"]["thinkingConfig"]
     assert tc["includeThoughts"] is True
     assert tc["thinkingBudget"] == 1024
@@ -545,9 +570,7 @@ def test_endpoint_stream_suffix() -> None:
 
 
 def test_endpoint_extracts_region_from_full_url() -> None:
-    url = _endpoint(
-        "https://europe-west4-aiplatform.googleapis.com", "p", "m", stream=False
-    )
+    url = _endpoint("https://europe-west4-aiplatform.googleapis.com", "p", "m", stream=False)
     assert url.startswith("https://europe-west4-aiplatform.googleapis.com/")
     assert "/locations/europe-west4/" in url
 
@@ -555,6 +578,7 @@ def test_endpoint_extracts_region_from_full_url() -> None:
 def test_endpoint_accepts_plain_region_string() -> None:
     url = _endpoint("asia-northeast1", "p", "m", stream=False)
     assert "/locations/asia-northeast1/" in url
+
 
 def test_endpoint_global_uses_bare_host() -> None:
     """`global` locations are served by the bare host aiplatform.googleapis.com
@@ -629,6 +653,180 @@ def test_events_from_sse_lines_reasoning_delta() -> None:
     assert events[0].delta == "hm"
 
 
+# ---------------------------------------------------------------------------
+# 9. URL image transport — capability, gs:// fileData, snapshot redaction
+# ---------------------------------------------------------------------------
+
+
+def test_capability_advertises_only_bare_gs() -> None:
+    adapter = VertexAdapter()
+    cap = adapter.get_capability("gemini-2.5-pro")
+    # Vertex's official generateContent docs only document fileData.fileUri
+    # with gs://; the public HTTPS form lives on Gemini Developer API, not
+    # our Vertex OAuth endpoint. AUTO HTTP(S) materializes inline.
+    assert cap.direct_image_uri_schemes == ["gs"]
+
+
+def test_build_gs_uri_with_missing_mime_serializes_as_fileData_and_infers_jpeg() -> None:
+    adapter = VertexAdapter()
+    img = RequestImage(
+        request_image_id="i1",
+        order=0,
+        # gs:// + bucket/object: bucket is the URL host, /photo.jpg is the path
+        # the adapter feeds to mimetypes.guess_type for inference.
+        resolved=ResolvedImage(uri="gs://my-bucket/photo.jpg", mime_type=""),
+    )
+    payload = adapter.build_provider_request(_request(images=[img]))
+
+    parts = payload["contents"][0]["parts"]
+    # Text part first, then the image.
+    assert parts[1] == {
+        "fileData": {
+            "fileUri": "gs://my-bucket/photo.jpg",
+            "mimeType": "image/jpeg",
+        }
+    }
+
+
+def test_redact_provider_request_strips_short_openai_data_uri() -> None:
+    # Short (<256 char) data URI in image_url.url — would NOT be caught by the
+    # length-agnostic base64 detector, so the unconditional data: URI scrubber
+    # is what saves it.
+    short_data_uri = "data:image/png;base64," + "A" * 100
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {"type": "image_url", "image_url": {"url": short_data_uri}},
+                ],
+            }
+        ]
+    }
+    adapter = OpenAICompatAdapter()
+    snapshot = adapter.redact_provider_request(payload)
+
+    assert snapshot is not None
+    redacted_url = snapshot["messages"][0]["content"][1]["image_url"]["url"]
+    assert redacted_url == "data:image/png;base64,<redacted 100-char base64>"
+    # Original outgoing dict untouched.
+    assert payload["messages"][0]["content"][1]["image_url"]["url"] == short_data_uri
+
+
+def test_redact_provider_request_strips_short_vertex_inline_data() -> None:
+    # Short inlineData.data (sibling mimeType: image/png is what flags this
+    # as an image payload — without that hint the length-only base64
+    # detector skips <256-char strings).
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"inlineData": {"mimeType": "image/png", "data": "AAAA"}},
+                ],
+            }
+        ]
+    }
+    adapter = VertexAdapter()
+    snapshot = adapter.redact_provider_request(payload)
+
+    assert snapshot is not None
+    redacted_data = snapshot["contents"][0]["parts"][0]["inlineData"]["data"]
+    assert redacted_data == "<redacted 4-char image base64>"
+    # Original outgoing dict untouched.
+    assert payload["contents"][0]["parts"][0]["inlineData"]["data"] == "AAAA"
+
+
+def test_redact_provider_request_strips_signed_url_query() -> None:
+    # GCS pre-signed URL — the ?X-Goog-Signature=... carries the secret.
+    signed_uri = (
+        "https://storage.googleapis.com/bucket/photo.jpg"
+        "?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Signature=abc&X-Goog-Expires=12345"
+    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "fileData": {
+                            "fileUri": signed_uri,
+                            "mimeType": "image/jpeg",
+                        }
+                    },
+                ],
+            }
+        ]
+    }
+    adapter = VertexAdapter()
+    snapshot = adapter.redact_provider_request(payload)
+
+    assert snapshot is not None
+    redacted_uri = snapshot["contents"][0]["parts"][0]["fileData"]["fileUri"]
+    assert redacted_uri == ("https://storage.googleapis.com/bucket/photo.jpg?<redacted query>")
+    # Original outgoing dict untouched.
+    assert payload["contents"][0]["parts"][0]["fileData"]["fileUri"] == signed_uri
+
+
+def test_redact_internal_request_snapshot_strips_signed_query_and_inline_base64() -> None:
+    request = InternalRequest(
+        request_id="req_redact",
+        sample_ref=SampleRef(sample_id="s1"),
+        model=ModelSpec(provider_id="vertex", model_id="gemini-2.5-pro"),
+        prompt=PromptSpec(user_prompt="hi"),
+        images=[
+            RequestImage(
+                request_image_id="i1",
+                order=0,
+                source_uri="https://x.example.com/photo.jpg?signature=abc",
+                resolved=ResolvedImage(
+                    uri="data:image/png;base64,AAAA",
+                    mime_type="image/png",
+                ),
+            ),
+            RequestImage(
+                request_image_id="i2",
+                order=1,
+                source_uri="gs://my-bucket/photo.jpg?X-Goog-Signature=xyz",
+                resolved=ResolvedImage(
+                    uri="gs://my-bucket/photo.jpg?X-Goog-Signature=xyz",
+                    mime_type="image/jpeg",
+                ),
+            ),
+            RequestImage(
+                request_image_id="i3",
+                order=2,
+                source_uri="data:image/jpeg;base64,BBBB",
+                resolved=ResolvedImage(
+                    uri="data:image/jpeg;base64,BBBB",
+                    mime_type="image/jpeg",
+                ),
+            ),
+        ],
+    )
+    raw = request.model_dump(mode="json")
+    import copy as _copy
+
+    raw_before = _copy.deepcopy(raw)
+
+    redacted = BaseAdapter.redact_internal_request_snapshot(raw)
+    assert redacted is not None
+
+    images = redacted["images"]
+    # Inline base64 stripped from resolved.uri; data: head kept for visibility.
+    assert images[0]["resolved"]["uri"] == ("data:image/png;base64,<redacted 4-char base64>")
+    # Signed URL query stripped from both source_uri and the direct
+    # resolved.uri for gs:// / http(s).
+    assert images[1]["resolved"]["uri"] == ("gs://my-bucket/photo.jpg?<redacted query>")
+    assert images[0]["source_uri"] == ("https://x.example.com/photo.jpg?<redacted query>")
+    assert images[1]["source_uri"] == ("gs://my-bucket/photo.jpg?<redacted query>")
+    assert images[2]["source_uri"] == ("data:image/jpeg;base64,<redacted 4-char base64>")
+    # Path/host remain observable so reviewers can still see what was sent.
+    assert "x.example.com" in images[0]["source_uri"]
+    assert "my-bucket" in images[1]["source_uri"]
+    # Original dict untouched.
+    assert raw == raw_before
+
+
 if __name__ == "__main__":
     test_build_basic_structure_with_system_instruction()
     test_build_omits_system_instruction_when_empty()
@@ -664,4 +862,10 @@ if __name__ == "__main__":
     test_list_and_capability()
     test_events_from_sse_lines()
     test_events_from_sse_lines_reasoning_delta()
+    test_capability_advertises_only_bare_gs()
+    test_build_gs_uri_with_missing_mime_serializes_as_fileData_and_infers_jpeg()
+    test_redact_provider_request_strips_short_openai_data_uri()
+    test_redact_provider_request_strips_short_vertex_inline_data()
+    test_redact_provider_request_strips_signed_url_query()
+    test_redact_internal_request_snapshot_strips_signed_query_and_inline_base64()
     print("ok")

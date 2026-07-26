@@ -37,6 +37,7 @@ from app.schemas.run_record import (
     StreamEvent,
     Usage,
 )
+from app.services.prompt_renderer import split_prompt_image_parts
 
 # ---------------------------------------------------------------------------
 # Static Gemini model catalog (the only "discovery" this adapter offers).
@@ -132,13 +133,10 @@ def _service_account(json_str: str) -> dict[str, Any]:
         raise ValueError("Service-account JSON must be a JSON object.")
     missing = [name for name in _REQUIRED_SA_FIELDS if not data.get(name)]
     if missing:
-        raise ValueError(
-            "Service-account JSON missing required field(s): " + ", ".join(missing)
-        )
+        raise ValueError("Service-account JSON missing required field(s): " + ", ".join(missing))
     if data.get("type") != "service_account":
         raise ValueError(
-            f"Service-account JSON has type={data.get('type')!r}, "
-            "expected 'service_account'."
+            f"Service-account JSON has type={data.get('type')!r}, expected 'service_account'."
         )
     return data
 
@@ -166,9 +164,7 @@ def _sign_jwt(sa: dict[str, Any]) -> str:
     )
 
     private_key = load_pem_private_key(sa["private_key"].encode("utf-8"), password=None)
-    signature = private_key.sign(
-        signing_input.encode("ascii"), padding.PKCS1v15(), hashes.SHA256()
-    )
+    signature = private_key.sign(signing_input.encode("ascii"), padding.PKCS1v15(), hashes.SHA256())
     return signing_input + "." + _b64url(signature)
 
 
@@ -195,8 +191,7 @@ async def _access_token(api_key: str) -> str:
         )
     if resp.is_error:
         raise RuntimeError(
-            f"Failed to mint Vertex access token "
-            f"(HTTP {resp.status_code}): {resp.text}"
+            f"Failed to mint Vertex access token (HTTP {resp.status_code}): {resp.text}"
         )
     token_data = resp.json()
     access_token = token_data["access_token"]
@@ -222,9 +217,7 @@ def _resolve_location(base_url: str | None) -> str:
     return loc
 
 
-def _endpoint(
-    base_url: str | None, project_id: str, model_id: str, stream: bool
-) -> str:
+def _endpoint(base_url: str | None, project_id: str, model_id: str, stream: bool) -> str:
     """Build the Vertex generateContent (or streamGenerateContent) URL.
 
     Regional locations use ``{loc}-aiplatform.googleapis.com``. The ``global``
@@ -252,18 +245,46 @@ def _endpoint(
 def _image_to_inline_data(image: RequestImage) -> dict[str, Any]:
     """Convert an internal image to a Vertex ``inlineData``/``fileData`` part.
 
+    Transport selection:
+      * ``gs://``         → ``fileData.fileUri``. This is the only scheme
+        Vertex's official ``generateContent`` docs document for
+        ``fileData``; the adapter advertises ``gs`` only and the executor
+        routes any HTTP(S) URL through the inline materializer.
+      * ``http(s)://``    → ``fileData.fileUri``. **Defensive branch only**
+        — not advertised in the capability, so under AUTO this never runs.
+        The executor will fall back to inline if a request ever carries an
+        HTTP(S) URL on a Vertex adapter; this branch exists for any future
+        Vertex endpoint that does accept public URLs.
+      * ``data:`` URI     → ``inlineData`` (raw base64 + mime).
+      * local path       → ``inlineData`` (backend reads + base64-encodes).
+
+    For both ``gs://`` and ``http(s)://`` the mime is inferred from
+    ``ImageRef.mime_type`` first, then from the URL path extension
+    (query/fragment stripped via ``mimetypes.guess_type``), then
+    ``image/png``. The backend NEVER fetches the URL — the provider does.
+
     Vertex wants RAW base64 in ``inlineData.data`` with ``mimeType`` as a
     sibling — NOT a ``data:`` URI (do not reuse openai_compat's ``_image_to_url``).
     """
 
+    from urllib.parse import urlparse
+
     resolved = image.resolved
     uri = resolved.uri if resolved is not None else None
 
-    if uri and uri.startswith("gs://"):
-        mime = (resolved.mime_type if resolved is not None else None) or image.mime_type
-        return {
-            "fileData": {"fileUri": uri, "mimeType": mime or "image/png"}
-        }
+    if uri and (uri.startswith("gs://") or uri.startswith(("http://", "https://"))):
+        parsed = urlparse(uri)
+        # ``path`` on a gs URL is the bucket+object segment after the host;
+        # ``mimetypes.guess_type`` works on that path string just like http.
+        path_no_query = parsed.path or ""
+        guessed = mimetypes.guess_type(path_no_query)[0] if path_no_query else None
+        mime = (
+            (resolved.mime_type if resolved is not None else None)
+            or image.mime_type
+            or guessed
+            or "image/png"
+        )
+        return {"fileData": {"fileUri": uri, "mimeType": mime}}
 
     if uri and uri.startswith("data:"):
         match = _DATA_URI_RE.match(uri)
@@ -276,12 +297,10 @@ def _image_to_inline_data(image: RequestImage) -> dict[str, Any]:
             }
 
     # Fallback: read raw bytes from disk and base64-encode.
-    path = (
-        resolved.path if resolved is not None and resolved.path else image.path
-    )
+    path = resolved.path if resolved is not None and resolved.path else image.path
     if path is None:
         raise ValueError(
-            f"Image {image.request_image_id} has neither a data/GS URI nor a path."
+            f"Image {image.request_image_id} has neither a data/GS/HTTP URI nor a path."
         )
     mime = (
         (resolved.mime_type if resolved is not None else None)
@@ -379,13 +398,21 @@ class VertexAdapter(BaseAdapter):
         return ProviderCapability(
             provider_id="vertex",
             model_id=model_id,
+            # Vertex's official generateContent docs only document
+            # ``fileData.fileUri`` with ``gs://``; the public HTTPS form lives
+            # on the Gemini Developer API, not our Vertex OAuth endpoint.
+            # Advertise ``gs`` only so AUTO HTTP(S) materializes inline.
             supports_image=True,
             supports_multi_image=True,
             supports_system_prompt=True,
             supports_json_mode=True,
             supports_strict_json_schema=False,  # responseSchema is close but not OpenAI-strict
-            supports_batch_api=False,
             max_images=16,
+            direct_image_uri_schemes=["gs"],
+            supports_inline_image_data=True,
+            # Same observable model cap as ``max_images`` until a primary
+            # source proves otherwise.
+            max_direct_images=16,
         )
 
     # -- build ------------------------------------------------------------
@@ -395,10 +422,12 @@ class VertexAdapter(BaseAdapter):
         sorted_images = sorted(request.images, key=lambda item: item.order)
 
         parts: list[dict[str, Any]] = []
-        if request.user_prompt:
-            parts.append({"text": request.user_prompt})
-        for image in sorted_images:
-            parts.append(_image_to_inline_data(image))
+        for part in split_prompt_image_parts(request.user_prompt, len(sorted_images)):
+            parts.append(
+                _image_to_inline_data(sorted_images[part])
+                if isinstance(part, int)
+                else {"text": part}
+            )
         if not parts:
             parts.append({"text": ""})
 
@@ -449,9 +478,7 @@ class VertexAdapter(BaseAdapter):
 
         return payload
 
-    def _apply_json_contract(
-        self, request: InternalRequest, gen_config: dict[str, Any]
-    ) -> None:
+    def _apply_json_contract(self, request: InternalRequest, gen_config: dict[str, Any]) -> None:
         contract = request.output_contract
         if contract.mode == OutputMode.LOOSE_JSON:
             gen_config["responseMimeType"] = "application/json"
@@ -514,9 +541,10 @@ class VertexAdapter(BaseAdapter):
             "Content-Type": "application/json",
         }
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client, client.stream(
-                "POST", url, headers=headers, json=payload
-            ) as response:
+            async with (
+                httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client,
+                client.stream("POST", url, headers=headers, json=payload) as response,
+            ):
                 if response.is_error:
                     await response.aread()
                     err = self.normalize_error(response=response, exception=None)
@@ -604,9 +632,7 @@ class VertexAdapter(BaseAdapter):
 
     # -- parse ------------------------------------------------------------
 
-    def parse_response(
-        self, response: httpx.Response, request: InternalRequest
-    ) -> AdapterResult:
+    def parse_response(self, response: httpx.Response, request: InternalRequest) -> AdapterResult:
         data = response.json()
 
         prompt_feedback = data.get("promptFeedback")
@@ -618,9 +644,7 @@ class VertexAdapter(BaseAdapter):
                 normalized_response=NormalizedResponse(
                     text="",
                     finish_reason=None,
-                    safety=SafetyInfo(
-                        blocked=True, categories=[block_reason], raw=data
-                    ),
+                    safety=SafetyInfo(blocked=True, categories=[block_reason], raw=data),
                 ),
                 error=NormalizedError(
                     type=ErrorType.SAFETY_BLOCKED,
@@ -663,9 +687,7 @@ class VertexAdapter(BaseAdapter):
             or None
         )
         finish_reason = first.get("finishReason")
-        blocked = (
-            isinstance(finish_reason, str) and finish_reason in _BLOCKED_FINISH_REASONS
-        )
+        blocked = isinstance(finish_reason, str) and finish_reason in _BLOCKED_FINISH_REASONS
 
         if blocked:
             return AdapterResult(
@@ -675,9 +697,7 @@ class VertexAdapter(BaseAdapter):
                     text=text,
                     finish_reason=finish_reason,
                     reasoning_text=reasoning_text,
-                    safety=SafetyInfo(
-                        blocked=True, categories=[finish_reason], raw=first
-                    ),
+                    safety=SafetyInfo(blocked=True, categories=[finish_reason], raw=first),
                 ),
                 error=NormalizedError(
                     type=ErrorType.SAFETY_BLOCKED,
@@ -710,9 +730,7 @@ class VertexAdapter(BaseAdapter):
 
         input_tokens = int(metadata.get("promptTokenCount") or 0)
         output_tokens = int(metadata.get("candidatesTokenCount") or 0)
-        total_tokens = int(
-            metadata.get("totalTokenCount") or (input_tokens + output_tokens)
-        )
+        total_tokens = int(metadata.get("totalTokenCount") or (input_tokens + output_tokens))
         cached = metadata.get("cachedContentTokenCount")
         cached_input_tokens = int(cached) if cached is not None else None
 
@@ -721,9 +739,7 @@ class VertexAdapter(BaseAdapter):
         # fold it into the billable output count so thinking is actually billed.
         thoughts = metadata.get("thoughtsTokenCount")
         reasoning_tokens = int(thoughts) if thoughts is not None else None
-        billable_output_tokens = (
-            output_tokens + reasoning_tokens if reasoning_tokens else None
-        )
+        billable_output_tokens = output_tokens + reasoning_tokens if reasoning_tokens else None
 
         return Usage(
             input_tokens=input_tokens,
@@ -782,9 +798,7 @@ class VertexAdapter(BaseAdapter):
             )
 
         if response is None:
-            return NormalizedError(
-                type=ErrorType.UNKNOWN_ERROR, message="Unknown provider error."
-            )
+            return NormalizedError(type=ErrorType.UNKNOWN_ERROR, message="Unknown provider error.")
 
         raw_error = self._error_body(response)
         message = self._error_message(raw_error) or response.reason_phrase

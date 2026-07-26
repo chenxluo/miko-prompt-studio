@@ -2517,6 +2517,15 @@ function buildPrefillFromItem(item: RunItemSummary): SaveTaskDialogPrefill {
   const imagePreprocessConfig =
     (modelSnapshot.image_preprocess_config as ImagePreprocessConfig | null | undefined) ?? null;
 
+  // The run's InternalRequest records the selected URL transport policy;
+  // carry it into the new task version when it is observable.
+  const requestSnapshot = item.internal_request_snapshot ?? {};
+  const rawTransport = requestSnapshot.url_image_transport;
+  const urlImageTransport =
+    rawTransport === 'auto' || rawTransport === 'direct' || rawTransport === 'inline'
+      ? rawTransport
+      : undefined;
+
   return {
     system_prompt:
       typeof promptSnapshot.system_prompt === 'string'
@@ -2537,6 +2546,7 @@ function buildPrefillFromItem(item: RunItemSummary): SaveTaskDialogPrefill {
     model_parameters: modelParameters,
     output_contract: Object.keys(outputContract).length > 0 ? outputContract : undefined,
     image_preprocess_config: imagePreprocessConfig,
+    url_image_transport: urlImageTransport,
     pricing_profile_id:
       typeof pricingSnapshot.pricing_profile_id === 'string'
         ? pricingSnapshot.pricing_profile_id

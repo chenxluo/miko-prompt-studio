@@ -1,13 +1,16 @@
-import { FlaskConical, History, X } from 'lucide-react';
-import { useState } from 'react';
+import { Database, FlaskConical, History, X } from 'lucide-react';
+import { useCallback, useState } from 'react';
 
+import * as api from '../api/client';
+import { SamplePickerDialog } from '../components/lab/SamplePickerDialog';
 import { ImagePanel } from '../components/lab/ImagePanel';
 import { ModelBar } from '../components/lab/ModelBar';
 import { PromptPanel } from '../components/lab/PromptPanel';
 import { ResultPanel } from '../components/lab/ResultPanel';
 import { RunHistory } from '../components/lab/RunHistory';
 import { useI18n } from '../i18n';
-import { type LabViewMode, useLabStore } from '../store/labStore';
+import { buildDefaultVariables, type LabViewMode, toStableVarString, useLabStore } from '../store/labStore';
+import type { ImageRef } from '../types';
 
 const MODES: { id: LabViewMode; labelKey: string }[] = [
   { id: 'edit', labelKey: 'lab.viewMode.edit' },
@@ -21,6 +24,32 @@ export function LabView() {
   const setViewMode = useLabStore((state) => state.setViewMode);
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [samplePickerOpen, setSamplePickerOpen] = useState(false);
+  const [activeSampleId, setActiveSampleId] = useState<string | null>(null);
+
+  // Apply a dataset sample: replace Lab images and load its variables. Missing
+  // variables fall back to the task defaults (no residual values from a
+  // previous sample); non-string values are carried as stable JSON strings.
+  const applySample = useCallback((sample: api.SampleListItem) => {
+    const state = useLabStore.getState();
+    const nextVars = { ...buildDefaultVariables(state.templateVariableSpecs) };
+    const rawVars = sample.data?.vars;
+    if (rawVars && typeof rawVars === 'object' && !Array.isArray(rawVars)) {
+      const source = rawVars as Record<string, unknown>;
+      for (const spec of state.templateVariableSpecs) {
+        if (source[spec.var_id] === undefined) continue;
+        nextVars[spec.var_id] = toStableVarString(source[spec.var_id]);
+      }
+    }
+    const rawImages = sample.data?.images;
+    state.setImages(Array.isArray(rawImages) ? (rawImages as ImageRef[]) : []);
+    const nextState = useLabStore.getState();
+    nextState.setImageSlots(
+      nextState.imageSlots.filter((slot) => slot.imageIndex < nextState.images.length),
+    );
+    state.setVariables(nextVars);
+    setActiveSampleId(sample.sample_id);
+  }, []);
 
   const gridClass =
     viewMode === 'edit'
@@ -64,6 +93,24 @@ export function LabView() {
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            onClick={() => setSamplePickerOpen(true)}
+            aria-label={t('lab.selectFromDataset')}
+            className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 bg-surface-900 px-3 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:border-surface-600 hover:bg-surface-800 hover:text-ink"
+          >
+            <Database size={14} />
+            <span className="hidden sm:inline">{t('lab.selectFromDataset')}</span>
+          </button>
+          {activeSampleId && (
+            <span
+              className="inline-flex max-w-[12rem] items-center gap-1.5 truncate rounded-md border border-surface-700 bg-surface-900 px-2.5 py-1.5 text-xs text-ink-muted"
+              title={`${t('lab.activeSample')}: ${activeSampleId}`}
+            >
+              <span className="shrink-0 text-[10px] text-ink-dim">{t('lab.activeSample')}</span>
+              <span className="truncate text-ink">{activeSampleId}</span>
+            </span>
+          )}
 
           <button
             type="button"
@@ -138,6 +185,11 @@ export function LabView() {
           </div>
         </div>
       )}
+      <SamplePickerDialog
+        open={samplePickerOpen}
+        onClose={() => setSamplePickerOpen(false)}
+        onApply={applySample}
+      />
     </div>
   );
 }

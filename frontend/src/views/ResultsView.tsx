@@ -618,6 +618,25 @@ function DetailOverlay({
     }
   }, [item, review.notes, images.length, mainImageIndex]);
 
+  // ArrowUp/ArrowDown switch images inside the post. Parent handles ←/→/Esc.
+  useEffect(() => {
+    if (images.length <= 1) return;
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMainImageIndex((prev) => (prev - 1 + images.length) % images.length);
+      } else if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setMainImageIndex((prev) => (prev + 1) % images.length);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [images.length]);
+
   const rawText = extractRawText(item.response);
   const parsed = item.response.parsed;
   const parseStatus = extractParseStatus(item.response);
@@ -667,31 +686,38 @@ function DetailOverlay({
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-muted">
               {t('results.inputImages')}
             </h2>
-            {mainImage && mainSrc ? (
-              mainImageIndex === 0 ? (
-                <AnnotatedImage
-                  image={mainImage}
-                  boxes={boxes}
-                  maxHeight="55vh"
-                  className="min-h-0 flex-1 items-center"
-                />
+            <div className="relative min-h-0 flex-1">
+              {mainImage && mainSrc ? (
+                mainImageIndex === 0 ? (
+                  <AnnotatedImage
+                    image={mainImage}
+                    boxes={boxes}
+                    maxHeight="55vh"
+                    className="min-h-0 flex-1 items-center"
+                  />
+                ) : (
+                  <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-surface-800 bg-surface-900/50 p-2">
+                    <img
+                      src={mainSrc}
+                      alt=""
+                      className="max-h-full max-w-full rounded-md object-contain"
+                    />
+                  </div>
+                )
               ) : (
                 <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-surface-800 bg-surface-900/50 p-2">
-                  <img
-                    src={mainSrc}
-                    alt=""
-                    className="max-h-full max-w-full rounded-md object-contain"
-                  />
+                  <div className="flex flex-col items-center gap-2 text-ink-dim">
+                    <ImageIcon size={32} />
+                    <span className="text-xs">{t('results.noImages')}</span>
+                  </div>
                 </div>
-              )
-            ) : (
-              <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-surface-800 bg-surface-900/50 p-2">
-                <div className="flex flex-col items-center gap-2 text-ink-dim">
-                  <ImageIcon size={32} />
-                  <span className="text-xs">{t('results.noImages')}</span>
-                </div>
-              </div>
-            )}
+              )}
+              {images.length > 1 && (
+                <span className="pointer-events-none absolute right-2 top-2 z-10 rounded bg-surface-950/70 px-2 py-0.5 text-[10px] font-medium text-ink-dim">
+                  {t('image.imageOf', { current: mainImageIndex + 1, total: images.length })}
+                </span>
+              )}
+            </div>
 
             {images.length > 1 && (
               <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
@@ -702,21 +728,24 @@ function DetailOverlay({
                       key={`${src}-${index}`}
                       type="button"
                       onClick={() => setMainImageIndex(index)}
-                      className={`shrink-0 overflow-hidden rounded-md border transition-colors ${
+                      className={`relative shrink-0 overflow-hidden rounded-md border transition-colors ${
                         index === mainImageIndex
                           ? 'border-accent ring-1 ring-accent'
                           : 'border-surface-700 hover:border-surface-500'
                       }`}
                     >
+                      <span className="pointer-events-none absolute left-0 top-0 rounded-br bg-surface-950/70 px-1 text-[9px] font-semibold leading-none text-ink-dim">
+                        {index + 1}
+                      </span>
                       {src ? (
                         <img
                           src={src}
                           alt=""
-                          className="h-14 w-14 object-cover"
+                          className="h-16 w-16 object-cover"
                           loading="lazy"
                         />
                       ) : (
-                        <div className="flex h-14 w-14 items-center justify-center text-ink-dim">
+                        <div className="flex h-16 w-16 items-center justify-center text-ink-dim">
                           <ImageIcon size={14} />
                         </div>
                       )}

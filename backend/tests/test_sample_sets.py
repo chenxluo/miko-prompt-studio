@@ -95,3 +95,58 @@ def test_sample_set_delete_removes_set_and_records(client: TestClient) -> None:
     samples = client.get(f"/api/samples?sample_set_id={sample_set_id}")
     assert samples.status_code == 200, samples.text
     assert samples.json() == []
+
+def _import_csv_rows(client: TestClient, rows: list[tuple[str, str]]) -> str:
+    """Import ``rows`` (id, prompt) via the CSV endpoint and return the set id."""
+    body = "id,prompt\n" + "\n".join(f"{rid},{prompt}" for rid, prompt in rows)
+    mapping = {
+        "id_column": "id",
+        "sample_type": "single_image",
+        "var_columns": ["prompt"],
+        "metadata_columns": [],
+    }
+    response = client.post(
+        "/api/import/csv/file",
+        files={"file": ("samples.csv", body.encode(), "text/csv")},
+        data={"delimiter": ",", "mapping": json.dumps(mapping)},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["sample_set_id"]
+
+
+def test_samples_pagination_is_stable_and_paginates_without_overlap(
+    client: TestClient,
+) -> None:
+    sample_set_id = _import_csv_rows(client, [(f"s{i:02d}", f"prompt-{i}") for i in range(12)])
+
+    # Bounds: zero limit and a negative offset must be rejected.
+    assert client.get("/api/samples?limit=0").status_code == 422
+    assert client.get("/api/samples?offset=-1").status_code == 422
+
+    first = client.get(
+        f"/api/samples?sample_set_id={sample_set_id}&limit=5&offset=0"
+    ).json()
+    second = client.get(
+        f"/api/samples?sample_set_id={sample_set_id}&limit=5&offset=5"
+    ).json()
+    tail = client.get(
+        f"/api/samples?sample_set_id={sample_set_id}&limit=5&offset=10"
+    ).json()
+
+    first_ids = [s["sample_id"] for s in first]
+    second_ids = [s["sample_id"] for s in second]
+    tail_ids = [s["sample_id"] for s in tail]
+    all_ids = first_ids + second_ids + tail_ids
+
+    assert len(first_ids) == 5
+    assert len(second_ids) == 5
+    assert len(tail_ids) == 2  # remainder of the 12-row set
+    # No overlap between consecutive pages and full coverage (union == all rows).
+    assert not set(first_ids) & set(second_ids)
+    assert all_ids == sorted(all_ids, reverse=True)
+    assert sorted(all_ids) == [f"s{i:02d}" for i in range(12)]
+    # Stable order: requesting the same page twice returns identical ids.
+    repeat = client.get(
+        f"/api/samples?sample_set_id={sample_set_id}&limit=5&offset=5"
+    ).json()
+    assert [s["sample_id"] for s in repeat] == second_ids

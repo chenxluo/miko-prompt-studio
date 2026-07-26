@@ -2,6 +2,8 @@ import {
   ArrowLeft,
   ArrowRight,
   ImageIcon,
+  Layers,
+  Link2,
   Loader2,
   Maximize2,
   Minimize2,
@@ -25,11 +27,42 @@ import {
 import * as api from '../../api/client';
 import { useI18n } from '../../i18n';
 import { useLabStore } from '../../store/labStore';
-import type { ImageRef, ImageSlotSpec } from '../../types';
+import type { ImageRef, ImageSlotSpec, ProviderCapability, UploadImageResponse, UrlImageTransport } from '../../types';
 
 interface PreviewState {
   index: number;
   src: string;
+}
+function imageRefFromUpload(
+  uploaded: UploadImageResponse,
+  fallbackName: string,
+): ImageRef {
+  return {
+    path: uploaded.path,
+    uri: uploaded.url,
+    mime_type: uploaded.mime_type,
+    display_name: uploaded.filename ?? fallbackName,
+    metadata: {
+      file_size: uploaded.size,
+      sha256: uploaded.sha256,
+    },
+  };
+}
+
+// Shared slot-assignment rule for both file and URL uploads: honour a target
+// slot when it still has capacity, otherwise fall back to normal assignment.
+function placeImageRef(imageRef: ImageRef, targetSlotId: string | null): void {
+  const state = useLabStore.getState();
+  if (targetSlotId) {
+    const spec = state.templateImageSlotSpecs.find((s) => s.slot_id === targetSlotId);
+    const count = state.images.filter((img) => img.slot_id === targetSlotId).length;
+    const max = spec?.max_count;
+    if (max == null || count < max) {
+      state.addImageToSlot(imageRef, targetSlotId);
+      return;
+    }
+  }
+  state.addImage(imageRef);
 }
 
 export function ImagePanel() {
@@ -37,8 +70,6 @@ export function ImagePanel() {
   const imageResolutionEnabled = useLabStore((state) => state.imageResolutionEnabled);
   const imageResolutionTarget = useLabStore((state) => state.imageResolutionTarget);
   const templateImageSlotSpecs = useLabStore((state) => state.templateImageSlotSpecs);
-  const addImage = useLabStore((state) => state.addImage);
-  const addImageToSlot = useLabStore((state) => state.addImageToSlot);
   const removeImage = useLabStore((state) => state.removeImage);
   const moveImageToSlot = useLabStore((state) => state.moveImageToSlot);
   const addSlot = useLabStore((state) => state.addSlot);
@@ -46,6 +77,11 @@ export function ImagePanel() {
   const updateSlot = useLabStore((state) => state.updateSlot);
   const setImageResolutionEnabled = useLabStore((state) => state.setImageResolutionEnabled);
   const setImageResolutionTarget = useLabStore((state) => state.setImageResolutionTarget);
+  const urlImageTransport = useLabStore((state) => state.urlImageTransport);
+  const setUrlImageTransport = useLabStore((state) => state.setUrlImageTransport);
+  const providerConfigs = useLabStore((state) => state.providerConfigs);
+  const selectedProviderConfigId = useLabStore((state) => state.selectedProviderConfigId);
+  const modelId = useLabStore((state) => state.modelId);
 
   const { t } = useI18n();
 
@@ -59,6 +95,48 @@ export function ImagePanel() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
+  const [urlInputOpen, setUrlInputOpen] = useState(false);
+  const [urlValue, setUrlValue] = useState('');
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
+
+  // Load the selected model's URL image capability so the transport selector
+  // can report the effective delivery mode. Silent on failure: the backend
+  // authoritatively validates transport at run time.
+  const [directImageSchemes, setDirectImageSchemes] = useState<string[] | null>(null);
+  useEffect(() => {
+    const config = providerConfigs.find((c) => c.provider_config_id === selectedProviderConfigId);
+    const mid = modelId.trim();
+    if (!config || !mid) {
+      setDirectImageSchemes(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getProviderCapability(config.adapter_id, mid)
+      .then((cap: ProviderCapability) => {
+        if (!cancelled) setDirectImageSchemes(cap.direct_image_uri_schemes ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setDirectImageSchemes(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [providerConfigs, selectedProviderConfigId, modelId]);
+
+  // Effective transport for URL images under the selected policy. Direct and
+  // Inline are explicit; Auto resolves to direct only when the provider
+  // supports a URL scheme and local preprocessing is off.
+  const effectiveUrlMode: 'direct' | 'inline' = useMemo(() => {
+    if (urlImageTransport === 'direct') return 'direct';
+    if (urlImageTransport === 'inline') return 'inline';
+    if (imageResolutionEnabled) return 'inline';
+    // Capability schemes are canonicalized to bare names (http/https/gs), but
+    // normalize defensively against accidental "http:" or "https://" entries.
+    const schemes = (directImageSchemes ?? []).map((s) => s.toLowerCase().split(':')[0]);
+    return schemes.includes('http') || schemes.includes('https') ? 'direct' : 'inline';
+  }, [urlImageTransport, imageResolutionEnabled, directImageSchemes]);
 
   const imagesBySlot = useMemo(() => {
     const map = new Map<string, ImageRef[]>();
@@ -94,33 +172,7 @@ export function ImagePanel() {
           imageFiles.map(async (file) => {
             try {
               const uploaded = await api.uploadImage(file);
-              const imageRef: ImageRef = {
-                path: uploaded.path,
-                uri: uploaded.url,
-                mime_type: uploaded.mime_type,
-                display_name: uploaded.filename ?? file.name,
-                metadata: {
-                  file_size: uploaded.size,
-                  sha256: uploaded.sha256,
-                },
-              };
-              const state = useLabStore.getState();
-              if (targetSlotId) {
-                const spec = state.templateImageSlotSpecs.find(
-                  (s) => s.slot_id === targetSlotId,
-                );
-                const count = state.images.filter(
-                  (img) => img.slot_id === targetSlotId,
-                ).length;
-                const max = spec?.max_count;
-                if (max == null || count < max) {
-                  state.addImageToSlot(imageRef, targetSlotId);
-                } else {
-                  state.addImage(imageRef);
-                }
-              } else {
-                state.addImage(imageRef);
-              }
+              placeImageRef(imageRefFromUpload(uploaded, file.name), targetSlotId);
             } catch (err) {
               const message =
                 err instanceof Error ? err.message : t('image.uploadFailed', { name: file.name });
@@ -132,7 +184,7 @@ export function ImagePanel() {
         setUploadingCount((count) => Math.max(0, count - imageFiles.length));
       }
     },
-    [addImage, addImageToSlot, t],
+    [t],
   );
 
   const handleDragEnter = useCallback((event: DragEvent) => {
@@ -184,6 +236,37 @@ export function ImagePanel() {
     setPendingSlotId(null);
     fileInputRef.current?.click();
   }, []);
+  const handleUrlSubmit = useCallback(() => {
+    const url = urlValue.trim();
+    if (!url || !/^https?:\/\//i.test(url)) {
+      setUrlError(t('image.urlInvalid'));
+      return;
+    }
+    setUrlError(null);
+    // Keep the user-entered URL as the image source. The backend decides
+    // whether to forward it directly or inline it per the selected
+    // url_image_transport policy; no upload endpoint is called.
+    let displayName = url;
+    try {
+      const last = new URL(url).pathname.split('/').filter(Boolean).pop();
+      if (last) displayName = decodeURIComponent(last);
+    } catch {
+      // keep the raw URL
+    }
+    placeImageRef({ uri: url, display_name: displayName, mime_type: null }, null);
+    setUrlValue('');
+    setUrlInputOpen(false);
+  }, [urlValue, t]);
+
+  const closeUrlInput = useCallback(() => {
+    setUrlInputOpen(false);
+    setUrlError(null);
+    setUrlValue('');
+  }, []);
+
+  useEffect(() => {
+    if (urlInputOpen) urlInputRef.current?.focus();
+  }, [urlInputOpen]);
 
   const openPreview = useCallback(
     (index: number) => {
@@ -250,6 +333,19 @@ export function ImagePanel() {
     () => templateImageSlotSpecs.filter((spec) => (imagesBySlot.get(spec.slot_id)?.length ?? 0) > 0).length,
     [templateImageSlotSpecs, imagesBySlot],
   );
+  const hasUnboundedSlot = useMemo(
+    () => templateImageSlotSpecs.some((spec) => spec.max_count == null),
+    [templateImageSlotSpecs],
+  );
+
+  const handleAddVariableImageGroup = useCallback(() => {
+    if (hasUnboundedSlot) return;
+    const before = useLabStore.getState().templateImageSlotSpecs;
+    addSlot();
+    const after = useLabStore.getState().templateImageSlotSpecs;
+    const created = after.find((s) => !before.some((b) => b.slot_id === s.slot_id));
+    if (created) updateSlot(created.slot_id, { max_count: null });
+  }, [hasUnboundedSlot, addSlot, updateSlot]);
 
   return (
     <section
@@ -290,6 +386,37 @@ export function ImagePanel() {
               </option>
             ))}
           </select>
+          <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+            <span className="hidden md:inline">{t('image.urlTransport')}</span>
+            <select
+              value={urlImageTransport}
+              onChange={(event) => setUrlImageTransport(event.target.value as UrlImageTransport)}
+              title={t('image.urlTransportHelp')}
+              aria-label={t('image.urlTransport')}
+              className="rounded-md border border-surface-700 bg-surface-950 px-2 py-1.5 text-xs text-ink focus:border-accent focus:outline-none"
+            >
+              <option value="auto" title={t('image.urlTransportAutoDesc')}>{t('image.urlTransportAuto')}</option>
+              <option value="direct" title={t('image.urlTransportDirectDesc')}>{t('image.urlTransportDirect')}</option>
+              <option value="inline" title={t('image.urlTransportInlineDesc')}>{t('image.urlTransportInline')}</option>
+            </select>
+          </label>
+          {urlImageTransport === 'auto' && directImageSchemes !== null && (
+            <span
+              className="hidden text-xs text-ink-dim lg:inline"
+              title={
+                effectiveUrlMode === 'inline'
+                  ? t('image.urlTransportInlineDesc')
+                  : t('image.urlTransportDirectDesc')
+              }
+            >
+              {t('image.urlTransportEffective', {
+                mode:
+                  effectiveUrlMode === 'direct'
+                    ? t('image.urlTransportDirect')
+                    : t('image.urlTransportInline'),
+              })}
+            </span>
+          )}
           <button
             type="button"
             onClick={() => (focusMode ? closeFocus() : setFocusMode(true))}
@@ -314,8 +441,67 @@ export function ImagePanel() {
             <Plus size={14} />
             {t('image.add')}
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              setUrlInputOpen((open) => !open);
+              setUrlError(null);
+            }}
+            aria-expanded={urlInputOpen}
+            aria-label={t('image.addByUrl')}
+            title={t('image.addByUrl')}
+            className={[
+              'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors',
+              urlInputOpen
+                ? 'border-accent/50 bg-accent/10 text-accent'
+                : 'border-surface-700 bg-surface-950 text-ink-muted hover:border-surface-600 hover:text-ink',
+            ].join(' ')}
+          >
+            <Link2 size={14} />
+            <span className="hidden sm:inline">{t('image.addByUrl')}</span>
+          </button>
         </div>
       </div>
+      {urlInputOpen && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-surface-800 bg-surface-900/50 px-3 py-2">
+          <Link2 size={14} className="shrink-0 text-ink-muted" />
+          <input
+            ref={urlInputRef}
+            type="url"
+            value={urlValue}
+            onChange={(event) => setUrlValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                void handleUrlSubmit();
+              } else if (event.key === 'Escape') {
+                closeUrlInput();
+              }
+            }}
+            placeholder={t('image.urlPlaceholder')}
+            aria-label={t('image.addByUrl')}
+            className="min-w-0 flex-1 rounded-md border border-surface-700 bg-surface-950 px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={handleUrlSubmit}
+            disabled={!urlValue.trim()}
+            className="btn-secondary py-1.5 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Plus size={14} />
+            {t('image.urlSubmit')}
+          </button>
+          <button
+            type="button"
+            onClick={closeUrlInput}
+            aria-label={t('image.urlCancel')}
+            className="inline-flex items-center justify-center rounded-md border border-surface-700 bg-surface-950 px-2.5 py-1.5 text-xs text-ink-muted transition-colors hover:border-surface-600 hover:text-ink disabled:opacity-50"
+          >
+            <X size={14} />
+          </button>
+          {urlError && <span className="w-full text-xs text-danger">{urlError}</span>}
+        </div>
+      )}
 
       <div className="relative flex flex-1 flex-col overflow-hidden">
         {/* Drag overlay */}
@@ -370,6 +556,17 @@ export function ImagePanel() {
               >
                 <Plus size={14} />
                 {t('image.addSlot')}
+              </button>
+              <button
+                type="button"
+                onClick={handleAddVariableImageGroup}
+                disabled={hasUnboundedSlot}
+                title={hasUnboundedSlot ? t('image.variableImageGroupExists') : t('image.addVariableImageGroup')}
+                aria-label={t('image.addVariableImageGroup')}
+                className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-accent/40 bg-accent/5 px-3 py-2 text-xs font-medium text-accent transition-colors hover:border-accent/60 hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Layers size={14} />
+                {t('image.addVariableImageGroup')}
               </button>
 
               <button

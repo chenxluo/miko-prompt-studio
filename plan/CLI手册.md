@@ -76,8 +76,8 @@ mps [--json | --no-json] <command> ...
 mps task list [--group GROUP]                                    # 列任务
 mps task get  <task_ref>                                         # 任务详情（含全部版本）
 mps task spec  <task_ref> [--version V]                          # 输入说明（见 4.1.1）
-mps task new   --name N [--model M ...] [--from-file F]          # 新建 task + v1
-mps task edit  <task_ref> [版本flags] [--from-file F]             # 编辑 → 派生新版本（见 5）
+mps task new   --name N [--model M ...] [--url-image-transport {auto,direct,inline}] [--from-file F]  # 新建 task + v1
+mps task edit  <task_ref> [版本flags] [--url-image-transport {auto,direct,inline}] [--from-file F]     # 编辑 → 派生新版本（见 5）
 mps task set-header <task_ref> [--name/--description/--tags/--group]   # 改 header，不增版本
 mps task fork  <task_ref> --name N [--version V]                 # fork 成独立 task
 mps task run   <task_ref> --sample-set S [选项]                  # 跑批量（阻塞，见 4.1.2）
@@ -244,6 +244,7 @@ mps api DELETE /api/runs/run_xxxx
 | `--reasoning-effort {minimal,low,medium,high}` | reasoning_effort |
 | `--system-prompt` / `--system-prompt-file` | 系统提示词（二选一） |
 | `--user-template` / `--user-template-file` | 用户模板（二选一） |
+| `--url-image-transport {auto,direct,inline}` | URL 图片传输策略，写入 `TaskVersion.url_image_transport`；默认 `auto` |
 | `--notes` | 备注 |
 
 **`--from-file`（JSON 偏移）**：用于改嵌套结构。文件是 `TaskVersionData` 的**部分** JSON：
@@ -264,7 +265,19 @@ mps api DELETE /api/runs/run_xxxx
 - 嵌套 dict（`model_parameters` / `output_contract` / `image_preprocess_config`）**深合并**。
 - 列表（`image_slot_specs` / `variable_specs`）**整体替换**。
 
-`TaskVersionData` 全字段（`--from-file` 可用的 key）：`system_prompt`、`user_template`、`provider_config_id`、`model_id`、`model_parameters`、`output_contract`、`image_preprocess_config`、`image_slot_specs`、`variable_specs`、`pricing_profile_id`、`notes`。
+`TaskVersionData` 全字段（`--from-file` 可用的 key）：`system_prompt`、`user_template`、`provider_config_id`、`model_id`、`model_parameters`、`output_contract`、`image_preprocess_config`、`url_image_transport`、`image_slot_specs`、`variable_specs`、`pricing_profile_id`、`notes`。
+
+`user_template` 可用 `{{#each images.<slot_id>}}...{{/each}}` 按槽内图片数量展开；循环体内使用 `{{number}}`（从 1 开始）和 `{{image}}`（当前图片）。第一版仅支持一个非嵌套逐图块。
+
+**URL 图片传输**：Lab“从 URL 添加”保留 URL source；保存为 TaskVersion 后，Batch、Compare 与 CLI 均复用 `url_image_transport`。
+
+- `auto`（默认）：仅当 adapter 支持 URL scheme 且未启用本地预处理时直传；否则使用 SSRF-safe downloader 安全落地、应用预处理并内联。若 adapter 也不支持内联则报错。
+- `direct`：原 URL 原样交给 provider，后端绝不下载；scheme 不支持、启用预处理或超过 provider 直传图片数量限制时直接报错，绝不降级。
+- `inline`：始终经 SSRF-safe downloader 安全下载并应用预处理，再以内联数据发送；adapter 不支持内联时直接报错。
+
+OpenAI / OpenAI-compatible adapter 可直传 `http` / `https`；Vertex 只可直传 `gs`，因此 HTTP URL 在 `auto` 下会转为 `inline`。
+
+运行项的 `internal_request_snapshot.url_image_transport` 保留所选策略；每张图片的 `images[].resolved.transport` 与 `transport_reason` 记录实际传输方式及原因。快照中的 URL query 与 base64 内容会脱敏。
 
 > 典型用法：`mps task get <id> > t.json` → 用 `jq` 删成只含要改的字段 → `mps task edit <id> --from-file t.json`。
 

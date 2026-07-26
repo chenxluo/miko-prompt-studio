@@ -169,3 +169,18 @@ def test_render_run_html_bbox_payload_is_embedded():
 
     assert '"boxes"' in html
     assert "bbox:[1,2,3,4]" in html
+
+def test_render_run_html_multi_image_badge_and_thumb_index():
+    item = _make_item()
+    item["internal_request_snapshot"]["images"] = [
+        {"uri": "data:image/png;base64,iVBORw0KGgo=", "order": i}
+        for i in range(3)
+    ]
+
+    html = render_run_html(_make_session(), [item])
+
+    assert html.count('"src": "data:image/png;base64,iVBORw0KGgo="') == 3
+    assert "'<span class=\"thumb-idx\">'+(i+1)+'</span>" in html
+    assert "'<div class=\"img-badge\" id=\"o-imgbadge\">1 / '+imgs.length+'</div>'" in html
+    assert "ArrowUp" in html
+    assert "ArrowDown" in html

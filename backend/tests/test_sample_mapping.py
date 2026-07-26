@@ -94,3 +94,41 @@ def test_validation_after_image_role_mapping() -> None:
         image_role_mapping={"target": "source"},
     )
     assert errors == []
+
+
+def test_image_slot_cardinality_allows_optional_zero_and_unbounded_max() -> None:
+    optional = ImageSlotSpec(
+        slot_id="context", role_hint="context", required=False, min_count=2, max_count=None
+    )
+    assert validate_sample_against_specs(
+        SampleRecord(sample_id="zero"), [optional], []
+    ) == []
+    assert validate_sample_against_specs(
+        SampleRecord(
+            sample_id="many",
+            images=[ImageRef(role="context") for _ in range(3)],
+        ),
+        [optional],
+        [],
+    ) == []
+
+
+def test_image_slot_cardinality_reports_sample_slot_actual_and_bounds() -> None:
+    sample = SampleRecord(sample_id="sample_counts", images=[ImageRef(role="context")])
+    too_few = validate_sample_against_specs(
+        sample,
+        [ImageSlotSpec(slot_id="context", required=False, min_count=2, max_count=3)],
+        [],
+    )
+    too_many = validate_sample_against_specs(
+        sample.model_copy(update={"images": [ImageRef(role="context") for _ in range(3)]}),
+        [ImageSlotSpec(slot_id="context", required=True, min_count=1, max_count=2)],
+        [],
+    )
+
+    assert too_few == [
+        "Sample 'sample_counts', image slot 'context': found 1; expected at least 2."
+    ]
+    assert too_many == [
+        "Sample 'sample_counts', image slot 'context': found 3; expected at most 2."
+    ]

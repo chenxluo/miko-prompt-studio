@@ -181,6 +181,7 @@ class LabRunPayload(BaseModel):
     pricing_profile_id: str | None = None
     image_resolution_enabled: bool = False
     image_resolution_target: int = 1024
+    url_image_transport: Literal["auto", "direct", "inline"] = "auto"
     run_name: str = ""
 
 
@@ -269,6 +270,7 @@ class UpdateReviewPayload(BaseModel):
     rating: int | None = None
     labels: list[str] | None = None
     notes: str = ""
+
 
 class ReviewSummaryPayload(BaseModel):
     run_ids: list[str]
@@ -369,6 +371,19 @@ async def list_providers():
     from app.adapters.registry import list_adapter_metadata
 
     return {"providers": list_adapter_metadata()}
+
+
+@app.get("/api/providers/{adapter_id}/capability")
+async def get_provider_capability(adapter_id: str, model_id: str):
+    """Return adapter capability metadata for one model."""
+
+    from app.adapters.registry import get_adapter
+
+    try:
+        capability = get_adapter(adapter_id).get_capability(model_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return capability.model_dump(mode="json")
 
 
 class FetchModelsPayload(BaseModel):
@@ -527,6 +542,7 @@ async def lab_run(payload: LabRunPayload, db: AsyncSession = Depends(get_db)):
         provider_config_id=payload.provider_config_id,
         image_resolution_enabled=payload.image_resolution_enabled,
         image_resolution_target=payload.image_resolution_target,
+        url_image_transport=payload.url_image_transport,
         image_slot_specs=payload.image_slot_specs,
         variable_specs=payload.variable_specs,
     )
@@ -641,6 +657,14 @@ async def _resolve_batch_template(payload: BatchRunPayload, db: AsyncSession) ->
         task_version.provider_config_id,
     )
     image_config = task_version.image_preprocess_config or {}
+    mode = image_config.get("mode")
+    resolution_enabled = bool(image_config.get("enabled", False)) or mode not in (
+        None,
+        "",
+        "off",
+        "none",
+    )
+    resolution_target = int(image_config.get("target") or image_config.get("long_edge") or 1024)
     return LabRunRequest(
         sample=SampleRecord(sample_id="batch_template"),
         prompt=prompt_data,
@@ -650,8 +674,9 @@ async def _resolve_batch_template(payload: BatchRunPayload, db: AsyncSession) ->
         api_base_url=api_base_url,
         run_name=f"Batch: {task.name}",
         provider_config_id=task_version.provider_config_id,
-        image_resolution_enabled=bool(image_config.get("enabled", False)),
-        image_resolution_target=int(image_config.get("target", 1024)),
+        image_resolution_enabled=resolution_enabled,
+        image_resolution_target=resolution_target,
+        url_image_transport=task_version.url_image_transport or "auto",
         image_slot_specs=task_version.image_slot_specs,
         variable_specs=task_version.variable_specs,
     )
@@ -1029,9 +1054,7 @@ async def cross_run_compare(
     # 1. Validate that every run exists.
     sessions: dict[str, RunSessionORM] = {}
     for run_id in run_ids:
-        result = await db.execute(
-            select(RunSessionORM).where(RunSessionORM.run_id == run_id)
-        )
+        result = await db.execute(select(RunSessionORM).where(RunSessionORM.run_id == run_id))
         session = result.scalar_one_or_none()
         if session is None:
             raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
@@ -1046,14 +1069,10 @@ async def cross_run_compare(
     items_by_run: dict[str, dict[str, RunItemORM]] = {}
     total_per_run: dict[str, int] = {}
     for run_id in run_ids:
-        result = await db.execute(
-            select(RunItemORM).where(RunItemORM.run_id == run_id)
-        )
+        result = await db.execute(select(RunItemORM).where(RunItemORM.run_id == run_id))
         run_items = list(result.scalars().all())
         if not run_items:
-            raise HTTPException(
-                status_code=400, detail=f"Run has no items: {run_id}"
-            )
+            raise HTTPException(status_code=400, detail=f"Run has no items: {run_id}")
         sample_ids = [item.sample_id for item in run_items]
         if len(sample_ids) != len(set(sample_ids)):
             raise HTTPException(
@@ -1086,9 +1105,7 @@ async def cross_run_compare(
         task_row: TaskORM | None = None
         if task_version_id:
             version_result = await db.execute(
-                select(TaskVersionORM).where(
-                    TaskVersionORM.task_version_id == task_version_id
-                )
+                select(TaskVersionORM).where(TaskVersionORM.task_version_id == task_version_id)
             )
             version_row = version_result.scalar_one_or_none()
             task_version_label = version_row.version_label if version_row else task_version_id[:8]
@@ -1100,16 +1117,12 @@ async def cross_run_compare(
 
         # task_name is best-effort from the source; fall back to run metadata.
         task_name = (
-            task_row.name
-            if task_row
-            else source.get("task_id") or session.name or run_id[:8]
+            task_row.name if task_row else source.get("task_id") or session.name or run_id[:8]
         )
         translation_drift = False
         if task_row and task_row.family_id and task_row.translated_from_version_id:
             family_result = await db.execute(
-                select(TaskORM.current_version_id).where(
-                    TaskORM.task_id == task_row.family_id
-                )
+                select(TaskORM.current_version_id).where(TaskORM.task_id == task_row.family_id)
             )
             family_current_version_id = family_result.scalar_one_or_none()
             translation_drift = bool(
@@ -1191,6 +1204,7 @@ def _task_version_to_schema(row: TaskVersionORM) -> TaskVersion:
         model_parameters=ModelParameters(**(row.model_parameters or {})),
         output_contract=OutputContract(**(row.output_contract or {})),
         image_preprocess_config=row.image_preprocess_config or {},
+        url_image_transport=row.url_image_transport or "auto",
         image_slot_specs=row.image_slot_specs or [],
         variable_specs=row.variable_specs or [],
         pricing_profile_id=row.pricing_profile_id,
@@ -1248,6 +1262,7 @@ def _apply_version_data(row: TaskVersionORM, data: TaskVersionDataSchema) -> Non
     row.model_parameters = data.model_parameters.model_dump(mode="json", exclude_none=True)
     row.output_contract = data.output_contract.model_dump(mode="json", exclude_none=True)
     row.image_preprocess_config = data.image_preprocess_config
+    row.url_image_transport = data.url_image_transport
     row.image_slot_specs = [spec.model_dump(mode="json") for spec in data.image_slot_specs]
     row.variable_specs = [spec.model_dump(mode="json") for spec in data.variable_specs]
     row.pricing_profile_id = data.pricing_profile_id
@@ -1271,14 +1286,10 @@ async def _get_task_or_404(task_id: str, db: AsyncSession) -> TaskORM:
     return row
 
 
-async def _assign_task_family(
-    row: TaskORM, family_task_id: str | None, db: AsyncSession
-) -> None:
+async def _assign_task_family(row: TaskORM, family_task_id: str | None, db: AsyncSession) -> None:
     """Move/merge a task family while preserving the equivalence relation."""
     current_family_id = row.family_id or row.task_id
-    current_result = await db.execute(
-        select(TaskORM).where(TaskORM.family_id == current_family_id)
-    )
+    current_result = await db.execute(select(TaskORM).where(TaskORM.family_id == current_family_id))
     current_members = {member.task_id: member for member in current_result.scalars().all()}
     current_members[row.task_id] = row
 
@@ -1293,9 +1304,7 @@ async def _assign_task_family(
 
     family_task = await _get_task_or_404(family_task_id, db)
     canonical_id = family_task.family_id or family_task.task_id
-    target_result = await db.execute(
-        select(TaskORM).where(TaskORM.family_id == canonical_id)
-    )
+    target_result = await db.execute(select(TaskORM).where(TaskORM.family_id == canonical_id))
     target_members = {member.task_id: member for member in target_result.scalars().all()}
     target_members[family_task.task_id] = family_task
     for member in {**current_members, **target_members}.values():
@@ -1568,9 +1577,17 @@ async def get_task_version_cost_stats(
         )
         items = list(items_result.scalars().all())
 
-    total_images = len(items)
+    # Each RunItem is one API *request*; a request can carry several images
+    # (item.usage.image_count). The cost calculator denominates by image, so
+    # total_images must be the real image total — not the request count, which
+    # previously inflated avg_cost_per_image to the per-request average.
+    total_requests = len(items)
+    total_images = sum(
+        int((item.usage or {}).get("image_count") or 0) for item in items
+    )
     total_cost = sum(float(item.estimated_cost or 0.0) for item in items)
-    avg_cost = total_cost / total_images if total_images > 0 else 0.0
+    avg_cost_per_image = total_cost / total_images if total_images > 0 else 0.0
+    avg_cost_per_request = total_cost / total_requests if total_requests > 0 else 0.0
     sample_count = len({item.sample_id for item in items if item.sample_id})
     currency = "USD"
     for item in items:
@@ -1579,21 +1596,24 @@ async def get_task_version_cost_stats(
             currency = snapshot["currency"]
             break
 
+    # Confidence reflects independent cost observations — completed requests,
+    # since one request can span many images.
     confidence = "none"
-    if total_images >= 50:
+    if total_requests >= 50:
         confidence = "high"
-    elif total_images >= 10:
+    elif total_requests >= 10:
         confidence = "medium"
-    elif total_images > 0:
+    elif total_requests > 0:
         confidence = "low"
 
     return {
         "task_id": task_id,
         "task_version_id": task_version_id,
         "total_images": total_images,
+        "total_requests": total_requests,
         "total_cost": total_cost,
-        "avg_cost_per_image": avg_cost,
-        "avg_cost_per_request": avg_cost,
+        "avg_cost_per_image": avg_cost_per_image,
+        "avg_cost_per_request": avg_cost_per_request,
         "run_count": len(run_ids),
         "sample_count": sample_count,
         "currency": currency,
@@ -1611,14 +1631,12 @@ async def export_task_version_markdown(
     """Export a self-contained Markdown reproduction document for a task version."""
     task = await _get_task_or_404(task_id, db)
     task_version = await _get_task_version_or_404(task_id, task_version_id, db)
-    document = await generate_task_doc(
-        task, task_version, db, include_examples=examples
-    )
+    document = await generate_task_doc(task, task_version, db, include_examples=examples)
     safe_name = (task.name or task_id).replace("/", "_").replace(" ", "_")
     ascii_fallback = f"{task_id}_{task_version.version_label}.md"
     display_name = f"{safe_name}_{task_version.version_label}.md"
     content_disposition = (
-        f"attachment; filename=\"{ascii_fallback}\"; "
+        f'attachment; filename="{ascii_fallback}"; '
         f"filename*=UTF-8''{quote(display_name, safe='')}"
     )
     return Response(
@@ -1702,6 +1720,7 @@ async def fork_task(task_id: str, payload: ForkTaskPayload, db: AsyncSession = D
     new_version.model_parameters = source_version.model_parameters
     new_version.output_contract = source_version.output_contract
     new_version.image_preprocess_config = source_version.image_preprocess_config
+    new_version.url_image_transport = source_version.url_image_transport or "auto"
     new_version.image_slot_specs = source_version.image_slot_specs
     new_version.variable_specs = source_version.variable_specs
     new_version.pricing_profile_id = source_version.pricing_profile_id
@@ -2291,9 +2310,7 @@ async def list_runs(
     result = await db.execute(stmt)
     rows = result.scalars().all()
     task_ids = {
-        str((row.source or {}).get("task_id"))
-        for row in rows
-        if (row.source or {}).get("task_id")
+        str((row.source or {}).get("task_id")) for row in rows if (row.source or {}).get("task_id")
     }
     sample_set_ids = {
         str((row.source or {}).get("sample_set_id"))
@@ -2302,9 +2319,7 @@ async def list_runs(
     }
     task_rows = (
         list(
-            (
-                await db.execute(select(TaskORM).where(TaskORM.task_id.in_(task_ids)))
-            ).scalars().all()
+            (await db.execute(select(TaskORM).where(TaskORM.task_id.in_(task_ids)))).scalars().all()
         )
         if task_ids
         else []
@@ -2315,18 +2330,16 @@ async def list_runs(
         for row in rows
         if (row.source or {}).get("task_version_id")
     }
-    version_ids.update(
-        task.current_version_id for task in task_rows if task.current_version_id
-    )
+    version_ids.update(task.current_version_id for task in task_rows if task.current_version_id)
     version_rows = (
         list(
             (
                 await db.execute(
-                    select(TaskVersionORM).where(
-                        TaskVersionORM.task_version_id.in_(version_ids)
-                    )
+                    select(TaskVersionORM).where(TaskVersionORM.task_version_id.in_(version_ids))
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         if version_ids
         else []
@@ -2338,7 +2351,9 @@ async def list_runs(
                 await db.execute(
                     select(SampleSetORM).where(SampleSetORM.sample_set_id.in_(sample_set_ids))
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         if sample_set_ids
         else []
@@ -2605,6 +2620,7 @@ async def export_run_csv(run_id: str, db: AsyncSession = Depends(get_db)):
         headers={"Content-Disposition": f'attachment; filename="run_{run_id}.csv"'},
     )
 
+
 @app.get("/api/runs/{run_id}/export/html")
 async def export_run_html(run_id: str, db: AsyncSession = Depends(get_db)):
     """Render a self-contained, distributable HTML visualization of a run."""
@@ -2694,9 +2710,7 @@ async def import_bundle_endpoint(
             envelope = read_bundle(temp_path)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        options = ImportOptions(
-            mode=mode, dry_run=dry_run, include_assets=include_assets
-        )
+        options = ImportOptions(mode=mode, dry_run=dry_run, include_assets=include_assets)
         report = await import_bundle(db, envelope, options)
     finally:
         await run_in_threadpool(_remove_file, temp_path)
@@ -2851,9 +2865,7 @@ async def review_summary(payload: ReviewSummaryPayload, db: AsyncSession = Depen
                 "undecided": b["n"] - b["accepted"] - b["rejected"],
                 "pass_rate": b["accepted"] / judged if judged else None,
                 "avg_rating": (
-                    round(b["rating_sum"] / b["rating_count"], 1)
-                    if b["rating_count"]
-                    else None
+                    round(b["rating_sum"] / b["rating_count"], 1) if b["rating_count"] else None
                 ),
                 "rating_count": b["rating_count"],
                 "rating_dist": b["rating_dist"],
@@ -2951,12 +2963,20 @@ async def _persist_sample_records(
 
 @app.get("/api/samples")
 async def list_samples(
-    sample_set_id: str | None = None, limit: int = 100, db: AsyncSession = Depends(get_db)
+    sample_set_id: str | None = None,
+    limit: int = Query(100, ge=1),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
 ):
+    # Stable order so offset/limit never skips or duplicates rows across pages.
     stmt = select(SampleRecordORM)
     if sample_set_id:
         stmt = stmt.where(SampleRecordORM.sample_set_id == sample_set_id)
-    stmt = stmt.order_by(SampleRecordORM.created_at.desc()).limit(limit)
+    stmt = (
+        stmt.order_by(SampleRecordORM.created_at.desc(), SampleRecordORM.id.desc())
+        .offset(offset)
+        .limit(limit)
+    )
     result = await db.execute(stmt)
     return [
         {
@@ -3301,6 +3321,29 @@ async def upload_image(file: UploadFile = File(...)):
     }
 
 
+class ImageUrlPayload(BaseModel):
+    url: str = Field(..., description="HTTP/HTTPS URL pointing to an image.")
+
+
+@app.post("/api/upload/image-url")
+async def upload_image_url(payload: ImageUrlPayload):
+    """Download a remote image into uploads_dir and return the same shape as
+    ``POST /api/upload/image``."""
+    from app.services.remote_image import RemoteImageError, materialize_url_image
+
+    settings = get_settings()
+    try:
+        return await materialize_url_image(payload.url, settings.uploads_dir)
+    except RemoteImageError as exc:
+        # Validation / SSRF / size errors are caller mistakes → 400.
+        # "not_an_image" is a property of the body the URL points at → 415.
+        # Anything else (transport, DNS, size) is 422.
+        status_code = 415 if exc.code == "not_an_image" else 400
+        if exc.code in {"http_error", "too_large"}:
+            status_code = 422
+        raise HTTPException(status_code, exc.message) from exc
+
+
 @app.get("/api/uploads/{filename}")
 async def serve_upload(filename: str):
     """Serve an uploaded image file."""
@@ -3343,7 +3386,6 @@ async def serve_sample_image(path: str):
 # ---------------------------------------------------------------------------
 # Provider configs (bundle adapter + base_url + api_key)
 # ---------------------------------------------------------------------------
-
 
 
 @app.get("/api/provider-configs")

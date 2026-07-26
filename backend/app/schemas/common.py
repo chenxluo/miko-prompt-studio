@@ -27,14 +27,13 @@ class TimestampedModel(BaseModel):
 # Sample types (soft – not a hard enum, but we provide common values)
 # ---------------------------------------------------------------------------
 
-SAMPLE_TYPES = frozenset(
-    {"single_image", "multi_image", "edit_pair", "image_group", "custom"}
-)
+SAMPLE_TYPES = frozenset({"single_image", "multi_image", "edit_pair", "image_group", "custom"})
 
 
 # ---------------------------------------------------------------------------
 # Output contract modes
 # ---------------------------------------------------------------------------
+
 
 class OutputMode(str, Enum):
     FREE_TEXT = "free_text"
@@ -45,8 +44,43 @@ class OutputMode(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# URL image transport policy (shared contract)
+# ---------------------------------------------------------------------------
+
+
+class UrlImageTransport(str, Enum):
+    """Policy chosen by the caller for delivering URL-sourced images.
+
+    - ``auto``    – direct URL for supported schemes/providers when local
+                    preprocessing is OFF, otherwise securely download and
+                    embed inline.
+    - ``direct``  – backend must NOT fetch the URL; the adapter decides
+                    between ``fileData.fileUri`` (Vertex) and ``image_url``
+                    (OpenAI-compat). Preprocessing + unsupported schemes
+                    surface as non-retryable capability errors.
+    - ``inline``  – always securely download via the existing materializer
+                    and embed the bytes as inline image data. Preprocessing
+                    is honored.
+    """
+
+    AUTO = "auto"
+    DIRECT = "direct"
+    INLINE = "inline"
+
+
+class ImageTransportKind(str, Enum):
+    """Effective transport recorded on a :class:`ResolvedImage` after
+    capability/policy resolution. Independent of the user-facing policy."""
+
+    DIRECT_URL = "direct_url"  # backend handed the URL to the adapter
+    INLINE_DATA = "inline_data"  # backend downloaded + base64-embedded
+    PROVIDER_URI = "provider_uri"  # provider-native URI (e.g. gs:// on Vertex)
+
+
+# ---------------------------------------------------------------------------
 # Run lifecycle statuses
 # ---------------------------------------------------------------------------
+
 
 class RunSessionStatus(str, Enum):
     CREATED = "created"
@@ -96,6 +130,7 @@ class RunType(str, Enum):
 # ---------------------------------------------------------------------------
 # Error taxonomy (section 3.11 of 文件格式文档)
 # ---------------------------------------------------------------------------
+
 
 class ErrorType(str, Enum):
     AUTH_ERROR = "auth_error"

@@ -71,6 +71,13 @@ export type ErrorType =
   | 'format_error'
   | 'unknown_error';
 
+// URL image delivery policy (mirrors backend UrlImageTransport).
+export type UrlImageTransport = 'auto' | 'direct' | 'inline';
+
+// Effective transport recorded on a ResolvedImage after resolution
+// (mirrors backend ImageTransportKind).
+export type ImageTransportKind = 'direct_url' | 'inline_data' | 'provider_uri';
+
 // ---------------------------------------------------------------------------
 // Common / shared
 // ---------------------------------------------------------------------------
@@ -241,6 +248,7 @@ export interface TaskVersion extends Timestamps {
   model_parameters?: ModelParameters;
   output_contract?: OutputContract;
   image_preprocess_config?: ImagePreprocessConfig | null;
+  url_image_transport?: UrlImageTransport;
   pricing_profile_id?: string | null;
   notes?: string;
   image_slot_specs?: ImageSlotSpec[];
@@ -293,6 +301,10 @@ export interface ProviderCapability {
   supports_strict_json_schema?: boolean;
   supports_batch_api?: boolean;
   max_images?: number | null;
+  // URL image direct-transport capability (mirrors backend ModelCapability).
+  direct_image_uri_schemes?: string[];
+  supports_inline_image_data?: boolean;
+  max_direct_images?: number | null;
   max_output_tokens?: number | null;
   known_quirks?: string[];
   notes?: string;
@@ -450,6 +462,8 @@ export interface ResolvedImage {
   height?: number | null;
   file_size?: number | null;
   sha256?: string | null;
+  transport?: ImageTransportKind;
+  transport_reason?: string;
 }
 
 export interface RequestImage {
@@ -457,6 +471,7 @@ export interface RequestImage {
   source_image_id?: string | null;
   role?: string;
   path?: string | null;
+  source_uri?: string | null;
   mime_type?: string | null;
   order?: number;
   preprocess?: ImagePreprocessConfig;
@@ -503,6 +518,7 @@ export interface InternalRequest {
   output_contract?: OutputContract;
   cost_context?: CostContext;
   runtime?: RuntimeOptions;
+  url_image_transport?: UrlImageTransport;
 }
 
 // ---------------------------------------------------------------------------

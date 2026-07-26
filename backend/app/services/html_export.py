@@ -282,6 +282,7 @@ header.bar .sub{margin-top:2px;font-size:11px;color:#6b6b74}
 .main-img img{max-width:100%;max-height:50vh;object-fit:contain;border-radius:6px}
 .main-img .img-wrap{position:relative;display:inline-block;max-width:100%;max-height:50vh;line-height:0}
 .main-img .img-wrap img{display:block;max-width:100%;max-height:50vh;border-radius:6px;margin:0 auto}
+.img-badge{position:absolute;top:6px;right:6px;z-index:2;background:rgba(0,0,0,.6);color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;line-height:1;pointer-events:none}
 .bbox-overlay{position:absolute;inset:0;pointer-events:none;z-index:1}
 .bbox-overlay svg{width:100%;height:100%;overflow:visible;display:block}
 .bbox-overlay svg rect{transition:fill-opacity .15s}
@@ -300,10 +301,11 @@ header.bar .sub{margin-top:2px;font-size:11px;color:#6b6b74}
 .bbox-unlabeled{color:#6b6b74;font-style:italic}
 .main-img .none{color:#4a4a52;font-size:12px}
 .thumbs{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
-.thumbs button{flex:0 0 auto;width:52px;height:52px;border-radius:6px;overflow:hidden;border:2px solid transparent;background:transparent;padding:0;cursor:pointer}
+.thumbs button{position:relative;flex:0 0 auto;width:60px;height:60px;border-radius:6px;overflow:hidden;border:2px solid transparent;background:transparent;padding:0;cursor:pointer}
 .thumbs button.active{border-color:#6366f1}
 .thumbs img{width:100%;height:100%;object-fit:cover}
 .thumbs .empty-slot{display:flex;align-items:center;justify-content:center;color:#4a4a52;font-size:9px}
+.thumb-idx{position:absolute;top:2px;left:2px;background:rgba(0,0,0,.6);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;line-height:1;pointer-events:none}
 .role-tag{display:inline-block;font-size:10px;color:#9a9aa3;background:#1f1f23;padding:2px 8px;border-radius:4px;margin-left:8px}
 h3.sec{margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#9a9aa3}
 .vars{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;margin-bottom:16px}
@@ -341,6 +343,7 @@ _JS = r"""
   var overlayBar = document.getElementById('o-bar');
   var overlayBody = document.getElementById('o-body');
   var currentIdx = -1;
+  var currentItem = null;
 
   // Inject thumbnails from the single-source JSON payload.
   cards.forEach(function(card){
@@ -458,6 +461,7 @@ _JS = r"""
     var overlayHtml = boxes.length ? renderBBoxOverlay(boxes) : '';
     var html = '<div class="main-img"><div class="img-wrap">'
              + '<img id="o-mainimg" src="'+esc(first.src||'')+'" alt="">'
+             + (imgs.length > 1 ? '<div class="img-badge" id="o-imgbadge">1 / '+imgs.length+'</div>' : '')
              + overlayHtml
              + '</div></div>';
     if(imgs.length > 1){
@@ -466,7 +470,7 @@ _JS = r"""
         var inner = im.src
           ? '<img src="'+esc(im.src)+'" alt="">'
           : '<span class="empty-slot">—</span>';
-        html += '<button data-i="'+i+'" class="'+(i===0?'active':'')+'">'+inner+'</button>';
+        html += '<button data-i="'+i+'" class="'+(i===0?'active':'')+'">'+inner+'<span class="thumb-idx">'+(i+1)+'</span></button>';
       });
       html += '</div>';
     }
@@ -607,7 +611,7 @@ _JS = r"""
       + (item.images && item.images[0] && item.images[0].role ? '<span class="role-tag">'+esc(item.images[0].role)+'</span>' : '')
       + '</div>'
       + '<div class="left"><span class="pos">'+pos+' / '+total+'</span>'
-      + '<span class="nav-hint">← → navigate · Esc close</span>'
+      + '<span class="nav-hint">← → items · ↑ ↓ image · Esc close</span>'
       + '<button id="o-prev" title="Previous (←)">‹</button>'
       + '<button id="o-next" title="Next (→)">›</button>'
       + '<button id="o-close" title="Close (Esc)">✕</button>'
@@ -620,15 +624,21 @@ _JS = r"""
     overlay.classList.add('open');
     document.body.style.overflow = 'hidden';
   }
-  function bindThumbs(item){
+  function setImage(i){
+    var imgs = (currentItem && currentItem.images) || [];
     var main = document.getElementById('o-mainimg');
-    var btns = Array.prototype.slice.call(document.querySelectorAll('.thumbs button'));
-    btns.forEach(function(btn){
+    if(main) main.src = (imgs[i] && imgs[i].src) || '';
+    var badge = document.getElementById('o-imgbadge');
+    if(badge) badge.textContent = (i+1)+' / '+imgs.length;
+    Array.prototype.slice.call(document.querySelectorAll('.thumbs button')).forEach(function(btn){
+      btn.classList.toggle('active', +btn.getAttribute('data-i') === i);
+    });
+  }
+  function bindThumbs(item){
+    currentItem = item;
+    Array.prototype.slice.call(document.querySelectorAll('.thumbs button')).forEach(function(btn){
       btn.addEventListener('click', function(){
-        btns.forEach(function(b){ b.classList.remove('active'); });
-        btn.classList.add('active');
-        var i = +btn.getAttribute('data-i');
-        if(main && item.images[i]) main.src = item.images[i].src || '';
+        setImage(+btn.getAttribute('data-i'));
       });
     });
   }
@@ -637,6 +647,7 @@ _JS = r"""
     overlayBody.innerHTML = '';
     overlayBar.innerHTML = '';
     currentIdx = -1;
+    currentItem = null;
     document.body.style.overflow = '';
   }
   function step(dir){
@@ -646,6 +657,14 @@ _JS = r"""
     if(pos < 0){ pos = dir > 0 ? -1 : vis.length; }
     var next = vis[(pos + dir + vis.length) % vis.length];
     openDetail(next);
+  }
+  function stepImage(dir){
+    var imgs = (currentItem && currentItem.images) || [];
+    var n = imgs.length;
+    if(n <= 1) return;
+    var active = document.querySelector('.thumbs button.active');
+    var idx = active ? +active.getAttribute('data-i') : 0;
+    setImage((idx + dir + n) % n);
   }
 
   cards.forEach(function(card){
@@ -663,6 +682,8 @@ _JS = r"""
     if(e.key === 'Escape') closeDetail();
     else if(e.key === 'ArrowLeft') step(-1);
     else if(e.key === 'ArrowRight') step(1);
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); stepImage(-1); }
+    else if(e.key === 'ArrowDown'){ e.preventDefault(); stepImage(1); }
   });
 })();
 """

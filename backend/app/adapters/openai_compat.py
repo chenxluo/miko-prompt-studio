@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
-import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -23,6 +22,7 @@ from app.schemas.run_record import (
     StreamEvent,
     Usage,
 )
+from app.services.prompt_renderer import split_prompt_image_parts
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
@@ -96,8 +96,12 @@ class OpenAICompatAdapter(BaseAdapter):
             supports_system_prompt=True,
             supports_json_mode=True,
             supports_strict_json_schema=True,
-            supports_batch_api=False,
             max_images=20,
+            # OpenAI-compatible chat completions accepts http(s) image URLs as
+            # ``image_url.url``; inline base64 stays supported as before.
+            direct_image_uri_schemes=["http", "https"],
+            supports_inline_image_data=True,
+            max_direct_images=20,
         )
 
     def build_provider_request(self, request: InternalRequest) -> dict[str, Any]:
@@ -198,9 +202,10 @@ class OpenAICompatAdapter(BaseAdapter):
         payload.setdefault("stream_options", {"include_usage": True})
 
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client, client.stream(
-                "POST", url, headers=headers, json=payload
-            ) as response:
+            async with (
+                httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client,
+                client.stream("POST", url, headers=headers, json=payload) as response,
+            ):
                 if response.is_error:
                     await response.aread()
                     error = self.normalize_error(response=response, exception=None)
@@ -429,78 +434,24 @@ class OpenAICompatAdapter(BaseAdapter):
     def _build_user_prompt(self, request: InternalRequest) -> str:
         return request.user_prompt
 
-    # Regex for inline image references: {{image:0}}, {{image:1}}, etc.
-    _INLINE_IMAGE_RE = re.compile(r"{{\s*image\s*:\s*(\d+)\s*}}", re.IGNORECASE)
-
     def _build_user_content(
         self,
         prompt_text: str,
         images: list[RequestImage],
     ) -> list[dict[str, Any]]:
-        """Build the OpenAI ``content`` array for the user message.
+        """Build ordered OpenAI text/image content parts."""
 
-        If the prompt contains ``{{image:N}}`` tokens, images are interleaved
-        at the specified positions.  Otherwise, text is emitted first followed
-        by all images appended in order (the default behaviour).
-        """
-
-        if not prompt_text and not images:
-            return []
-
-        # Check for inline image references
-        matches = list(self._INLINE_IMAGE_RE.finditer(prompt_text or ""))
-
-        if not matches:
-            # Default: text first, then all images
-            content: list[dict[str, Any]] = []
-            if prompt_text:
-                content.append({"type": "text", "text": prompt_text})
-            for image in images:
-                content.append(
-                    {"type": "image_url", "image_url": {"url": self._image_to_url(image)}}
-                )
-            return content
-
-        # Inline mode: interleave text segments and image references
-        content = []
-        last_end = 0
-        referenced_indices: set[int] = set()
-
-        for match in matches:
-            # Text before the image token
-            text_segment = prompt_text[last_end : match.start()].strip()
-            if text_segment:
-                content.append({"type": "text", "text": text_segment})
-
-            img_index = int(match.group(1))
-            if 0 <= img_index < len(images):
+        content: list[dict[str, Any]] = []
+        for part in split_prompt_image_parts(prompt_text, len(images)):
+            if isinstance(part, int):
                 content.append(
                     {
                         "type": "image_url",
-                        "image_url": {"url": self._image_to_url(images[img_index])},
+                        "image_url": {"url": self._image_to_url(images[part])},
                     }
                 )
-                referenced_indices.add(img_index)
             else:
-                # Out-of-range index — emit a text placeholder
-                content.append(
-                    {"type": "text", "text": f"[image {img_index} not available]"}
-                )
-
-            last_end = match.end()
-
-        # Trailing text after the last image token
-        trailing = prompt_text[last_end:].strip()
-        if trailing:
-            content.append({"type": "text", "text": trailing})
-
-        # Append any images that were NOT referenced inline
-        for i, image in enumerate(images):
-            if i not in referenced_indices:
-                content.append(
-                    {"type": "image_url", "image_url": {"url": self._image_to_url(image)}}
-                )
-
+                content.append({"type": "text", "text": part})
         return content
 
     def _response_format(self, request: InternalRequest) -> dict[str, Any] | None:
@@ -526,7 +477,7 @@ class OpenAICompatAdapter(BaseAdapter):
         if uri:
             return uri
 
-        path = (resolved.path if resolved is not None and resolved.path else image.path)
+        path = resolved.path if resolved is not None and resolved.path else image.path
         if path is None:
             raise ValueError(f"Image {image.request_image_id} has neither data URI nor path.")
         if path.startswith(("http://", "https://", "data:")):
@@ -631,14 +582,17 @@ class OpenAINativeAdapter(OpenAICompatAdapter):
             supports_system_prompt=True,
             supports_json_mode=True,
             supports_strict_json_schema=True,
-            supports_batch_api=False,
             max_images=20,
+            direct_image_uri_schemes=["http", "https"],
+            supports_inline_image_data=True,
+            max_direct_images=20,
         )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _models_error(response: httpx.Response) -> Exception:
     """Build a descriptive exception for a failed /v1/models call."""
@@ -648,6 +602,4 @@ def _models_error(response: httpx.Response) -> Exception:
     except ValueError:
         body = response.text
 
-    return RuntimeError(
-        f"Failed to fetch model list (HTTP {response.status_code}): {body}"
-    )
+    return RuntimeError(f"Failed to fetch model list (HTTP {response.status_code}): {body}")

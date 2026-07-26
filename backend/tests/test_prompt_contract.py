@@ -1,7 +1,8 @@
-
+import pytest
 from fastapi.testclient import TestClient
 
-from app.schemas.sample_record import SampleRecord
+from app.schemas.prompt import ImageSlotSpec
+from app.schemas.sample_record import ImageRef, SampleRecord
 from app.services.prompt_renderer import (
     extract_variable_specs,
     render_prompt,
@@ -58,6 +59,72 @@ def test_missing_vars_still_resolve_to_empty_string() -> None:
 
     assert prompt.user_prompt == "Hello Miko  "
     assert prompt.system_prompt == "System "
+
+
+def test_render_prompt_preserves_image_tokens_in_variable_values() -> None:
+    sample = SampleRecord(
+        sample_id="sample_images",
+        vars={"context_prompt": "first {{image:0}} then {{image:1}}"},
+    )
+
+    prompt = render_prompt("Inspect {{vars.context_prompt}}", "", sample)
+
+    assert prompt.user_prompt == "Inspect first {{image:0}} then {{image:1}}"
+
+
+def test_render_prompt_expands_slot_images_with_absolute_indexes() -> None:
+    sample = SampleRecord(
+        sample_id="sample_each",
+        images=[
+            ImageRef(image_id="other", role="other", order=0),
+            ImageRef(image_id="context_2", role="context", order=3),
+            ImageRef(image_id="context_1", role="context", order=1),
+            ImageRef(image_id="context_3", role="context", order=2),
+        ],
+    )
+    prompt = render_prompt(
+        "{{#each images.context_images}}Image {{number}}={{image}};{{/each}}",
+        "",
+        sample,
+        [ImageSlotSpec(slot_id="context_images", role_hint="context", max_count=None)],
+    )
+
+    assert prompt.user_prompt == (
+        "Image 1={{image:1}};Image 2={{image:2}};Image 3={{image:3}};"
+    )
+
+
+@pytest.mark.parametrize(
+    ("template", "message"),
+    [
+        ("{{#each images.unknown}}{{image}}{{/each}}", "unknown image slot 'unknown'"),
+        ("{{#each images.context_images}}{{image}}", "unmatched image each block"),
+        (
+            "{{#each images.context_images}}"
+            "{{#each images.context_images}}{{image}}{{/each}}"
+            "{{/each}}",
+            "nested image each block",
+        ),
+    ],
+)
+def test_render_prompt_rejects_invalid_image_each(template: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        render_prompt(
+            template,
+            "",
+            SampleRecord(sample_id="bad"),
+            [ImageSlotSpec(slot_id="context_images", max_count=None)],
+        )
+
+
+def test_render_prompt_rejects_image_each_in_system_prompt() -> None:
+    with pytest.raises(ValueError, match="only allowed in user_template"):
+        render_prompt(
+            "plain",
+            "{{#each images.context_images}}{{image}}{{/each}}",
+            SampleRecord(sample_id="bad_system"),
+            [ImageSlotSpec(slot_id="context_images", max_count=None)],
+        )
 
 
 def test_prompt_round_trip_excludes_variable_specs(client: TestClient) -> None:
