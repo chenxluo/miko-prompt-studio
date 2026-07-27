@@ -2193,6 +2193,46 @@ async def serve_snapshot_image(snapshot_id: str, filename: str):
     return FileResponse(file_path)
 
 
+@app.get("/api/run-items/{run_item_id}/images/{index}")
+async def serve_run_item_image(
+    run_item_id: str, index: int, db: AsyncSession = Depends(get_db)
+):
+    """Serve a run-item input image from its persisted upload file.
+
+    At write time ``internal_request_snapshot`` rewrites each inline image's
+    ``resolved.uri`` (a multi-MB base64 data URI) to this URL, so the snapshot
+    stays small while the UI still displays the image. The bytes themselves
+    live in ``uploads_dir``; this endpoint reads the image's ``path`` from the
+    snapshot and streams the file.
+    """
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    result = await db.execute(
+        select(RunItemORM).where(RunItemORM.run_item_id == run_item_id)
+    )
+    item = result.scalar_one_or_none()
+    snapshot = item.internal_request_snapshot if item is not None else None
+    if item is None or not snapshot:
+        raise HTTPException(404, "Run item or its snapshot not found")
+    images = snapshot.get("images") or []
+    if index < 0 or index >= len(images):
+        raise HTTPException(404, "Image index out of range")
+    image = images[index] or {}
+    raw_path = image.get("path") or _dict_get(image.get("resolved"), "path")
+    if not raw_path:
+        raise HTTPException(404, "Image has no local file path")
+    file_path = Path(raw_path)
+    if not file_path.is_file():
+        raise HTTPException(404, "Image file not found on disk")
+    mime = (
+        image.get("mime_type")
+        or _dict_get(image.get("resolved"), "mime_type")
+        or "application/octet-stream"
+    )
+    return FileResponse(file_path, media_type=mime)
+
 @app.get("/api/result-snapshots/{snapshot_id}")
 async def get_result_snapshot(snapshot_id: str, db: AsyncSession = Depends(get_db)):
     snapshot = await _get_result_snapshot_or_404(snapshot_id, db)

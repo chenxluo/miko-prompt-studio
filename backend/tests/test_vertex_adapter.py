@@ -26,7 +26,6 @@ from typing import Any
 # Mirrors backend/tests/conftest.py. stdlib-only; harmless under pytest.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.adapters.base import BaseAdapter  # noqa: E402
 from app.adapters.openai_compat import OpenAICompatAdapter  # noqa: E402
 from app.adapters.vertex import (  # noqa: E402
     GEMINI_MODELS,
@@ -767,66 +766,6 @@ def test_redact_provider_request_strips_signed_url_query() -> None:
     assert payload["contents"][0]["parts"][0]["fileData"]["fileUri"] == signed_uri
 
 
-def test_redact_internal_request_snapshot_strips_signed_query_and_inline_base64() -> None:
-    request = InternalRequest(
-        request_id="req_redact",
-        sample_ref=SampleRef(sample_id="s1"),
-        model=ModelSpec(provider_id="vertex", model_id="gemini-2.5-pro"),
-        prompt=PromptSpec(user_prompt="hi"),
-        images=[
-            RequestImage(
-                request_image_id="i1",
-                order=0,
-                source_uri="https://x.example.com/photo.jpg?signature=abc",
-                resolved=ResolvedImage(
-                    uri="data:image/png;base64,AAAA",
-                    mime_type="image/png",
-                ),
-            ),
-            RequestImage(
-                request_image_id="i2",
-                order=1,
-                source_uri="gs://my-bucket/photo.jpg?X-Goog-Signature=xyz",
-                resolved=ResolvedImage(
-                    uri="gs://my-bucket/photo.jpg?X-Goog-Signature=xyz",
-                    mime_type="image/jpeg",
-                ),
-            ),
-            RequestImage(
-                request_image_id="i3",
-                order=2,
-                source_uri="data:image/jpeg;base64,BBBB",
-                resolved=ResolvedImage(
-                    uri="data:image/jpeg;base64,BBBB",
-                    mime_type="image/jpeg",
-                ),
-            ),
-        ],
-    )
-    raw = request.model_dump(mode="json")
-    import copy as _copy
-
-    raw_before = _copy.deepcopy(raw)
-
-    redacted = BaseAdapter.redact_internal_request_snapshot(raw)
-    assert redacted is not None
-
-    images = redacted["images"]
-    # Inline base64 stripped from resolved.uri; data: head kept for visibility.
-    assert images[0]["resolved"]["uri"] == ("data:image/png;base64,<redacted 4-char base64>")
-    # Signed URL query stripped from both source_uri and the direct
-    # resolved.uri for gs:// / http(s).
-    assert images[1]["resolved"]["uri"] == ("gs://my-bucket/photo.jpg?<redacted query>")
-    assert images[0]["source_uri"] == ("https://x.example.com/photo.jpg?<redacted query>")
-    assert images[1]["source_uri"] == ("gs://my-bucket/photo.jpg?<redacted query>")
-    assert images[2]["source_uri"] == ("data:image/jpeg;base64,<redacted 4-char base64>")
-    # Path/host remain observable so reviewers can still see what was sent.
-    assert "x.example.com" in images[0]["source_uri"]
-    assert "my-bucket" in images[1]["source_uri"]
-    # Original dict untouched.
-    assert raw == raw_before
-
-
 if __name__ == "__main__":
     test_build_basic_structure_with_system_instruction()
     test_build_omits_system_instruction_when_empty()
@@ -867,5 +806,4 @@ if __name__ == "__main__":
     test_redact_provider_request_strips_short_openai_data_uri()
     test_redact_provider_request_strips_short_vertex_inline_data()
     test_redact_provider_request_strips_signed_url_query()
-    test_redact_internal_request_snapshot_strips_signed_query_and_inline_base64()
     print("ok")

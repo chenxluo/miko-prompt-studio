@@ -335,57 +335,6 @@ class BaseAdapter(ABC):
         self._redact_mapping(redacted)
         return redacted
 
-    @staticmethod
-    def redact_internal_request_snapshot(
-        internal_request: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        """Return a redacted copy of an InternalRequest-shaped snapshot.
-
-        Persists the same shape as :meth:`redact_provider_request` but
-        tailored to ``RunItem.internal_request_snapshot``: the
-        ``images[*].resolved.uri`` and ``images[*].source_uri`` ``data:`` URI
-        base64 is stripped, and signed URL queries are removed from both
-        fields. Source URL path/host remain observable so reviewers can still
-        see what was referenced.
-        The original dict is NOT mutated. Lives on the base class so any
-        ``BaseAdapter`` subclass — including legacy fakes — gets it without
-        needing new methods.
-        """
-        if internal_request is None:
-            return None
-        redacted = copy.deepcopy(internal_request)
-        for image in redacted.get("images") or []:
-            if not isinstance(image, dict):
-                continue
-            resolved = image.get("resolved")
-            if isinstance(resolved, dict):
-                uri = resolved.get("uri")
-                if isinstance(uri, str) and uri.startswith("data:") and ";base64," in uri:
-                    resolved["uri"] = BaseAdapter._redact_data_uri(uri)
-                elif (
-                    isinstance(uri, str)
-                    and "?" in uri
-                    and ("://" in uri or uri.startswith(("http", "gs://")))
-                ):
-                    # Direct ``resolved.uri`` for gs/http(s) duplicates the
-                    # signed query — strip it from the snapshot too.
-                    image_resolved_uri = uri
-                    resolved["uri"] = BaseAdapter._redact_url_query(image_resolved_uri)
-            source_uri = image.get("source_uri")
-            if (
-                isinstance(source_uri, str)
-                and source_uri.startswith("data:")
-                and ";base64," in source_uri
-            ):
-                image["source_uri"] = BaseAdapter._redact_data_uri(source_uri)
-            elif (
-                isinstance(source_uri, str)
-                and "?" in source_uri
-                and ("://" in source_uri or source_uri.startswith(("http", "gs://")))
-            ):
-                image["source_uri"] = BaseAdapter._redact_url_query(source_uri)
-        return redacted
-
     def _redact_mapping(
         self, value: Any, parent_key: str | None = None, sibling_mime: str | None = None
     ) -> None:

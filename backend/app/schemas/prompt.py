@@ -13,7 +13,7 @@ run records still store PromptSnapshot values so old runs remain reproducible.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 from app.schemas.common import TimestampedModel
 
@@ -25,7 +25,18 @@ class ImageSlotSpec(BaseModel):
     role_hint: str | None = None
     required: bool = True
     min_count: int = 1
+    # None is semantic: it marks an unbounded "variable image group". It must
+    # survive serialization even when a parent dumps with exclude_none=True
+    # (Task list/detail responses do), otherwise None is stripped on read-back
+    # and re-defaults to 1, turning a variable group into a fixed one.
     max_count: int | None = 1
+
+    @model_serializer(mode="wrap")
+    def _emit_max_count(self, handler, info):
+        data = handler(self)
+        if "max_count" not in data:
+            data["max_count"] = self.max_count
+        return data
 
 
 class VariableSpec(BaseModel):

@@ -539,9 +539,10 @@ def test_execute_lab_run_auto_sends_signed_https_url_directly(
     assert detail.status_code == 200, detail.text
     snapshot = detail.json()["items"][0]["internal_request_snapshot"]
     assert snapshot["url_image_transport"] == "auto"
-    expected_redacted_url = "https://cdn.example.test/cat.png?<redacted query>"
-    assert snapshot["images"][0]["source_uri"] == expected_redacted_url
-    assert snapshot["images"][0]["resolved"]["uri"] == expected_redacted_url
+    # The internal_request_snapshot is the display source of truth, so the
+    # signed URL is preserved unredacted (matches what the adapter sent).
+    assert snapshot["images"][0]["source_uri"] == signed_url
+    assert snapshot["images"][0]["resolved"]["uri"] == signed_url
     assert snapshot["images"][0]["resolved"]["transport"] == "direct_url"
 
 

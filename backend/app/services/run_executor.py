@@ -22,7 +22,6 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.base import BaseAdapter
 from app.adapters.registry import get_adapter
 from app.config import get_settings
 from app.core.security import get_api_key
@@ -65,6 +64,7 @@ from app.schemas.sample_record import SampleRecord
 from app.services.cost_engine import calculate_cost
 from app.services.parser_engine import parse_response
 from app.services.request_builder import build_internal_request
+from app.services.snapshot_scrub import rewrite_inline_image_uris, scrub_image_bytes
 
 # ---------------------------------------------------------------------------
 # Lab run request DTO (used by the API layer)
@@ -216,16 +216,14 @@ async def execute_lab_run(
     )
     db.add(session_orm)
     # 4. Create the Run Item row (status=running) -----------------------------
-    # Redaction is a staticmethod on BaseAdapter so it works for any adapter
-    # instance — including fake/local-only adapters that never implement it.
     item_orm = RunItemORM(
         run_item_id=run_item_id,
         run_id=run_id,
         sample_id=request.sample.sample_id,
         status=RunItemType.RUNNING.value,
         started_at=now.isoformat(),
-        internal_request_snapshot=BaseAdapter.redact_internal_request_snapshot(
-            internal_request.model_dump(mode="json")
+        internal_request_snapshot=rewrite_inline_image_uris(
+            internal_request.model_dump(mode="json"), run_item_id
         ),
         prompt_snapshot=prompt_snapshot.model_dump(mode="json"),
         model_config_snapshot=model_snapshot.model_dump(mode="json"),
@@ -240,8 +238,7 @@ async def execute_lab_run(
     # 5. Execute the adapter call ---------------------------------------------
     # Resolve the adapter here even if no URL images were present (so we
     # have an instance to dispatch to). Capability was queried earlier only
-    # when actually needed; success-path snapshot redaction is a class-level
-    # staticmethod so it never required an adapter instance.
+    # when actually needed.
     if adapter is None:
         adapter = get_adapter(request.model_config.adapter_id)
     # Resolve API key: prefer provider_config_id, fall back to provider_id
@@ -324,8 +321,7 @@ async def execute_lab_run(
         completed_at=utc_now().isoformat(),
         provider_id=request.model_config.provider_id,
         adapter_id=request.model_config.adapter_id,
-        model_id=request.model_config.model_id,
-        provider_request_snapshot=result.provider_request_snapshot,
+        provider_request_snapshot=scrub_image_bytes(result.provider_request_snapshot),
         provider_response_raw=result.provider_response_raw,
         normalized_response=result.normalized_response.model_dump(mode="json")
         if result.normalized_response
@@ -780,7 +776,9 @@ async def _fail_run(
         status=RunItemType.RUNNING.value,
         started_at=now.isoformat(),
         internal_request_snapshot=(
-            BaseAdapter.redact_internal_request_snapshot(internal_request.model_dump(mode="json"))
+            rewrite_inline_image_uris(
+                internal_request.model_dump(mode="json"), run_item_id
+            )
             if internal_request is not None
             else None
         ),

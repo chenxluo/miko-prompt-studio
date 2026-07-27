@@ -1,8 +1,8 @@
 # Miko Prompt Studio — 开发文档
 
-> 随开发进度持续更新的配套文档。最后更新：2026-07-12
+> 随开发进度持续更新的配套文档。最后更新：2026-07-27
 
-**版本：1.6.0**
+**版本：1.7.0**
 
 ## 1. 项目定位
 
@@ -203,6 +203,7 @@ run_executor.execute_lab_run()
 | GET | `/api/runs` | 列出运行历史 |
 | GET | `/api/runs/{id}` | 获取运行详情（含 run items） |
 | GET | `/api/runs/{id}/items/{item_id}` | 获取单个 run item |
+| GET | `/api/run-items/{run_item_id}/images/{index}` | 服务 run item 输入图片（快照内联 data URI 改指向此端点，缩小快照体积） |
 | POST | `/api/compare/cross-run` | 按共同 `sample_id` 对齐 2–4 个已完成 Batch run，返回轻量 Diff 矩阵 |
 | PATCH | `/api/runs/{id}/items/{item_id}/review` | 更新人工 review（accepted/rating/notes/labels）；null/空值可清除字段，labels 通过 JSON 赋值持久化 |
 | POST | `/api/analytics/review-summary` | 跨运行审阅统计聚合（按 variant/model/provider 分组：通过率、平均评分、评分分布、accepted/rejected/undecided 计数） |
@@ -421,7 +422,7 @@ run_executor.execute_lab_run()
 - [x] **多语言比较元数据**：Compare 运行与结果展示支持多语言任务版本元数据展示，i18n 字典补齐相关 key
 - [x] **回归测试**：`backend/tests/test_compare_runs.py` 增加 Compare 取消、并发、重试、随机抽样等用例
 
-### Phase 11（v1.5.0 — URL 图片、Lab 数据集样本与可变图组）
+### Phase 11（v1.6.0 — URL 图片、Lab 数据集样本与可变图组）
 
 - [x] **URL 图片输入与传输策略**：Lab“从 URL 添加”保留 URL source；Auto（默认）仅在 adapter 支持该 scheme 且无需本地预处理时直传，否则经 SSRF-safe downloader 落地并预处理后内联；Direct 始终不由后端下载，scheme 不支持、启用预处理或超过直传数量限制时直接报错，不降级；Inline 始终安全下载并应用预处理，不支持内联时直接报错。OpenAI / OpenAI-compatible 可直传 `http`/`https`；Vertex 仅可直传 `gs`，HTTP 在 Auto 下转为 Inline。
 - [x] **Lab 数据集样本选择**：Lab 可打开已导入的数据集、分页选择单条样本，并一次替换当前图片与任务变量；大数据集按 40 条懒加载
@@ -429,6 +430,20 @@ run_executor.execute_lab_run()
 - [x] **逐图片段局部值**：循环体仅提供 `{{number}}`（从 1 开始）与 `{{image}}`（当前图片）；运行时脱糖为现有绝对 `{{image:N}}`，Lab / Batch / Compare / CLI 共用同一渲染路径
 - [x] **数量约束**：图片槽统一执行 required/min/max 规则；模型 `max_images` 在普通与流式请求发出前硬性拦截，不静默截断
 - [x] **策略持久化与运行快照**：`TaskVersion.url_image_transport`（`auto` / `direct` / `inline`）由 Lab 保存并被 Batch、Compare 与 CLI 复用；`RunItem.internal_request_snapshot` 保留 `url_image_transport`，每张图片在 `images[].resolved.transport` / `transport_reason` 记录实际传输方式与原因，同时脱敏 URL query 和 base64 内容。
+
+### Phase 12（v1.7.0 — 数据库体积治理与运行韧性）
+
+面向长期使用的数据库体积治理与运行可靠性：把内联图片字节从快照中剥离为按需服务，清理泄漏的临时会话，并在写锁竞争与进程中断时自动恢复。
+
+- [x] **快照图片字节剥离**：新增 `backend/app/services/snapshot_scrub.py`，集中处理快照中的内联 base64 图片——`scrub_image_bytes` 把 provider_request_snapshot 里的大段图片 base64 替换为体积占位符（修复 qwen / openai-compat 单次 attempt 泄漏约 13MB）；`rewrite_inline_image_uris` 把 internal_request_snapshot 中的 `data:` URI 改写为 `GET /api/run-items/{id}/images/{i}` 服务 URL（仅有本地 `path` 可服务的图片才改写，直传 URL 与无 path 图片保持原样）。替代此前分散在 `BaseAdapter.redact_internal_request_snapshot` 的脱敏逻辑。
+- [x] **run-item 图片服务端点**：`GET /api/run-items/{run_item_id}/images/{index}` 从持久化的上传文件服务 run item 输入图片，使快照不再需要内联字节即可显示。
+- [x] **签名 URL 不再脱敏**：internal_request_snapshot 现为前端显示的真相源，其中 source_uri / resolved.uri 的签名 URL 保留原值（与 adapter 实际发送一致），仅内联 base64 被剥离。
+- [x] **数据库维护脚本**：新增 `backend/scripts/compact_db.py`——默认 dry-run 评估、`--apply` 执行：自动备份、WAL checkpoint(TRUNCATE)、清理泄漏的矩阵临时会话（"Batch item: " / "Compare item: " 前缀）、按 `--retain-days` 对旧完成运行置空重快照、`--rewrite-image-uris` 把既有快照迁移到新小体积形式、`--vacuum` 回收空间。
+- [x] **启动时孤儿运行恢复**：`init_db` 在迁移完成后扫描仍标记 running/created 的运行（前一进程异常退出遗留、无后台 worker 推进），置为 failed 并写入原因，使 UI 反映真实状态且可重试；独立事务避免拖长迁移锁。
+- [x] **SQLite 写锁竞争重试**：matrix_executor 把 `SQLITE_BUSY/LOCKED`（aiosqlite 包装为 OperationalError）当作瞬时基础设施错误，按退避 + 抖动重试而非永久判失败；连接已等待 busy_timeout，退避只为去同步化竞争 worker。
+- [x] **复制结果时重定向图片 URL**：矩阵重试 / 复制 run item 时 `retarget_image_uris` 把 `/api/run-items/{old}/images/{i}` 指向新 run_item_id，避免新 item 引用旧 item 的图片。
+- [x] **可变图组序列化修复**：`ImageSlotSpec.max_count=None`（语义为可变图组上界）经 `model_serializer(mode="wrap")` 在 `exclude_none=True` 序列化时仍保留，避免读回后 re-default 为 1、把可变图组变成固定单图。
+- [x] **清理与测试**：移除 `BaseAdapter.redact_internal_request_snapshot`（51 行），职责下沉到 snapshot_scrub；新增 6 个回归测试（snapshot_scrub / compact_db / db_lock_retry / orphan_run_recovery / run_item_image_endpoint / variable_image_group_round_trip），backend suite 202 green。
 
 ### 待实现
 - [ ] Python Import Script

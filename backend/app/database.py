@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import get_settings
+from app.schemas.common import RunItemType, RunSessionStatus, utc_now
 
 
 class Base(DeclarativeBase):
@@ -117,9 +118,72 @@ async def init_db() -> None:
         await _migrate_prompt_snippets(conn)
         await _recreate_prompts_table_without_legacy_columns(conn)
         await _migrate_pricing_profiles_to_per_million_tokens(conn)
-        await _migrate_unique_names(conn)
         await _migrate_pipeline_fields(conn)
         await _migrate_task_version_url_image_transport(conn)
+
+    # Any run still marked running/created at startup was orphaned by a prior
+    # process that died before finalizing it — no background worker is alive
+    # to advance it. Sweep to a terminal state so the UI reflects reality and
+    # the items can be retried. Runs in its own transaction so a slow sweep
+    # never extends the migration lock.
+    async with engine.begin() as conn:
+        await _reap_orphaned_runs(conn)
+
+
+async def _reap_orphaned_runs(conn) -> None:
+    """Mark runs orphaned by a previous (crashed/killed) process as failed.
+
+    The matrix/compare executors track active runs in process-local memory
+    (``_running_tasks``); when the process dies those entries vanish and the
+    run is never finalized — its session and any in-flight items stay forever
+    in a non-terminal state. At startup no background worker is alive, so
+    EVERY non-terminal session/item is an orphan. Sweep them to ``failed`` so
+    the UI shows the truth instead of a perpetual "running", and the items
+    remain retryable via "retry failed" (which keys on status=failed).
+    """
+    now = utc_now().isoformat()
+    recovery_error = json.dumps(
+        {
+            "type": "unknown_error",
+            "message": "Run interrupted: backend restarted before completion.",
+            "retryable": True,
+        }
+    )
+    running_session = RunSessionStatus.RUNNING.value
+    created_session = RunSessionStatus.CREATED.value
+    pending_item = RunItemType.PENDING.value
+    running_item = RunItemType.RUNNING.value
+    failed_session = RunSessionStatus.FAILED.value
+    failed_item = RunItemType.FAILED.value
+
+    session_result = await conn.execute(
+        text(
+            "SELECT run_id FROM run_sessions "
+            f"WHERE status IN ('{running_session}', '{created_session}')"
+        )
+    )
+    orphan_session_count = len(session_result.fetchall())
+    if orphan_session_count == 0:
+        # No orphaned sessions → no orphaned items either (items only advance
+        # while a worker is active). Skip the second UPDATE entirely.
+        return
+
+    await conn.execute(
+        text(
+            "UPDATE run_sessions SET status = :failed, completed_at = :now, "
+            "updated_at = :now "
+            f"WHERE status IN ('{running_session}', '{created_session}')"
+        ),
+        {"failed": failed_session, "now": now},
+    )
+    await conn.execute(
+        text(
+            "UPDATE run_items SET status = :failed, completed_at = :now, "
+            "updated_at = :now, error = :error "
+            f"WHERE status IN ('{pending_item}', '{running_item}')"
+        ),
+        {"failed": failed_item, "now": now, "error": recovery_error},
+    )
 
 
 async def _migrate_task_groups(conn) -> None:

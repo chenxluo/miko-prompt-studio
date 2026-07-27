@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import random
+import re
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ from app.schemas.sample_record import SampleRecord
 from app.services.request_builder import _pricing_snapshot
 from app.services.run_executor import LabRunRequest, _make_prompt_snapshot, execute_lab_run
 from app.services.sample_mapping import apply_sample_mapping
+from app.services.snapshot_scrub import retarget_image_uris
 
 # Concurrency ceilings (clamped again at payload time).
 MAX_CONCURRENCY = 16
@@ -38,6 +40,11 @@ _BACKOFF_BASE_SECONDS: dict[str, float] = {
     "rate_limit": 5.0,
     "timeout": 2.0,
     "network_error": 2.0,
+    # SQLite write-lock contention under concurrent batch load. The connection
+    # already waited busy_timeout before raising, so a short jittered backoff
+    # is only meant to de-synchronize contending workers, not to outwait a
+    # genuinely overloaded DB.
+    "db_lock": 1.0,
 }
 _BACKOFF_MAX_SECONDS = 60.0
 _BACKOFF_JITTER_SECONDS = 0.5
@@ -274,10 +281,22 @@ async def _execute_cell_with_retry(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # Unexpected infrastructural failure (not a provider error) —
-            # record it and stop; the matrix layer does not retry these.
+            # Transient SQLite write-lock contention is not a provider error:
+            # back off and retry like a rate-limit instead of permanently
+            # failing the item. Only retry while attempts remain.
+            if _is_db_lock_error(exc) and attempt < max_attempts and not cancel_event.is_set():
+                await _interruptible_backoff(attempt, "db_lock", cancel_event)
+                continue
+            # Exhausted retries, or a non-lock infrastructural failure —
+            # record it and stop. DB-lock failures stay retryable so the user
+            # can re-run them via "retry failed" once load subsides.
             await _record_unexpected_failure(
-                factory, spec.run_id, run_item_id, repr(exc), summary_lock
+                factory,
+                spec.run_id,
+                run_item_id,
+                repr(exc),
+                summary_lock,
+                retryable=_is_db_lock_error(exc),
             )
             return
 
@@ -437,6 +456,20 @@ def _error_type(error: dict | None) -> str | None:
 def _is_retryable(error_type: str | None) -> bool:
     return error_type in _RETRYABLE_ERROR_TYPES
 
+# Transient SQLite write-lock contention (SQLITE_BUSY/LOCKED) raised by
+# SQLAlchemy/aiosqlite as OperationalError. These are infrastructure errors,
+# not provider/business errors — retrying with backoff de-synchronizes the
+# contending workers instead of permanently failing the item.
+_DB_LOCK_RE = re.compile(
+    r"database is locked|database table is locked|database is deadlocked|"
+    r"SQLITE_BUSY|SQLITE_LOCKED|could not obtain a lock",
+    re.IGNORECASE,
+)
+
+
+def _is_db_lock_error(exc: BaseException) -> bool:
+    return bool(_DB_LOCK_RE.search(repr(exc)))
+
 
 async def _interruptible_backoff(
     attempt: int,
@@ -456,10 +489,12 @@ async def _record_unexpected_failure(
     run_item_id: str,
     message: str,
     summary_lock: asyncio.Lock,
+    *,
+    retryable: bool = False,
 ) -> None:
     try:
         async with factory() as db:
-            await _mark_item_failed(db, run_item_id, message)
+            await _mark_item_failed(db, run_item_id, message, retryable=retryable)
             async with summary_lock:
                 await _refresh_session_summary(db, run_id)
                 await db.commit()
@@ -468,14 +503,20 @@ async def _record_unexpected_failure(
         return
 
 
-async def _mark_item_failed(db: AsyncSession, run_item_id: str, message: str) -> None:
+async def _mark_item_failed(
+    db: AsyncSession,
+    run_item_id: str,
+    message: str,
+    *,
+    retryable: bool = False,
+) -> None:
     result = await db.execute(select(RunItemORM).where(RunItemORM.run_item_id == run_item_id))
     item = result.scalar_one_or_none()
     if item is None:
         return
     item.status = RunItemType.FAILED.value
     item.completed_at = utc_now().isoformat()
-    item.error = {"type": "unknown_error", "message": message, "retryable": False}
+    item.error = {"type": "unknown_error", "message": message, "retryable": retryable}
 
 
 async def _refresh_session_summary(
@@ -536,7 +577,9 @@ def _copy_item_result(source: RunItemORM, target: RunItemORM, run_id: str) -> No
     target.status = source.status
     target.started_at = target.started_at or source.started_at
     target.completed_at = source.completed_at
-    target.internal_request_snapshot = source.internal_request_snapshot
+    target.internal_request_snapshot = retarget_image_uris(
+        source.internal_request_snapshot, source.run_item_id, target.run_item_id
+    )
     target.prompt_snapshot = source.prompt_snapshot
     target.model_config_snapshot = source.model_config_snapshot
     target.output_contract_snapshot = source.output_contract_snapshot
