@@ -353,42 +353,30 @@ export function buildImagePreprocessConfig(
 export type LabViewMode = 'edit' | 'prompt-result' | 'image-result';
 
 interface LabState {
-  // View
   viewMode: LabViewMode;
-
-  // Prompt
   systemPrompt: string;
   userPrompt: string;
-
-  // Images
   images: ImageRef[];
   imageSlots: ImageSlot[];
   templateImageSlotSpecs: ImageSlotSpec[];
   templateVariableSpecs: VariableSpec[];
   variables: Record<string, string>;
+  activeSampleId: string | null;
   imageResolutionEnabled: boolean;
   imageResolutionTarget: number;
   urlImageTransport: UrlImageTransport;
-
-  // Provider config
   providerConfigs: api.ProviderConfig[];
   selectedProviderConfigId: string | null;
-
-  // Model
   modelId: string;
   activePricing: api.PricingListItem | null;
   isLoadingPricing: boolean;
   availableModels: string[];
   modelParameters: ModelParameters;
   outputContract: OutputContract;
-
-  // Active task / prompt references (used by SaveTaskDialog and BatchView)
   activeTaskId: string | null;
   activeTaskVersionId: string | null;
   activePromptId: string | null;
   activePromptVersionId: string | null;
-
-  // Run state
   isRunning: boolean;
   lastResult: RunSession | null;
   lastRunItem: RunItemSummary | null;
@@ -408,6 +396,8 @@ interface LabActions {
   removeImageSlot: (imageIndex: number) => void;
   setImageSlots: (slots: ImageSlot[]) => void;
   setImages: (images: ImageRef[]) => void;
+  fillFromSampleData: (data: { sampleId: string; images: ImageRef[]; vars?: Record<string, unknown> }) => void;
+  setActiveSampleId: (id: string | null) => void;
   addSlot: () => void;
   removeSlot: (slotId: string) => void;
   updateSlot: (slotId: string, patch: Partial<ImageSlotSpec>) => void;
@@ -446,6 +436,7 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
   templateImageSlotSpecs: [],
   templateVariableSpecs: [],
   variables: {},
+  activeSampleId: null,
   imageResolutionEnabled: false,
   imageResolutionTarget: 1024,
   urlImageTransport: 'auto',
@@ -510,6 +501,24 @@ export const useLabStore = create<LabState & LabActions>((set, get) => ({
         images: migratedImages.map((img, i) => ({ ...img, order: i })),
       };
     }),
+  fillFromSampleData: ({ sampleId, images, vars }) =>
+    set((state) => {
+      const nextVars = { ...buildDefaultVariables(state.templateVariableSpecs) };
+      if (vars && typeof vars === 'object' && !Array.isArray(vars)) {
+        for (const spec of state.templateVariableSpecs) {
+          if (vars[spec.var_id] !== undefined) nextVars[spec.var_id] = toStableVarString(vars[spec.var_id]);
+        }
+      }
+      const { specs, migratedImages } = migrateImagesToSlots(images, state.templateImageSlotSpecs);
+      return {
+        templateImageSlotSpecs: specs,
+        images: migratedImages.map((img, i) => ({ ...img, order: i })),
+        imageSlots: state.imageSlots.filter((slot) => slot.imageIndex < migratedImages.length),
+        variables: nextVars,
+        activeSampleId: sampleId,
+      };
+    }),
+  setActiveSampleId: (id) => set({ activeSampleId: id }),
   setTemplateImageSlotSpecs: (specs) => set({ templateImageSlotSpecs: specs }),
   setTemplateVariableSpecs: (specs) => set({ templateVariableSpecs: specs }),
   setVariable: (varId, value) =>

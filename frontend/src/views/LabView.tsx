@@ -9,7 +9,7 @@ import { PromptPanel } from '../components/lab/PromptPanel';
 import { ResultPanel } from '../components/lab/ResultPanel';
 import { RunHistory } from '../components/lab/RunHistory';
 import { useI18n } from '../i18n';
-import { buildDefaultVariables, type LabViewMode, toStableVarString, useLabStore } from '../store/labStore';
+import { type LabViewMode, useLabStore } from '../store/labStore';
 import type { ImageRef } from '../types';
 
 const MODES: { id: LabViewMode; labelKey: string }[] = [
@@ -22,33 +22,17 @@ export function LabView() {
   const { t } = useI18n();
   const viewMode = useLabStore((state) => state.viewMode);
   const setViewMode = useLabStore((state) => state.setViewMode);
+  const activeSampleId = useLabStore((state) => state.activeSampleId);
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [samplePickerOpen, setSamplePickerOpen] = useState(false);
-  const [activeSampleId, setActiveSampleId] = useState<string | null>(null);
 
-  // Apply a dataset sample: replace Lab images and load its variables. Missing
-  // variables fall back to the task defaults (no residual values from a
-  // previous sample); non-string values are carried as stable JSON strings.
   const applySample = useCallback((sample: api.SampleListItem) => {
-    const state = useLabStore.getState();
-    const nextVars = { ...buildDefaultVariables(state.templateVariableSpecs) };
-    const rawVars = sample.data?.vars;
-    if (rawVars && typeof rawVars === 'object' && !Array.isArray(rawVars)) {
-      const source = rawVars as Record<string, unknown>;
-      for (const spec of state.templateVariableSpecs) {
-        if (source[spec.var_id] === undefined) continue;
-        nextVars[spec.var_id] = toStableVarString(source[spec.var_id]);
-      }
-    }
-    const rawImages = sample.data?.images;
-    state.setImages(Array.isArray(rawImages) ? (rawImages as ImageRef[]) : []);
-    const nextState = useLabStore.getState();
-    nextState.setImageSlots(
-      nextState.imageSlots.filter((slot) => slot.imageIndex < nextState.images.length),
-    );
-    state.setVariables(nextVars);
-    setActiveSampleId(sample.sample_id);
+    useLabStore.getState().fillFromSampleData({
+      sampleId: sample.sample_id,
+      images: Array.isArray(sample.data?.images) ? (sample.data.images as ImageRef[]) : [],
+      vars: sample.data?.vars as Record<string, unknown> | undefined,
+    });
   }, []);
 
   const gridClass =

@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Circle,
   Columns3,
+  FlaskConical,
   GitCompare,
   ImageIcon,
   Loader2,
@@ -32,6 +33,7 @@ import { ReviewStatsPanel } from '../components/results/ReviewStatsPanel';
 import { RunSelector } from '../components/results/RunSelector';
 import type { I18n } from '../i18n';
 import { useI18n } from '../i18n';
+import { useLabStore } from '../store/labStore';
 import type { ImageRef, RequestImage, RunItemSummary } from '../types';
 import { extractBoxes } from '../utils/bbox';
 import { CrossRunAnalysisView } from './CompareView';
@@ -255,6 +257,15 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
     },
     [updateReview],
   );
+  const handleSendToLab = useCallback(() => {
+    if (!detailItem) return;
+    useLabStore.getState().fillFromSampleData({
+      sampleId: detailItem.sample_id,
+      images: extractImagesFromSnapshot(detailItem.internal_request_snapshot),
+      vars: extractVars(detailItem.internal_request_snapshot) ?? undefined,
+    });
+    window.dispatchEvent(new CustomEvent('miko:navigate', { detail: { view: 'lab' } }));
+  }, [detailItem]);
 
   const toggleCompareSelection = useCallback((item: RunItemSummary) => {
     setCompareSelection((prev) => {
@@ -487,6 +498,7 @@ export function ResultsView({ initialRunId }: ResultsViewProps) {
           onAccepted={handleAccepted}
           onRating={handleRating}
           onNotesBlur={handleNotesBlur}
+          onSendToLab={handleSendToLab}
           t={t}
         />
       )}
@@ -586,6 +598,7 @@ interface DetailOverlayProps {
   onAccepted: (item: RunItemSummary, value: boolean | null) => void;
   onRating: (item: RunItemSummary, value: number) => void;
   onNotesBlur: (item: RunItemSummary, value: string) => void;
+  onSendToLab: () => void;
   t: I18n['t'];
 }
 
@@ -600,6 +613,7 @@ function DetailOverlay({
   onAccepted,
   onRating,
   onNotesBlur,
+  onSendToLab,
   t,
 }: DetailOverlayProps) {
   const images = extractImagesFromSnapshot(item.internal_request_snapshot);
@@ -665,6 +679,15 @@ function DetailOverlay({
           <span className="font-mono text-xs text-ink-dim">{item.sample_id}</span>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onSendToLab}
+            className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 bg-surface-950 px-2.5 py-1.5 text-xs text-ink-muted transition-colors hover:border-accent/50 hover:text-accent"
+            title={t('results.sendToLab')}
+          >
+            <FlaskConical size={14} />
+            {t('results.sendToLab')}
+          </button>
           <span className="text-xs text-ink-muted">
             {t('results.position', { current, total })}
           </span>

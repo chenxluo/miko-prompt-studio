@@ -847,11 +847,13 @@ export async function listSamples(
   sampleSetId?: string,
   limit = 100,
   offset = 0,
+  search?: string,
 ): Promise<SampleListItem[]> {
   const params = new URLSearchParams();
   if (sampleSetId) params.set('sample_set_id', sampleSetId);
   params.set('limit', String(limit));
   params.set('offset', String(offset));
+  if (search) params.set('search', search);
   return request<SampleListItem[]>('GET', `/api/samples?${params.toString()}`);
 }
 

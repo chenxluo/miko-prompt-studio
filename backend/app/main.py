@@ -25,7 +25,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import String, cast, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -3004,6 +3004,7 @@ async def _persist_sample_records(
 @app.get("/api/samples")
 async def list_samples(
     sample_set_id: str | None = None,
+    search: str | None = Query(None),
     limit: int = Query(100, ge=1),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -3012,6 +3013,14 @@ async def list_samples(
     stmt = select(SampleRecordORM)
     if sample_set_id:
         stmt = stmt.where(SampleRecordORM.sample_set_id == sample_set_id)
+    if search and search.strip():
+        needle = f"%{search.strip().lower()}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(SampleRecordORM.sample_id).like(needle),
+                func.lower(cast(SampleRecordORM.data, String)).like(needle),
+            )
+        )
     stmt = (
         stmt.order_by(SampleRecordORM.created_at.desc(), SampleRecordORM.id.desc())
         .offset(offset)

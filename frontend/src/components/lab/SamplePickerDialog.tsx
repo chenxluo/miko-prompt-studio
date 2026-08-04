@@ -1,9 +1,12 @@
 import {
   AlertCircle,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Database,
   ImageIcon,
   Loader2,
+  Search,
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -29,26 +32,27 @@ export function SamplePickerDialog({ open, onClose, onApply }: SamplePickerDialo
   const [setsError, setSetsError] = useState<string | null>(null);
   const [selectedSetId, setSelectedSetId] = useState<string | null>(null);
 
-  // Samples are paged in (PAGE_SIZE at a time) so 5k-row sets don't block the
-  // dialog. We append, never overwrite, on "load more" so the user keeps both
-  // already-rendered rows and any selection they made.
   const PAGE_SIZE = 40;
   const [samples, setSamples] = useState<api.SampleListItem[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingSamples, setIsLoadingSamples] = useState(false);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [samplesError, setSamplesError] = useState<string | null>(null);
   const [selectedSampleId, setSelectedSampleId] = useState<string | null>(null);
   const [samplesRetryKey, setSamplesRetryKey] = useState(0);
 
   const closeBtnRef = useRef<HTMLButtonElement>(null);
-  // Mirror of selectedSetId that loadMore can read inside async callbacks to
-  // detect "set switched while this request was in flight".
-  const selectedSetIdRef = useRef<string | null>(null);
   const requestVersionRef = useRef(0);
+
   useEffect(() => {
-    selectedSetIdRef.current = selectedSetId;
-  }, [selectedSetId]);
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchInput.trim());
+      setCurrentPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   // Load sample sets when the dialog opens.
   useEffect(() => {
@@ -56,61 +60,53 @@ export function SamplePickerDialog({ open, onClose, onApply }: SamplePickerDialo
     let cancelled = false;
     setIsLoadingSets(true);
     setSetsError(null);
-    api
-      .listSampleSets()
-      .then((sets) => {
-        if (cancelled) return;
-        setSampleSets(sets);
-        setSelectedSetId((current) => current ?? sets[0]?.sample_set_id ?? null);
-      })
-      .catch((err) => {
-        if (!cancelled) setSetsError(err instanceof Error ? err.message : t('samplePicker.loadFailed'));
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoadingSets(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    api.listSampleSets().then((sets) => {
+      if (cancelled) return;
+      setSampleSets(sets);
+      setSelectedSetId((current) => current ?? sets[0]?.sample_set_id ?? null);
+    }).catch((err) => {
+      if (!cancelled) setSetsError(err instanceof Error ? err.message : t('samplePicker.loadFailed'));
+    }).finally(() => {
+      if (!cancelled) setIsLoadingSets(false);
+    });
+    return () => { cancelled = true; };
   }, [open, t]);
   const selectedSet = useMemo(
     () => sampleSets.find((s) => s.sample_set_id === selectedSetId) ?? null,
     [sampleSets, selectedSetId],
   );
-  // Total rows declared by the set; 0 means "unknown" → fall back to last-page
-  // length heuristic to decide whether more pages might exist.
   const declaredTotal = selectedSet?.record_ids?.length ?? 0;
+  const totalPages = declaredTotal > 0 ? Math.ceil(declaredTotal / PAGE_SIZE) : 0;
+  const isSearching = debouncedSearch.length > 0;
+  const showNext = isSearching ? hasMore : currentPage < totalPages;
+  const showPrev = currentPage > 1;
 
-  // Reset the paged list whenever the user switches sets (or opens fresh).
-  // Race protection: every effect run gets its own `cancelled` flag and only
-  // commits state if it is still the latest run, so a slow first page can't
-  // overwrite a newer set's data.
+  useEffect(() => {
+    setCurrentPage(1);
+    setSearchInput('');
+    setDebouncedSearch('');
+  }, [selectedSetId]);
+
   useEffect(() => {
     const requestVersion = ++requestVersionRef.current;
     if (!open || !selectedSetId) {
       setSamples([]);
-      setHasMore(true);
+      setHasMore(false);
       setSamplesError(null);
       setIsLoadingSamples(false);
-      setIsLoadingMore(false);
       return;
     }
     let cancelled = false;
+    const offset = (currentPage - 1) * PAGE_SIZE;
     setIsLoadingSamples(true);
-    setIsLoadingMore(false);
     setSamplesError(null);
     setSamples([]);
-    setHasMore(true);
     setSelectedSampleId(null);
-    api
-      .listSamples(selectedSetId, PAGE_SIZE, 0)
+    api.listSamples(selectedSetId, PAGE_SIZE, offset, debouncedSearch || undefined)
       .then((records) => {
         if (cancelled || requestVersion !== requestVersionRef.current) return;
         setSamples(records);
-        setHasMore(
-          records.length === PAGE_SIZE
-            && (declaredTotal === 0 || PAGE_SIZE < declaredTotal),
-        );
+        setHasMore(records.length === PAGE_SIZE && (debouncedSearch.length > 0 || declaredTotal === 0 || offset + records.length < declaredTotal));
       })
       .catch((err) => {
         if (cancelled || requestVersion !== requestVersionRef.current) return;
@@ -119,54 +115,8 @@ export function SamplePickerDialog({ open, onClose, onApply }: SamplePickerDialo
       .finally(() => {
         if (!cancelled && requestVersion === requestVersionRef.current) setIsLoadingSamples(false);
       });
-    return () => {
-      cancelled = true;
-    };
-    // declaredTotal is intentionally not a dep — changing it shouldn't refetch;
-    // we only re-derive `hasMore` from it inside the response handler.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, selectedSetId, t, samplesRetryKey]);
-
-  // Append the next page; failures keep previously-loaded rows intact so the
-  // user can retry without losing context.
-  const loadMore = useCallback(() => {
-    if (!selectedSetId || isLoadingMore || isLoadingSamples || !hasMore) return;
-    const offset = samples.length;
-    const requestVersion = requestVersionRef.current;
-    setIsLoadingMore(true);
-    setSamplesError(null);
-    api
-      .listSamples(selectedSetId, PAGE_SIZE, offset)
-      .then((records) => {
-        if (
-          selectedSetId !== selectedSetIdRef.current
-          || requestVersion !== requestVersionRef.current
-        ) return;
-        setSamples((prev) => {
-          // Dedup by sample_id in case a stale request lands after a newer one.
-          const seen = new Set(prev.map((s) => s.sample_id));
-          const next = records.filter((r) => !seen.has(r.sample_id));
-          return [...prev, ...next];
-        });
-        setHasMore(
-          records.length === PAGE_SIZE
-            && (declaredTotal === 0 || offset + records.length < declaredTotal),
-        );
-      })
-      .catch((err) => {
-        if (
-          selectedSetId !== selectedSetIdRef.current
-          || requestVersion !== requestVersionRef.current
-        ) return;
-        setSamplesError(err instanceof Error ? err.message : t('samplePicker.loadFailed'));
-      })
-      .finally(() => {
-        if (
-          selectedSetId === selectedSetIdRef.current
-          && requestVersion === requestVersionRef.current
-        ) setIsLoadingMore(false);
-      });
-  }, [selectedSetId, isLoadingMore, isLoadingSamples, hasMore, samples.length, declaredTotal, t]);
+    return () => { cancelled = true; };
+  }, [open, selectedSetId, debouncedSearch, currentPage, t, samplesRetryKey, declaredTotal]);
 
   const applySample = useCallback(
     (sample: api.SampleListItem) => {
@@ -283,12 +233,22 @@ export function SamplePickerDialog({ open, onClose, onApply }: SamplePickerDialo
               <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-dim">
                 {t('samplePicker.samples')}
               </span>
-              <span className="text-[10px] text-ink-dim">
-                {t('samplePicker.loadedCount', {
-                  loaded: samples.length,
-                  total: declaredTotal > 0 ? declaredTotal : samples.length,
-                })}
-              </span>
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-dim" />
+                  <input
+                    type="text"
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    placeholder={t('samplePicker.searchPlaceholder')}
+                    className="w-40 rounded border border-surface-700 bg-surface-950 py-1 pl-7 pr-7 text-[11px] text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
+                  />
+                  {searchInput ? <button type="button" onClick={() => setSearchInput('')} aria-label="Clear search" className="absolute right-1 top-1/2 -translate-y-1/2 p-1 text-ink-dim hover:text-ink"><X size={12} /></button> : null}
+                </div>
+                <span className="text-[10px] text-ink-dim">
+                  {isSearching ? t('samplePicker.pageOfUnknown', { current: currentPage }) : totalPages > 0 ? t('samplePicker.pageOf', { current: currentPage, total: totalPages }) : t('samplePicker.loadedCount', { loaded: samples.length, total: declaredTotal > 0 ? declaredTotal : samples.length })}
+                </span>
+              </div>
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-2">
               {!selectedSetId ? (
@@ -296,7 +256,7 @@ export function SamplePickerDialog({ open, onClose, onApply }: SamplePickerDialo
               ) : isLoadingSamples ? (
                 <div className="flex items-center gap-2 px-2 py-3 text-xs text-ink-muted">
                   <Loader2 size={14} className="animate-spin" />
-                  {t('samplePicker.loading')}
+                  {isSearching ? t('samplePicker.searching') : t('samplePicker.loading')}
                 </div>
               ) : samplesError && samples.length === 0 ? (
                 <div className="flex flex-col items-start gap-2">
@@ -313,7 +273,7 @@ export function SamplePickerDialog({ open, onClose, onApply }: SamplePickerDialo
                   </button>
                 </div>
               ) : samples.length === 0 ? (
-                <div className="px-2 py-3 text-xs text-ink-dim">{t('samplePicker.noSamples')}</div>
+                <div className="px-2 py-3 text-xs text-ink-dim">{isSearching ? t('samplePicker.noSearchResults') : t('samplePicker.noSamples')}</div>
               ) : (
                 <>
                   <ul className="flex flex-col gap-1.5">
@@ -327,31 +287,10 @@ export function SamplePickerDialog({ open, onClose, onApply }: SamplePickerDialo
                       />
                     ))}
                   </ul>
-                  {hasMore ? (
-                    <div className="mt-2 flex flex-col items-center gap-1">
-                      {samplesError ? (
-                        <div className="flex items-start gap-1.5 text-[10px] text-danger">
-                          <AlertCircle size={12} className="mt-0.5 shrink-0" />
-                          <span>{samplesError}</span>
-                        </div>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={loadMore}
-                        disabled={isLoadingMore}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-surface-700 bg-surface-950 px-3 py-1.5 text-[11px] text-ink-muted transition-colors hover:border-surface-600 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isLoadingMore ? (
- <>
-                            <Loader2 size={12} className="animate-spin" />
-                            {t('samplePicker.loadingMore')}
-                          </>
-                        ) : (
-                          t('samplePicker.loadMore')
-                        )}
-                      </button>
-                    </div>
-                  ) : null}
+                  <div className="mt-2 flex items-center justify-center gap-2">
+                    <button type="button" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={!showPrev || isLoadingSamples} className="inline-flex items-center gap-1 rounded border border-surface-700 px-2 py-1 text-[10px] text-ink-muted disabled:opacity-50"><ChevronLeft size={12} />{t('samplePicker.prevPage')}</button>
+                    <button type="button" onClick={() => setCurrentPage((p) => p + 1)} disabled={!showNext || isLoadingSamples} className="inline-flex items-center gap-1 rounded border border-surface-700 px-2 py-1 text-[10px] text-ink-muted disabled:opacity-50">{t('samplePicker.nextPage')}<ChevronRight size={12} /></button>
+                  </div>
                 </>
               )}
             </div>
