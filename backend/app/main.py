@@ -103,6 +103,7 @@ from app.services.contract_validation import (
     InvalidRow,
     validate_records_against_contract,
 )
+from app.services.cost_stats import collect_version_run_items
 from app.services.html_export import render_run_html
 from app.services.image_persist import (
     persist_request_images,
@@ -1546,36 +1547,7 @@ async def get_task_version_cost_stats(
 ):
     await _get_task_version_or_404(task_id, task_version_id, db)
 
-    sessions_result = await db.execute(
-        select(RunSessionORM).where(
-            RunSessionORM.run_type.in_([RunType.BATCH.value, RunType.LAB.value]),
-            # Include runs that finished with some failures: their succeeded
-            # items still carry real cost data, and the item filter below
-            # already excludes the failed ones.
-            RunSessionORM.status.in_(
-                [
-                    RunSessionStatus.COMPLETED.value,
-                    RunSessionStatus.COMPLETED_WITH_ERRORS.value,
-                ]
-            ),
-        )
-    )
-    sessions = [
-        session
-        for session in sessions_result.scalars().all()
-        if (session.source or {}).get("task_version_id") == task_version_id
-    ]
-    run_ids = [session.run_id for session in sessions]
-
-    items: list[RunItemORM] = []
-    if run_ids:
-        items_result = await db.execute(
-            select(RunItemORM).where(
-                RunItemORM.run_id.in_(run_ids),
-                RunItemORM.status.in_([RunItemType.SUCCEEDED.value, "completed"]),
-            )
-        )
-        items = list(items_result.scalars().all())
+    items = await collect_version_run_items(db, task_version_id)
 
     # Each RunItem is one API *request*; a request can carry several images
     # (item.usage.image_count). The cost calculator denominates by image, so
@@ -1614,7 +1586,7 @@ async def get_task_version_cost_stats(
         "total_cost": total_cost,
         "avg_cost_per_image": avg_cost_per_image,
         "avg_cost_per_request": avg_cost_per_request,
-        "run_count": len(run_ids),
+        "run_count": len({item.run_id for item in items}),
         "sample_count": sample_count,
         "currency": currency,
         "confidence": confidence,
@@ -3422,13 +3394,17 @@ async def serve_sample_image(path: str):
     from fastapi.responses import FileResponse
 
     file_path = Path(path).expanduser()
-    # Security: only allow image files, prevent directory listing
+    # ponytail: media allowlist covers stills + common video containers so
+    # locally-pathed video samples (CSV/JSONL import) preview like images.
+    # gs:// and uploaded videos are served via other routes without a list.
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(404, "Image file not found")
-    # Basic extension check to prevent serving arbitrary files
-    allowed_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
+        raise HTTPException(404, "Media file not found")
+    allowed_suffixes = {
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif",
+        ".mp4", ".mpeg", ".mpg", ".mov", ".avi", ".webm", ".mkv", ".flv", ".3gpp",
+    }
     if file_path.suffix.lower() not in allowed_suffixes:
-        raise HTTPException(403, "Only image files are allowed")
+        raise HTTPException(403, "Only image/video files are allowed")
     return FileResponse(file_path)
 
 
@@ -3455,6 +3431,7 @@ async def list_provider_configs(db: AsyncSession = Depends(get_db)):
             "selected_models": r.selected_models or [],
             "models_cached_at": r.models_cached_at.isoformat() if r.models_cached_at else None,
             "notes": r.notes,
+            "extra_headers": r.extra_headers or {},
             "created_at": r.created_at,
         }
         for r in rows
@@ -3468,6 +3445,7 @@ class SaveProviderConfigPayload(BaseModel):
     api_key: str | None = None  # None on update = keep existing
     selected_models: list[str] = Field(default_factory=list)
     notes: str = ""
+    extra_headers: dict[str, str] = Field(default_factory=dict)
     provider_config_id: str | None = None  # None = create new
     cached_models: list[str] | None = (
         None  # None = keep existing; set to merge manually-added models
@@ -3501,6 +3479,7 @@ async def save_provider_config(
         row.base_url = payload.base_url
         row.selected_models = payload.selected_models
         row.notes = payload.notes
+        row.extra_headers = payload.extra_headers
         if payload.api_key is not None:
             row.api_key_encrypted = _encrypt(payload.api_key)
         if payload.cached_models is not None:
@@ -3517,6 +3496,7 @@ async def save_provider_config(
             api_key_encrypted=encrypted_key,
             selected_models=payload.selected_models,
             notes=payload.notes,
+            extra_headers=payload.extra_headers,
         )
         db.add(row)
 
@@ -3529,6 +3509,7 @@ async def save_provider_config(
         "api_key_set": bool(row.api_key_encrypted),
         "cached_models": row.cached_models or [],
         "selected_models": row.selected_models or [],
+        "extra_headers": row.extra_headers or {},
         "models_cached_at": row.models_cached_at.isoformat() if row.models_cached_at else None,
         "created": payload.provider_config_id is None,
     }

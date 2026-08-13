@@ -500,6 +500,7 @@ class VertexAdapter(BaseAdapter):
         api_key: str,
         base_url: str | None,
         timeout: int,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         payload = dict(provider_request)
         model_id = payload.pop("__vertex_model", "")
@@ -510,6 +511,8 @@ class VertexAdapter(BaseAdapter):
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+        if extra_headers:
+            headers.update(extra_headers)
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             return await client.post(url, headers=headers, json=payload)
 
@@ -519,8 +522,11 @@ class VertexAdapter(BaseAdapter):
         api_key: str,
         base_url: str | None,
         timeout: int,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        async for event in self.send_stream(provider_request, api_key, base_url, timeout):
+        async for event in self.send_stream(
+            provider_request, api_key, base_url, timeout, extra_headers
+        ):
             yield event
 
     async def send_stream(
@@ -529,6 +535,7 @@ class VertexAdapter(BaseAdapter):
         api_key: str,
         base_url: str | None,
         timeout: int,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         payload = dict(provider_request)
         model_id = payload.pop("__vertex_model", "")
@@ -540,6 +547,8 @@ class VertexAdapter(BaseAdapter):
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             async with (
                 httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client,

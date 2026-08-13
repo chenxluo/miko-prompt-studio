@@ -150,7 +150,7 @@ def _summary(items: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(items)
     succeeded = sum(1 for it in items if it["status"] == "succeeded")
     failed = sum(1 for it in items if it["status"] == "failed")
-    latencies = [it["latency_ms"] for it in items if isinstance(it["latency_ms"], (int, float))]
+    latencies = [it["latency_ms"] for it in items if isinstance(it["latency_ms"], int | float)]
     avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else None
     return {
         "total": total,

@@ -26,18 +26,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.provider_config import ProviderConfigORM
 from app.models.result_snapshot import ResultSnapshotORM
-from app.models.run import RunItemORM, RunSessionORM
+from app.models.run import RunItemORM
 from app.models.task import TaskORM, TaskVersionORM
 from app.schemas.common import (
     OutputMode,
-    RunItemType,
-    RunSessionStatus,
-    RunType,
     utc_now,
 )
 from app.schemas.model_config import ModelParameters
 from app.schemas.output_contract import OutputContract
 from app.schemas.prompt import ImageSlotSpec, VariableSpec
+from app.services.cost_stats import collect_version_run_items
 
 _MAX_EXAMPLES = 5
 _USAGE_HIGH = 50
@@ -286,32 +284,11 @@ async def _collect_usage_stats(
 ) -> dict[str, Any]:
     """Aggregate token/cost usage across completed runs of this task version.
 
-    Mirrors the filtering used by the cost-stats endpoint: completed batch/lab
-    sessions whose source points at this version, and their succeeded items.
+    Shares the item-collection logic with the cost-stats endpoint (including
+    compare runs, attributed per-item via compare_axes), so a version exercised
+    only via compare still yields usage/cost data.
     """
-    sessions_result = await db.execute(
-        select(RunSessionORM).where(
-            RunSessionORM.run_type.in_([RunType.BATCH.value, RunType.LAB.value]),
-            RunSessionORM.status.in_(
-                [RunSessionStatus.COMPLETED.value, RunSessionStatus.COMPLETED_WITH_ERRORS.value]
-            ),
-        )
-    )
-    run_ids = [
-        session.run_id
-        for session in sessions_result.scalars().all()
-        if (session.source or {}).get("task_version_id") == task_version_id
-    ]
-
-    items: list[RunItemORM] = []
-    if run_ids:
-        items_result = await db.execute(
-            select(RunItemORM).where(
-                RunItemORM.run_id.in_(run_ids),
-                RunItemORM.status.in_([RunItemType.SUCCEEDED.value, "completed"]),
-            )
-        )
-        items = list(items_result.scalars().all())
+    items = await collect_version_run_items(db, task_version_id)
 
     count = len(items)
 
@@ -340,7 +317,7 @@ async def _collect_usage_stats(
 
     return {
         "sample_count": count,
-        "run_count": len(run_ids),
+        "run_count": len({it.run_id for it in items}),
         "avg_input_tokens": _mean("input_tokens"),
         "avg_output_tokens": _mean("output_tokens"),
         "avg_total_tokens": _mean("total_tokens"),

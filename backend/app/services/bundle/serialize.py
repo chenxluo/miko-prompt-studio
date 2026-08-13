@@ -52,7 +52,7 @@ REGISTRY: dict[str, EntitySpec] = {
         name_col=None,
         fk_cols={},
         secret_cols=("api_key_encrypted",),
-        null_on_export=("base_url", "models_cached_at"),
+        null_on_export=("base_url", "extra_headers", "models_cached_at"),
     ),
     "pricing_profile": EntitySpec(
         kind="pricing_profile",

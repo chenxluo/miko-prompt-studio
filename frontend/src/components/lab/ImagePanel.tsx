@@ -27,11 +27,13 @@ import {
 import * as api from '../../api/client';
 import { useI18n } from '../../i18n';
 import { useLabStore } from '../../store/labStore';
+import { MediaPreview } from '../shared/MediaPreview';
 import type { ImageRef, ImageSlotSpec, ProviderCapability, UploadImageResponse, UrlImageTransport } from '../../types';
 
 interface PreviewState {
   index: number;
   src: string;
+  mime_type?: string | null;
 }
 function imageRefFromUpload(
   uploaded: UploadImageResponse,
@@ -156,20 +158,20 @@ export function ImagePanel() {
     async (files: FileList | null, targetSlotId: string | null) => {
       if (!files || files.length === 0) return;
 
-      const imageFiles = Array.from(files).filter((file) =>
-        file.type.startsWith('image/'),
+      const mediaFiles = Array.from(files).filter(
+        (file) => file.type.startsWith('image/') || file.type.startsWith('video/'),
       );
-      if (imageFiles.length === 0) {
+      if (mediaFiles.length === 0) {
         setUploadError(t('image.uploadImageOnly'));
         return;
       }
 
       setUploadError(null);
-      setUploadingCount((count) => count + imageFiles.length);
+      setUploadingCount((count) => count + mediaFiles.length);
 
       try {
         await Promise.all(
-          imageFiles.map(async (file) => {
+          mediaFiles.map(async (file) => {
             try {
               const uploaded = await api.uploadImage(file);
               placeImageRef(imageRefFromUpload(uploaded, file.name), targetSlotId);
@@ -181,7 +183,7 @@ export function ImagePanel() {
           }),
         );
       } finally {
-        setUploadingCount((count) => Math.max(0, count - imageFiles.length));
+        setUploadingCount((count) => Math.max(0, count - mediaFiles.length));
       }
     },
     [t],
@@ -273,7 +275,7 @@ export function ImagePanel() {
       const image = images[index];
       if (!image) return;
       const src = resolveImageSrc(image);
-      setPreview({ index, src });
+      setPreview({ index, src, mime_type: image.mime_type });
     },
     [images],
   );
@@ -588,7 +590,7 @@ export function ImagePanel() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,video/*"
             multiple
             className="hidden"
             onChange={handleFileSelect}
@@ -612,7 +614,9 @@ export function ImagePanel() {
       {preview && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-surface-950/90 p-6 backdrop-blur"
-          onClick={closePreview}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closePreview();
+          }}
           role="dialog"
           aria-modal="true"
         >
@@ -623,11 +627,11 @@ export function ImagePanel() {
           >
             <X size={18} />
           </button>
-          <img
+          <MediaPreview
             src={preview.src}
+            mime_type={preview.mime_type}
             alt="Preview"
             className="max-h-full max-w-full rounded-lg object-contain shadow-panel"
-            onClick={(event) => event.stopPropagation()}
           />
         </div>
       )}
@@ -821,11 +825,11 @@ function SlotImageGrid({
           className="h-full w-full"
           title={image.display_name ?? image.role ?? ''}
         >
-          <img
+          <MediaPreview
             src={resolveImageSrc(image)}
+            mime_type={image.mime_type}
             alt={image.role ?? ''}
             className="h-full w-full object-contain"
-            loading="lazy"
           />
         </button>
         <div className="absolute right-1 bottom-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -868,11 +872,11 @@ function SlotImageGrid({
               className="h-full w-full overflow-hidden rounded bg-surface-900"
               title={image.display_name ?? image.role ?? ''}
             >
-              <img
+              <MediaPreview
                 src={resolveImageSrc(image)}
+                mime_type={image.mime_type}
                 alt={image.role ?? ''}
                 className="h-full w-full object-cover"
-                loading="lazy"
               />
               {isMore && (
                 <span className="absolute inset-0 flex items-center justify-center bg-surface-950/70 text-xs font-semibold text-ink">
@@ -1100,8 +1104,9 @@ function FocusModeView({
     <div className="flex flex-col gap-3">
       <div className="relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border border-surface-700 bg-surface-950">
         {image ? (
-          <img
+          <MediaPreview
             src={src}
+            mime_type={image.mime_type}
             alt={image.role ?? t('image.fallback', { n: focusIndex + 1 })}
             className="max-h-full max-w-full object-contain"
           />
@@ -1169,11 +1174,11 @@ function FocusModeView({
               ].join(' ')}
               title={thumb.display_name ?? thumb.role ?? t('image.fallback', { n: index + 1 })}
             >
-              <img
+              <MediaPreview
                 src={thumbSrc}
+                mime_type={thumb.mime_type}
                 alt={thumb.role ?? t('image.fallback', { n: index + 1 })}
                 className="h-full w-full object-cover"
-                loading="lazy"
               />
               {selected && <span className="absolute inset-0 bg-accent/10" />}
             </button>

@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api/client';
 import type { UpdateReviewPayload } from '../api/payloads';
 import { resolveImageSrc } from '../components/lab/ImagePanel';
+import { MediaPreview } from '../components/shared/MediaPreview';
 import { AnnotatedImage } from '../components/results/AnnotatedImage';
 import { CollapsibleSection } from '../components/results/CollapsibleSection';
 import {
@@ -28,6 +29,7 @@ import {
   extractReview,
 } from '../components/results/CompareOverlay';
 import { ParsedOutputView } from '../components/results/ParsedOutputView';
+import { CodeBlock } from '../components/shared/CodeBlock';
 import { ReasoningBlock } from '../components/results/ReasoningBlock';
 import { ReviewStatsPanel } from '../components/results/ReviewStatsPanel';
 import { RunSelector } from '../components/results/RunSelector';
@@ -545,11 +547,12 @@ function ResultCard({ item, onClick, selected, compareMode, maxReached }: Result
     >
       <div className="relative h-48 w-full bg-surface-950">
         {src ? (
-          <img
+          <MediaPreview
             src={src}
+            mime_type={firstImage?.mime_type}
             alt=""
             className="h-full w-full object-cover"
-            loading="lazy"
+            controls={false}
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-ink-dim">
@@ -712,6 +715,7 @@ function DetailOverlay({
             <div className="relative min-h-0 flex-1">
               {mainImage && mainSrc ? (
                 mainImageIndex === 0 ? (
+                // ponytail: bbox overlay not supported on video; needs frame-accurate geometry. The primary (index 0) input renders via AnnotatedImage's <img>; non-primary inputs use MediaPreview below.
                   <AnnotatedImage
                     image={mainImage}
                     boxes={boxes}
@@ -720,8 +724,9 @@ function DetailOverlay({
                   />
                 ) : (
                   <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-surface-800 bg-surface-900/50 p-2">
-                    <img
+                    <MediaPreview
                       src={mainSrc}
+                      mime_type={mainImage?.mime_type}
                       alt=""
                       className="max-h-full max-w-full rounded-md object-contain"
                     />
@@ -761,11 +766,12 @@ function DetailOverlay({
                         {index + 1}
                       </span>
                       {src ? (
-                        <img
+                        <MediaPreview
                           src={src}
+                          mime_type={image.mime_type}
                           alt=""
                           className="h-16 w-16 object-cover"
-                          loading="lazy"
+                          controls={false}
                         />
                       ) : (
                         <div className="flex h-16 w-16 items-center justify-center text-ink-dim">
@@ -810,9 +816,7 @@ function DetailOverlay({
               <ReasoningBlock reasoningText={reasoningText} />
 
               <CollapsibleSection title={t('result.raw')} icon={<span className="font-mono text-[10px]">{'{}'}</span>}>
-                <pre className="max-h-96 overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-                  {rawText || t('result.noRawOutput')}
-                </pre>
+                <CodeBlock value={rawText || t('result.noRawOutput')} maxHeight="24rem" />
               </CollapsibleSection>
 
               <CollapsibleSection title={t('results.metadata')}>

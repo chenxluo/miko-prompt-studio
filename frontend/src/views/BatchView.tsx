@@ -23,6 +23,7 @@ import { useEffect, useMemo, useState } from 'react';
 import * as api from '../api/client';
 import { ImagePreviewGrid } from '../components/prompts/ImagePreviewGrid';
 import { resolveImageSrc } from '../components/lab/ImagePanel';
+import { MediaPreview } from '../components/shared/MediaPreview';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
 import { MappingPanel } from '../components/batch/MappingPanel';
@@ -1257,10 +1258,12 @@ function ImageThumbnail({
   }
 
   return (
-    <img
+    <MediaPreview
       src={src}
+      mime_type={first?.mime_type}
       alt=""
       className="h-10 w-10 rounded-md border border-surface-700 object-cover"
+      controls={false}
     />
   );
 }

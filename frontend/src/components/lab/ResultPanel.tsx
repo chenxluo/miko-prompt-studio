@@ -26,6 +26,7 @@ import { AnnotatedImage } from '../results/AnnotatedImage';
 import { CollapsibleSection } from '../results/CollapsibleSection';
 import { ParsedOutputView } from '../results/ParsedOutputView';
 import { ReasoningBlock } from '../results/ReasoningBlock';
+import { CodeBlock } from '../shared/CodeBlock';
 
 export function ResultPanel() {
   const { t } = useI18n();
@@ -138,9 +139,7 @@ export function ResultPanel() {
         <ReasoningBlock reasoningText={reasoningText} />
 
         <CollapsibleSection title={t('result.raw')} defaultOpen={false} icon={<Terminal size={12} />}>
-          <pre className="overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-            {rawText ?? t('result.noRawOutput')}
-          </pre>
+          <CodeBlock value={rawText ?? t('result.noRawOutput')} />
         </CollapsibleSection>
 
         <div className="flex flex-col gap-1.5">
@@ -160,6 +159,7 @@ export function ResultPanel() {
                 {boxes.length}
               </span>
             </div>
+            {/* ponytail: bbox overlay not supported on video; needs frame-accurate geometry. Video inputs render via AnnotatedImage's <img> and won't play here. */}
             <AnnotatedImage image={annotatedImage} boxes={boxes} />
           </div>
         )}

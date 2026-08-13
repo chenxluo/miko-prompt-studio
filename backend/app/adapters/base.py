@@ -59,6 +59,7 @@ class BaseAdapter(ABC):
         api_key: str,
         base_url: str | None,
         timeout: int,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         """Send the provider request and return the raw HTTP response."""
 
@@ -69,6 +70,7 @@ class BaseAdapter(ABC):
         api_key: str,
         base_url: str | None,
         timeout: int,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Send the provider request and yield normalized streaming events."""
 
@@ -121,6 +123,7 @@ class BaseAdapter(ABC):
         api_key: str,
         base_url: str | None = None,
         timeout: int = 120,
+        extra_headers: dict[str, str] | None = None,
     ) -> AdapterResult:
         """Build, send, parse, and normalize a single provider API call."""
 
@@ -134,7 +137,7 @@ class BaseAdapter(ABC):
                 return blocked
             provider_request = self.build_provider_request(request)
             snapshot = self.redact_provider_request(provider_request)
-            response = await self.send(provider_request, api_key, base_url, timeout)
+            response = await self.send(provider_request, api_key, base_url, timeout, extra_headers)
 
             if response.is_error:
                 error = self.normalize_error(response=response, exception=None)
@@ -170,6 +173,7 @@ class BaseAdapter(ABC):
         api_key: str,
         base_url: str | None = None,
         timeout: int = 120,
+        extra_headers: dict[str, str] | None = None,
         on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     ) -> AdapterResult:
         """Build, stream, accumulate, and normalize a provider API call."""
@@ -186,7 +190,7 @@ class BaseAdapter(ABC):
             provider_request["stream"] = True
             snapshot = self.redact_provider_request(provider_request)
             return await self._result_from_stream_events(
-                self.stream(provider_request, api_key, base_url, timeout),
+                self.stream(provider_request, api_key, base_url, timeout, extra_headers),
                 request=request,
                 started=started,
                 provider_request_snapshot=snapshot,

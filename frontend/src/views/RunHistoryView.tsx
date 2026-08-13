@@ -20,6 +20,7 @@ import ReactMarkdown from 'react-markdown';
 
 import * as api from '../api/client';
 import { AnnotatedImage } from '../components/results/AnnotatedImage';
+import { CodeBlock } from '../components/shared/CodeBlock';
 import { useI18n } from '../i18n';
 import type { RunItemSummary, RunSessionStatus, RunType } from '../types';
 import { extractBoxes, extractFirstInputImage } from '../utils/bbox';
@@ -750,6 +751,7 @@ function RunItemModal({ item, onClose }: RunItemModalProps) {
               <div className="mb-1 text-xs font-medium text-ink-muted">
                 {t('result.bboxOverlay')}
               </div>
+              {/* ponytail: bbox overlay not supported on video; needs frame-accurate geometry. Video inputs render via AnnotatedImage's <img> and won't play here. */}
               <AnnotatedImage image={inputImage} boxes={boxes} maxHeight="40vh" />
             </div>
           )}
@@ -757,18 +759,14 @@ function RunItemModal({ item, onClose }: RunItemModalProps) {
           {rawText && (
             <div>
               <div className="mb-1 text-xs font-medium text-ink-muted">{t('history.rawText')}</div>
-              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-                {rawText}
-              </pre>
+              <CodeBlock value={rawText} maxHeight="16rem" />
             </div>
           )}
 
           {parsed !== undefined && parseStatus !== 'not_parsed' && parseStatus !== 'parse_failed' && (
             <div>
               <div className="mb-1 text-xs font-medium text-ink-muted">{t('history.parsed')}</div>
-              <pre className="max-h-64 overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-                {formatParsedOutput(parsed)}
-              </pre>
+              <CodeBlock value={parsed} maxHeight="16rem" />
             </div>
           )}
 
@@ -809,9 +807,7 @@ function RunItemModal({ item, onClose }: RunItemModalProps) {
           {error && (
             <div className="rounded-md border border-danger/20 bg-danger/5 p-3">
               <div className="mb-1 text-xs font-medium text-danger">{t('history.error')}</div>
-              <pre className="overflow-auto rounded-md bg-surface-950 p-2 font-mono text-[11px] text-ink">
-                {formatParsedOutput(error)}
-              </pre>
+              <CodeBlock value={error} />
             </div>
           )}
         </div>
@@ -988,14 +984,5 @@ function formatTokens(usage: Record<string, unknown> | undefined): string {
 function formatNumber(value: unknown): string | number {
   if (typeof value === 'number') return value.toLocaleString();
   return '—';
-}
-
-function formatParsedOutput(parsed: unknown): string {
-  if (typeof parsed === 'string') return parsed;
-  try {
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return String(parsed);
-  }
 }
 

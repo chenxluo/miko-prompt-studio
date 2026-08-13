@@ -24,6 +24,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import * as api from '../api/client';
 import { SaveTaskDialog, type SaveTaskDialogPrefill } from '../components/lab/SaveTaskDialog';
 import { resolveImageUrl } from '../components/lab/ImagePanel';
+import { MediaPreview } from '../components/shared/MediaPreview';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
 import { MappingPanel } from '../components/batch/MappingPanel';
@@ -2218,12 +2219,13 @@ function DiffDetailPanel({
                 {t('batch.inputImages')}
               </span>
               {sharedImages.map((image, index) => (
-                <img
+                <MediaPreview
                   key={`${image.uri}-${index}`}
                   src={resolveImageUrl(image.uri)}
+                  mime_type={image.mime_type}
                   alt={image.display_name || `${row.sample_id} ${index + 1}`}
-                  title={image.display_name || image.role || ''}
                   className="h-12 w-12 shrink-0 rounded border border-surface-700 object-cover"
+                  controls={false}
                 />
               ))}
             </div>
@@ -2425,11 +2427,12 @@ function getCrossRunImages(item: RunItemSummary | undefined): Array<{
   uri: string;
   display_name?: string;
   role?: string;
+  mime_type?: string;
 }> {
   const images = item?.internal_request_snapshot?.images;
   if (!Array.isArray(images)) return [];
   return images.filter(
-    (image): image is { uri: string; display_name?: string; role?: string } =>
+    (image): image is { uri: string; display_name?: string; role?: string; mime_type?: string } =>
       Boolean(image) &&
       typeof image === 'object' &&
       typeof (image as { uri?: unknown }).uri === 'string',

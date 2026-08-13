@@ -209,6 +209,7 @@ export interface ProviderConfig {
   selected_models: string[];
   models_cached_at: string | null;
   notes: string;
+  extra_headers: Record<string, string>;
   created_at: string;
 }
 
@@ -221,6 +222,7 @@ export interface SaveProviderConfigPayload {
   notes?: string;
   provider_config_id?: string | null;
   cached_models?: string[] | null;
+  extra_headers?: Record<string, string> | null;
 }
 
 export async function listProviderConfigs(): Promise<ProviderConfig[]> {
@@ -237,6 +239,7 @@ export async function saveProviderConfig(
   api_key_set: boolean;
   cached_models: string[];
   selected_models: string[];
+  extra_headers: Record<string, string>;
   models_cached_at: string | null;
   created: boolean;
 }> {
@@ -249,6 +252,7 @@ export async function saveProviderConfig(
       api_key_set: boolean;
       cached_models: string[];
       selected_models: string[];
+      extra_headers: Record<string, string>;
       models_cached_at: string | null;
       created: boolean;
     }

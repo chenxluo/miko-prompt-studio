@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import math
+import mimetypes
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -21,6 +22,10 @@ from app.schemas.sample_record import ImageMetadata, ImageRef
 
 _FORMAT_TO_MIME = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
 _EXT_TO_FORMAT = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}
+_VIDEO_MIME_PREFIX = "video/"
+_VIDEO_EXTENSIONS = {
+    ".mp4", ".mpeg", ".mpg", ".mov", ".avi", ".flv", ".webm", ".wmv", ".3gpp", ".mkv",
+}
 
 
 def preprocess_image(
@@ -60,6 +65,41 @@ def preprocess_image(
     if not source_path.exists():
         raise FileNotFoundError(f"Image file not found: {source_path}")
     cache_dir.mkdir(parents=True, exist_ok=True)
+    # ponytail: video bypass — PIL cannot decode video, so read the raw bytes
+    # and build an inline data: URI with no transcode/resize/EXIF. Inline base64
+    # bloats snapshots for large files; gs:// direct transport is the escape
+    # hatch for big videos. (width/height stay None — PIL is never called.)
+    if (image_ref.mime_type or "").startswith(_VIDEO_MIME_PREFIX) or (
+        source_path.suffix.lower() in _VIDEO_EXTENSIONS
+    ):
+        video_mime = (
+            image_ref.mime_type
+            or mimetypes.guess_type(source_path.name)[0]
+            or "video/mp4"
+        )
+        data_uri = image_to_data_uri(source_path, video_mime)
+        digest = hashlib.sha256()
+        with source_path.open("rb") as video_file:
+            for chunk in iter(lambda: video_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return RequestImage(
+            request_image_id=f"rimg_{uuid4().hex}",
+            source_image_id=image_ref.image_id,
+            role=image_ref.role,
+            path=str(source_path),
+            source_uri=image_ref.uri,
+            mime_type=image_ref.mime_type,
+            order=image_ref.order,
+            preprocess=config,
+            resolved=ResolvedImage(
+                uri=data_uri,
+                mime_type=video_mime,
+                file_size=source_path.stat().st_size,
+                sha256=digest.hexdigest(),
+                transport=ImageTransportKind.INLINE_DATA,
+                transport_reason="local_video_passthrough",
+            ),
+        )
 
     try:
         with Image.open(source_path) as opened:

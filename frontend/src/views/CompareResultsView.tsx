@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api/client';
 import type { UpdateReviewPayload } from '../api/payloads';
 import { resolveImageSrc } from '../components/lab/ImagePanel';
+import { MediaPreview } from '../components/shared/MediaPreview';
 import {
   CompareOverlay,
   ReviewBadge,
@@ -267,8 +268,9 @@ export function CompareResultsView({ initialRunId }: CompareResultsViewProps) {
                         <div className="flex h-96 flex-col gap-2">
                           {rowImageSrc ? (
                             <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-surface-800 bg-surface-900">
-                              <img
+                              <MediaPreview
                                 src={rowImageSrc}
+                                mime_type={rowImage?.mime_type}
                                 alt=""
                                 className="h-full w-full object-contain"
                               />

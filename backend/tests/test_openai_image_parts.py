@@ -30,3 +30,38 @@ def test_openai_content_interleaves_repeated_missing_and_unreferenced_images() -
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,CCCC"}},
     ]
+
+
+
+def test_openai_content_emits_video_url_for_video_assets() -> None:
+    adapter = OpenAICompatAdapter()
+    video = RequestImage(
+        request_image_id="v0",
+        order=0,
+        resolved=ResolvedImage(
+            uri="data:video/mp4;base64,AAAA", mime_type="video/mp4"
+        ),
+    )
+
+    content = adapter._build_user_content("{{image:0}}", [video])
+
+    assert content == [
+        {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+    ]
+
+
+def test_openai_content_image_only_assets_still_use_image_url() -> None:
+    adapter = OpenAICompatAdapter()
+    image = RequestImage(
+        request_image_id="i0",
+        order=0,
+        resolved=ResolvedImage(
+            uri="data:image/png;base64,BBBB", mime_type="image/png"
+        ),
+    )
+
+    content = adapter._build_user_content("{{image:0}}", [image])
+
+    assert content == [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBBB"}},
+    ]

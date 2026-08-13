@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.common import TimestampedModel
 
@@ -41,6 +41,20 @@ class ImageRef(BaseModel):
     display_name: str | None = None
     order: int = 0
     metadata: ImageMetadata = Field(default_factory=ImageMetadata)
+
+    @model_validator(mode="after")
+    def _coerce_url_path_to_uri(self) -> ImageRef:
+        """``path`` is for local filesystem paths; a URL or ``data:`` URI that
+        landed there (e.g. a JSONL import recording the source URL under
+        ``path``) is moved to ``uri``. Otherwise preprocess_image treats the
+        URL as a missing local file and raises FileNotFoundError. This also
+        normalizes already-imported rows on load, so no re-import is needed."""
+        p = self.path
+        if isinstance(p, str) and p.strip().startswith(("http://", "https://", "data:")):
+            if not self.uri:
+                self.uri = p.strip()
+            self.path = None
+        return self
 
 
 class SampleRecord(BaseModel):

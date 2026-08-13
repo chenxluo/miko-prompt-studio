@@ -40,6 +40,7 @@ import { TaskGroupFilter } from '../components/tasks/TaskGroupFilter';
 import { TaskGroupManager } from '../components/tasks/TaskGroupManager';
 import { TaskListCard } from '../components/tasks/TaskListCard';
 import { resolveImageUrl } from '../components/lab/ImagePanel';
+import { MediaPreview } from '../components/shared/MediaPreview';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
 import { copyText } from '../utils/clipboard';
@@ -1431,11 +1432,13 @@ function ExampleSnapshotCard({
               </div>
             ) : (
               images.slice(0, 4).map((image, index) => (
-                <img
+                <MediaPreview
                   key={index}
                   src={resolveImageUrl(image.uri)}
+                  mime_type={image.mime_type}
                   alt={image.display_name || ''}
                   className="h-16 w-16 shrink-0 rounded-md border border-surface-800 object-cover"
+                  controls={false}
                 />
               ))
             )}
@@ -1541,11 +1544,13 @@ function ExampleDetailView({
         ) : (
           <div className="flex flex-wrap gap-3">
             {images.map((image, index) => (
-              <img
+              <MediaPreview
                 key={index}
                 src={resolveImageUrl(image.uri)}
+                mime_type={image.mime_type}
                 alt={image.display_name || ''}
                 className="h-32 w-32 rounded-md border border-surface-800 object-cover"
+                controls={false}
               />
             ))}
           </div>
@@ -1712,6 +1717,7 @@ interface SnapshotImage {
   uri?: string;
   display_name?: string;
   role?: string;
+  mime_type?: string;
 }
 
 function SnapshotLinkPickerModal({
@@ -1801,10 +1807,11 @@ function SnapshotLinkPickerModal({
                 >
                   <div className="flex min-w-0 items-start gap-3">
                     {snapshot.thumbnail_image_uri ? (
-                      <img
+                      <MediaPreview
                         src={resolveImageUrl(snapshot.thumbnail_image_uri)}
                         alt={snapshot.name}
                         className="h-10 w-10 shrink-0 rounded-md border border-surface-800 object-cover"
+                        controls={false}
                       />
                     ) : (
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-surface-800 bg-surface-900">

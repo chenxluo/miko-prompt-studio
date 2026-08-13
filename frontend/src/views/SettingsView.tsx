@@ -22,6 +22,7 @@ export function SettingsView() {
   const [newConfigBaseUrl, setNewConfigBaseUrl] = useState('');
   const [newConfigApiKey, setNewConfigApiKey] = useState('');
   const [newConfigNotes, setNewConfigNotes] = useState('');
+  const [newConfigExtraHeaders, setNewConfigExtraHeaders] = useState('');
 
   // Inline edit state
   const [editingConfigId, setEditingConfigId] = useState<string | null>(null);
@@ -29,6 +30,7 @@ export function SettingsView() {
   const [editBaseUrl, setEditBaseUrl] = useState('');
   const [editApiKey, setEditApiKey] = useState('');
   const [editNotes, setEditNotes] = useState('');
+  const [editExtraHeaders, setEditExtraHeaders] = useState('');
   const [editSaving, setEditSaving] = useState(false);
 
   // Manual model-add state (per config)
@@ -76,6 +78,7 @@ export function SettingsView() {
 
   const selectedMeta = providers.find((p) => p.adapter_id === newConfigAdapter);
   const requiresBaseUrl = selectedMeta?.requires_base_url ?? false;
+  const newExtraHeadersValid = parseExtraHeaders(newConfigExtraHeaders) !== null;
   const selectedPricingConfig = providerConfigs.find(
     (config) => config.provider_config_id === pricingProviderConfigId,
   );
@@ -108,12 +111,14 @@ export function SettingsView() {
         api_key: newConfigApiKey.trim() || null,
         selected_models: [],
         notes: newConfigNotes.trim(),
+        extra_headers: parseExtraHeaders(newConfigExtraHeaders) ?? {},
       });
       setNewConfigName('');
       setNewConfigAdapter('');
       setNewConfigBaseUrl('');
       setNewConfigApiKey('');
       setNewConfigNotes('');
+      setNewConfigExtraHeaders('');
       setConfigSavedFlash(true);
       setTimeout(() => setConfigSavedFlash(false), 2000);
       await loadProviderConfigs();
@@ -126,6 +131,7 @@ export function SettingsView() {
     newConfigBaseUrl,
     newConfigApiKey,
     newConfigNotes,
+    newConfigExtraHeaders,
     requiresBaseUrl,
     loadProviderConfigs,
   ]);
@@ -179,6 +185,7 @@ export function SettingsView() {
           api_key: null,
           selected_models: next,
           notes: config.notes,
+          extra_headers: config.extra_headers ?? {},
         });
         await loadProviderConfigs();
       } catch (err) {
@@ -207,6 +214,7 @@ export function SettingsView() {
           api_key: null,
           selected_models: allModels,
           notes: config.notes,
+          extra_headers: config.extra_headers ?? {},
         });
         await loadProviderConfigs();
       } catch (err) {
@@ -236,6 +244,7 @@ export function SettingsView() {
           api_key: null,
           selected_models: inverted,
           notes: config.notes,
+          extra_headers: config.extra_headers ?? {},
         });
         await loadProviderConfigs();
       } catch (err) {
@@ -255,6 +264,7 @@ export function SettingsView() {
     setEditBaseUrl(config.base_url ?? '');
     setEditApiKey('');
     setEditNotes(config.notes ?? '');
+    setEditExtraHeaders(config.extra_headers ? JSON.stringify(config.extra_headers, null, 2) : '');
   }, []);
 
   const cancelEdit = useCallback(() => {
@@ -263,6 +273,7 @@ export function SettingsView() {
     setEditBaseUrl('');
     setEditApiKey('');
     setEditNotes('');
+    setEditExtraHeaders('');
   }, []);
 
   const handleSaveEdit = useCallback(
@@ -284,6 +295,7 @@ export function SettingsView() {
           api_key: editApiKey.trim() || null,
           selected_models: config.selected_models ?? [],
           notes: editNotes.trim(),
+          extra_headers: parseExtraHeaders(editExtraHeaders) ?? {},
         });
         cancelEdit();
         await loadProviderConfigs();
@@ -293,7 +305,7 @@ export function SettingsView() {
         setEditSaving(false);
       }
     },
-    [editName, editBaseUrl, editApiKey, editNotes, providers, cancelEdit, loadProviderConfigs],
+    [editName, editBaseUrl, editApiKey, editNotes, providers, cancelEdit, loadProviderConfigs, editExtraHeaders],
   );
 
   const handleAddModel = useCallback(
@@ -312,6 +324,7 @@ export function SettingsView() {
           api_key: null,
           selected_models: config.selected_models ?? [],
           notes: config.notes,
+          extra_headers: config.extra_headers ?? {},
           cached_models: merged,
         });
         setManualModelInput((prev) => ({ ...prev, [config.provider_config_id]: '' }));
@@ -483,6 +496,7 @@ export function SettingsView() {
                             api_key: null,
                             selected_models: [],
                             notes: config.notes,
+            extra_headers: config.extra_headers ?? {},
                           }).then(loadProviderConfigs).catch((err: unknown) => {
                             setConfigError(err instanceof Error ? err.message : 'Failed to save selected models');
                           })}
@@ -613,12 +627,29 @@ export function SettingsView() {
                       onChange={(e) => setEditNotes(e.target.value)}
                       className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
                     />
+                    <div className="sm:col-span-2">
+                      <textarea
+                        rows={3}
+                        spellCheck={false}
+                        placeholder={t('settings.extraHeadersHint')}
+                        value={editExtraHeaders}
+                        onChange={(e) => setEditExtraHeaders(e.target.value)}
+                        className={`rounded-md border bg-surface-800 px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-dim focus:outline-none ${
+                          parseExtraHeaders(editExtraHeaders) === null
+                            ? 'border-danger focus:border-danger'
+                            : 'border-surface-700 focus:border-accent'
+                        }`}
+                      />
+                      {parseExtraHeaders(editExtraHeaders) === null && (
+                        <p className="mt-1 text-xs text-danger">{t('settings.extraHeadersError')}</p>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => void handleSaveEdit(config)}
-                      disabled={editSaving || !editName.trim()}
+                      disabled={editSaving || !editName.trim() || parseExtraHeaders(editExtraHeaders) === null}
                       className="btn-primary disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {editSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
@@ -705,13 +736,31 @@ export function SettingsView() {
             onChange={(e) => setNewConfigNotes(e.target.value)}
             className="rounded-md border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none"
           />
+          <div className="sm:col-span-2">
+            <textarea
+              rows={3}
+              spellCheck={false}
+              placeholder={t('settings.extraHeadersHint')}
+              value={newConfigExtraHeaders}
+              onChange={(e) => setNewConfigExtraHeaders(e.target.value)}
+              className={`rounded-md border bg-surface-800 px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-dim focus:outline-none ${
+                !newExtraHeadersValid
+                  ? 'border-danger focus:border-danger'
+                  : 'border-surface-700 focus:border-accent'
+              }`}
+            />
+            {!newExtraHeadersValid && (
+              <p className="mt-1 text-xs text-danger">{t('settings.extraHeadersError')}</p>
+            )}
+          </div>
         </div>
         <button
           onClick={handleSaveConfig}
           disabled={
             !newConfigName.trim() ||
             !newConfigAdapter.trim() ||
-            (requiresBaseUrl && !newConfigBaseUrl.trim())
+            (requiresBaseUrl && !newConfigBaseUrl.trim()) ||
+            !newExtraHeadersValid
           }
           className="btn-primary disabled:cursor-not-allowed disabled:opacity-40"
         >
@@ -1108,6 +1157,26 @@ function MigrationSection() {
       </div>
     </>
   );
+}
+
+function parseExtraHeaders(raw: string): Record<string, string> | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value !== 'string') return null;
+    result[key] = value;
+  }
+  return result;
 }
 
 function formatCacheTime(value: string): string {

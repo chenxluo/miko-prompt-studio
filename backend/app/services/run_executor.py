@@ -243,6 +243,7 @@ async def execute_lab_run(
         adapter = get_adapter(request.model_config.adapter_id)
     # Resolve API key: prefer provider_config_id, fall back to provider_id
     api_key = None
+    extra_headers: dict[str, str] | None = None
     if request.provider_config_id:
         from app.core.security import decrypt_value as _decrypt
         from app.models.provider_config import ProviderConfigORM
@@ -252,8 +253,11 @@ async def execute_lab_run(
         )
         pc_result = await db.execute(pc_stmt)
         pc_orm = pc_result.scalar_one_or_none()
-        if pc_orm and pc_orm.api_key_encrypted:
-            api_key = _decrypt(pc_orm.api_key_encrypted)
+        if pc_orm:
+            if pc_orm.api_key_encrypted:
+                api_key = _decrypt(pc_orm.api_key_encrypted)
+            if pc_orm.extra_headers:
+                extra_headers = pc_orm.extra_headers
 
     if not api_key:
         api_key = await get_api_key(db, request.model_config.provider_id)
@@ -275,6 +279,9 @@ async def execute_lab_run(
         # adapters work fine from this point on.
         adapter = get_adapter(request.model_config.adapter_id)
     should_stream = request.model_config.parameters.stream is True
+    # Forward extra_headers only when set; adapters without the kwarg (e.g.
+    # test fakes) keep working unchanged.
+    extra_kw = {"extra_headers": extra_headers} if extra_headers else {}
     if should_stream:
 
         async def forward_stream_event(event: StreamEvent) -> None:
@@ -287,6 +294,7 @@ async def execute_lab_run(
             base_url=request.api_base_url,
             timeout=internal_request.runtime.timeout_seconds,
             on_event=forward_stream_event,
+            **extra_kw,
         )
     else:
         result = await adapter.execute(
@@ -294,6 +302,7 @@ async def execute_lab_run(
             api_key=api_key,
             base_url=request.api_base_url,
             timeout=internal_request.runtime.timeout_seconds,
+            **extra_kw,
         )
 
     # 6. Parse the response --------------------------------------------------

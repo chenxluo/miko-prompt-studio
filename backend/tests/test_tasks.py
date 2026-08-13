@@ -289,3 +289,90 @@ def test_task_version_cost_stats_aggregates_completed_run_items(client: TestClie
     assert stats["sample_count"] == 3
     assert stats["currency"] == "CNY"
     assert stats["confidence"] == "low"
+
+
+def test_task_version_cost_stats_includes_compare_runs(client: TestClient) -> None:
+    """A version exercised only via compare runs must still get a cost estimate.
+    Compare items are attributed per-item via compare_axes.task_version_id, and
+    only that version's items are counted (no leakage from sibling variants)."""
+    provider_config_id = _provider(client)
+    created = client.post(
+        "/api/tasks",
+        json={
+            "name": "Compare Cost Task",
+            "description": "",
+            "tags": [],
+            "version": _version(provider_config_id),
+        },
+    )
+    task = created.json()
+    task_id = task["task_id"]
+    version_id = task["current_version"]["task_version_id"]
+    # A sibling variant sharing the same compare run — its cost must NOT leak in.
+    other_version_id = "tv_other_compare_variant"
+
+    async def seed_compare() -> None:
+        from app.database import get_session_factory
+        from app.models.run import RunItemORM, RunSessionORM
+
+        now = utc_now().isoformat()
+        factory = get_session_factory()
+        async with factory() as db:
+            db.add(
+                RunSessionORM(
+                    run_id="run_cmp",
+                    run_type=RunType.COMPARE.value,
+                    name="Compare run",
+                    status=RunSessionStatus.COMPLETED.value,
+                    started_at=now,
+                    completed_at=now,
+                    source={
+                        "mode": "compare",
+                        "variants": [
+                            {"label": "A", "task_version_id": version_id},
+                            {"label": "B", "task_version_id": other_version_id},
+                        ],
+                    },
+                )
+            )
+            # Belongs to the target version → counted.
+            db.add(
+                RunItemORM(
+                    run_item_id="ritem_cmp_a",
+                    run_id="run_cmp",
+                    sample_id="s1",
+                    status=RunItemType.SUCCEEDED.value,
+                    completed_at=now,
+                    estimated_cost=0.50,
+                    usage={"image_count": 2},
+                    pricing_snapshot={"currency": "CNY"},
+                    compare_axes={"task_version_id": version_id, "config_label": "A"},
+                )
+            )
+            # Belongs to the sibling variant → must be excluded.
+            db.add(
+                RunItemORM(
+                    run_item_id="ritem_cmp_b",
+                    run_id="run_cmp",
+                    sample_id="s1",
+                    status=RunItemType.SUCCEEDED.value,
+                    completed_at=now,
+                    estimated_cost=9.99,
+                    usage={"image_count": 2},
+                    pricing_snapshot={"currency": "CNY"},
+                    compare_axes={"task_version_id": other_version_id, "config_label": "B"},
+                )
+            )
+            await db.commit()
+
+    asyncio.run(seed_compare())
+
+    response = client.get(f"/api/tasks/{task_id}/versions/{version_id}/cost-stats")
+    assert response.status_code == 200, response.text
+    stats = response.json()
+    assert stats["total_requests"] == 1
+    assert stats["total_cost"] == pytest.approx(0.50)
+    assert stats["total_images"] == 2
+    assert stats["run_count"] == 1
+    assert stats["currency"] == "CNY"
+    assert stats["confidence"] == "low"

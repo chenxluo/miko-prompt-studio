@@ -2,6 +2,7 @@ import { AlertTriangle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 import { useI18n } from '../../i18n';
+import { CodeBlock } from '../shared/CodeBlock';
 
 interface ParsedOutputViewProps {
   parsed: unknown;
@@ -34,9 +35,7 @@ export function ParsedOutputView({
 
   if (parseStatus === 'parsed' && parsed !== undefined) {
     return (
-      <pre className="overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-        {formatParsedOutput(parsed)}
-      </pre>
+      <CodeBlock value={parsed} />
     );
   }
 
@@ -48,9 +47,7 @@ export function ParsedOutputView({
           {t('result.partiallyParsed')}
         </div>
         {parsed !== undefined && (
-          <pre className="mt-2 overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-            {formatParsedOutput(parsed)}
-          </pre>
+          <CodeBlock value={parsed} className="mt-2" />
         )}
       </div>
     );
@@ -63,11 +60,3 @@ export function ParsedOutputView({
   );
 }
 
-function formatParsedOutput(parsed: unknown): string {
-  if (typeof parsed === 'string') return parsed;
-  try {
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return String(parsed);
-  }
-}

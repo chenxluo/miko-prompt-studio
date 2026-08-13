@@ -17,6 +17,7 @@ import { toStableVarString } from '../../store/labStore';
 import type { ImageRef } from '../../types';
 
 import { resolveImageSrc } from './ImagePanel';
+import { MediaPreview } from '../shared/MediaPreview';
 
 interface SamplePickerDialogProps {
   open: boolean;
@@ -354,12 +355,12 @@ function SampleRow({ sample, selected, onSelect, onApplySample }: SampleRowProps
       >
         <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-surface-700 bg-surface-950">
           {firstImage ? (
-            <img
+            <MediaPreview
               src={resolveImageSrc(firstImage)}
+              mime_type={firstImage.mime_type}
               alt=""
-              loading="lazy"
-              decoding="async"
               className="h-full w-full object-cover"
+              controls={false}
             />
           ) : (
             <ImageIcon size={16} className="text-ink-dim" />

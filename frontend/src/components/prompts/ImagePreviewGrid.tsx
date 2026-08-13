@@ -2,6 +2,7 @@ import { ImageIcon, X } from 'lucide-react';
 import { useState } from 'react';
 
 import { resolveImageSrc } from '../../components/lab/ImagePanel';
+import { MediaPreview } from '../shared/MediaPreview';
 import type { ImageRef } from '../../types';
 
 interface ImagePreviewGridProps {
@@ -15,7 +16,7 @@ export function ImagePreviewGrid({
   maxVisible = 4,
   size = 'sm',
 }: ImagePreviewGridProps) {
-  const [preview, setPreview] = useState<{ src: string; name: string } | null>(null);
+  const [preview, setPreview] = useState<{ src: string; name: string; mime_type?: string | null } | null>(null);
 
   const validImages = images.filter((img) => img && (img.uri || img.path));
   if (validImages.length === 0) return null;
@@ -39,16 +40,17 @@ export function ImagePreviewGrid({
             <button
               key={`${src}-${index}`}
               type="button"
-              onClick={() => setPreview({ src, name })}
+              onClick={() => setPreview({ src, name, mime_type: image.mime_type })}
               className={`${sizeClasses} overflow-hidden rounded-md border border-surface-700 bg-surface-950 transition-colors hover:border-surface-500`}
               title={tooltip}
             >
               {src ? (
-                <img
+                <MediaPreview
                   src={src}
+                  mime_type={image.mime_type}
                   alt={name}
                   className="h-full w-full object-cover"
-                  loading="lazy"
+                  controls={false}
                 />
               ) : (
                 <div className="flex h-full w-full items-center justify-center text-ink-dim">
@@ -80,12 +82,14 @@ export function ImagePreviewGrid({
           >
             <X size={18} />
           </button>
-          <img
-            src={preview.src}
-            alt={preview.name}
-            className="max-h-full max-w-full rounded-lg object-contain shadow-panel"
-            onClick={(event) => event.stopPropagation()}
-          />
+          <div onClick={(event) => event.stopPropagation()}>
+            <MediaPreview
+              src={preview.src}
+              mime_type={preview.mime_type}
+              alt={preview.name}
+              className="max-h-full max-w-full rounded-lg object-contain shadow-panel"
+            />
+          </div>
         </div>
       )}
     </>

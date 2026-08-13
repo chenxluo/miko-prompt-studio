@@ -26,6 +26,7 @@ class ProviderConfigORM(Base):
     selected_models: Mapped[list[str]] = mapped_column(JSON, default=list)
     models_cached_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="")
+    extra_headers: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     created_at: Mapped[str] = mapped_column(
         String, default=lambda: utc_now().isoformat()
     )

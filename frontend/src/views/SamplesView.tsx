@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from 'react';
 import * as api from '../api/client';
 import { CopyReferenceButton } from '../components/CopyReferenceButton';
 import { ImportDialog } from '../components/samples/ImportDialog';
+import { MediaPreview } from '../components/shared/MediaPreview';
 import { useI18n } from '../i18n';
 import type { ImageRef } from '../types';
 
@@ -504,7 +505,7 @@ function SampleSetDetail({
 function ImageThumbnails({ data }: { data: Record<string, unknown> }) {
   const { t } = useI18n();
   const images = extractImages(data);
-  const [preview, setPreview] = useState<{ src: string; name: string } | null>(null);
+  const [preview, setPreview] = useState<{ src: string; name: string; mime_type?: string | null } | null>(null);
 
   if (images.length === 0) return <span className="text-ink-dim">—</span>;
 
@@ -518,17 +519,18 @@ function ImageThumbnails({ data }: { data: Record<string, unknown> }) {
             <button
               key={`${image.image_id ?? image.path ?? image.uri ?? index}`}
               type="button"
-              onClick={() => src && setPreview({ src, name: image.display_name ?? label })}
+              onClick={() => src && setPreview({ src, name: image.display_name ?? label, mime_type: image.mime_type })}
               disabled={!src}
               className="h-20 w-20 overflow-hidden rounded-md border border-surface-700 bg-surface-900 transition-colors hover:border-accent/50 disabled:cursor-default disabled:opacity-50"
               title={image.display_name ?? label}
             >
               {src ? (
-                <img
+                <MediaPreview
                   src={src}
+                  mime_type={image.mime_type}
                   alt={label}
                   className="h-full w-full object-cover"
-                  loading="lazy"
+                  controls={false}
                 />
               ) : (
                 <div className="flex h-full items-center justify-center text-ink-dim">
@@ -555,8 +557,9 @@ function ImageThumbnails({ data }: { data: Record<string, unknown> }) {
           </button>
           <div className="flex max-h-full max-w-full flex-col gap-2" onClick={(e) => e.stopPropagation()}>
             <span className="text-xs text-ink-muted">{preview.name}</span>
-            <img
+            <MediaPreview
               src={preview.src}
+              mime_type={preview.mime_type}
               alt={preview.name}
               className="max-h-[85vh] max-w-full rounded-lg object-contain shadow-panel"
             />

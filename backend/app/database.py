@@ -102,6 +102,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_provider_config_cache_columns(conn)
+        await _migrate_provider_config_extra_headers(conn)
         await _migrate_pricing_provider_config_column(conn)
         await _migrate_run_items_latency_ms(conn)
         await _migrate_task_groups(conn)
@@ -689,6 +690,16 @@ async def _migrate_provider_config_cache_columns(conn) -> None:
     if "models_cached_at" not in existing_columns:
         await conn.execute(
             text("ALTER TABLE provider_configs ADD COLUMN models_cached_at DATETIME")
+        )
+
+
+async def _migrate_provider_config_extra_headers(conn) -> None:
+    """Add extra_headers column for existing SQLite databases."""
+
+    result = await conn.execute(text("PRAGMA table_info(provider_configs)"))
+    if "extra_headers" not in {row[1] for row in result.fetchall()}:
+        await conn.execute(
+            text("ALTER TABLE provider_configs ADD COLUMN extra_headers JSON DEFAULT '{}'")
         )
 
 

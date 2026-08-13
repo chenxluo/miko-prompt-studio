@@ -24,6 +24,7 @@ class ProviderConfigData(BaseModel):
     base_url: str | None = None
     selected_models: list[str] = []
     notes: str = ""
+    extra_headers: dict[str, str] = Field(default_factory=dict)
 
 
 class ProviderConfig(ProviderConfigData, TimestampedModel):

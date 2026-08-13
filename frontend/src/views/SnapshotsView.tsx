@@ -19,6 +19,8 @@ import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 
 import { resolveImageUrl } from '../components/lab/ImagePanel';
+import { MediaPreview } from '../components/shared/MediaPreview';
+import { CodeBlock } from '../components/shared/CodeBlock';
 import { AnnotatedImage } from '../components/results/AnnotatedImage';
 import { useI18n } from '../i18n';
 import { useLabStore } from '../store/labStore';
@@ -904,9 +906,7 @@ function SnapshotResultDisplay({ item }: { item: RunItemSummary }) {
         <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-muted">
           {t('result.raw')}
         </div>
-        <pre className="max-h-64 overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-          {rawText ?? t('result.noRawOutput')}
-        </pre>
+        <CodeBlock value={rawText ?? t('result.noRawOutput')} maxHeight="16rem" />
       </div>
 
       <div>
@@ -1079,7 +1079,7 @@ function extractSnapshotImages(
 
 function SnapshotImagesPanel({ detail }: { detail: ResultSnapshotDetail }) {
   const { t } = useI18n();
-  const [preview, setPreview] = useState<{ src: string; name: string } | null>(null);
+  const [preview, setPreview] = useState<{ src: string; name: string; mime_type?: string } | null>(null);
 
   const images = useMemo(() => {
     // Prefer the persisted snapshot copy; fall back to the run item copy.
@@ -1126,18 +1126,19 @@ function SnapshotImagesPanel({ detail }: { detail: ResultSnapshotDetail }) {
               <button
                 key={`${src}-${index}`}
                 type="button"
-                onClick={() => setPreview({ src, name })}
+                onClick={() => setPreview({ src, name, mime_type: typeof record.mime_type === 'string' ? record.mime_type : undefined })}
                 className="w-full rounded-md border border-surface-800 bg-surface-950 p-2 text-left transition-colors hover:border-surface-600"
                 title={tooltip}
               >
                 <div className="aspect-square w-full overflow-hidden rounded bg-surface-900">
                   {src ? (
-                    <img
-                      src={src}
-                      alt={name}
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                    />
+                  <MediaPreview
+                    src={src}
+                    mime_type={typeof record.mime_type === 'string' ? record.mime_type : undefined}
+                    alt={name}
+                    className="h-full w-full object-cover"
+                    controls={false}
+                  />
                   ) : (
                     <div className="flex h-full items-center justify-center text-ink-dim">
                       <ImageIcon size={16} />
@@ -1166,12 +1167,14 @@ function SnapshotImagesPanel({ detail }: { detail: ResultSnapshotDetail }) {
           >
             <X size={18} />
           </button>
-          <img
-            src={resolveImageUrl(preview.src)}
-            alt={preview.name}
-            className="max-h-full max-w-full rounded-lg object-contain shadow-panel"
-            onClick={(event) => event.stopPropagation()}
-          />
+          <div onClick={(event) => event.stopPropagation()}>
+            <MediaPreview
+              src={resolveImageUrl(preview.src)}
+              mime_type={preview.mime_type}
+              alt={preview.name}
+              className="max-h-full max-w-full rounded-lg object-contain shadow-panel"
+            />
+          </div>
         </div>
       )}
     </>
@@ -1207,9 +1210,7 @@ function ParsedSnapshotOutput({
 
   if (parseStatus === 'parsed' && parsed !== undefined) {
     return (
-      <pre className="overflow-auto rounded-md border border-surface-800 bg-surface-950 p-3 font-mono text-xs text-ink">
-        {formatParsedOutput(parsed)}
-      </pre>
+      <CodeBlock value={parsed} />
     );
   }
 
@@ -1218,15 +1219,6 @@ function ParsedSnapshotOutput({
       {t('result.notParsed')}
     </div>
   );
-}
-
-function formatParsedOutput(parsed: unknown): string {
-  if (typeof parsed === 'string') return parsed;
-  try {
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return String(parsed);
-  }
 }
 
 function SnapshotMetric({

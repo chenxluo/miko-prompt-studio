@@ -43,13 +43,22 @@ class OpenAICompatAdapter(BaseAdapter):
 
         return []
 
-    def _build_headers(self, api_key: str | None) -> dict[str, str]:
+    def _build_headers(
+        self,
+        api_key: str | None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         """Build request headers. Omits ``Authorization`` when no key is set
-        so local no-auth endpoints (e.g. LM Studio, Ollama) work."""
+        so local no-auth endpoints (e.g. LM Studio, Ollama) work.
+
+        ``extra_headers`` are merged last so caller-supplied headers override
+        the defaults (e.g. DashScope's X-DashScope-DataInspection)."""
 
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        if extra_headers:
+            headers.update(extra_headers)
         return headers
 
     async def fetch_models(
@@ -160,6 +169,7 @@ class OpenAICompatAdapter(BaseAdapter):
         api_key: str,
         base_url: str | None,
         timeout: int,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         resolved = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         if not resolved:
@@ -168,7 +178,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 "Provide it in the model config or run request."
             )
         url = f"{resolved}/chat/completions"
-        headers = self._build_headers(api_key)
+        headers = self._build_headers(api_key, extra_headers)
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             return await client.post(url, headers=headers, json=provider_request)
 
@@ -178,8 +188,11 @@ class OpenAICompatAdapter(BaseAdapter):
         api_key: str,
         base_url: str | None,
         timeout: int,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        async for event in self.send_stream(provider_request, api_key, base_url, timeout):
+        async for event in self.send_stream(
+            provider_request, api_key, base_url, timeout, extra_headers
+        ):
             yield event
 
     async def send_stream(
@@ -188,6 +201,7 @@ class OpenAICompatAdapter(BaseAdapter):
         api_key: str,
         base_url: str | None,
         timeout: int,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         resolved = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         if not resolved:
@@ -196,7 +210,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 "Provide it in the model config or run request."
             )
         url = f"{resolved}/chat/completions"
-        headers = self._build_headers(api_key)
+        headers = self._build_headers(api_key, extra_headers)
         payload = dict(provider_request)
         payload["stream"] = True
         payload.setdefault("stream_options", {"include_usage": True})
@@ -444,12 +458,26 @@ class OpenAICompatAdapter(BaseAdapter):
         content: list[dict[str, Any]] = []
         for part in split_prompt_image_parts(prompt_text, len(images)):
             if isinstance(part, int):
-                content.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": self._image_to_url(images[part])},
-                    }
-                )
+                image = images[part]
+                resolved = image.resolved
+                mime = (resolved.mime_type if resolved else None) or image.mime_type or ""
+                if mime.startswith("video/"):
+                    # ponytail: emitted unconditionally — no capability gate. A
+                    # provider that lacks video surfaces its own clear error via
+                    # normalize_error; the user aims video samples at video models.
+                    content.append(
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": self._image_to_url(image)},
+                        }
+                    )
+                else:
+                    content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": self._image_to_url(image)},
+                        }
+                    )
             else:
                 content.append({"type": "text", "text": part})
         return content

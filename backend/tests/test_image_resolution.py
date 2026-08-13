@@ -47,3 +47,25 @@ def test_preprocess_image_limits_total_pixels_without_modifying_source(tmp_path:
     assert request_image.resolved.path != str(source_path)
     assert request_image.resolved.uri is not None
     assert request_image.resolved.uri.startswith("data:image/png;base64,")
+
+
+
+def test_preprocess_image_video_bypass_returns_data_uri_without_pil(tmp_path: Path) -> None:
+    # A few nonzero bytes suffice — the bypass reads bytes raw and never decodes.
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+
+    request_image = preprocess_image(
+        ImageRef(path=str(clip), mime_type="video/mp4", order=0),
+        ImagePreprocessConfig(mode="original"),
+        tmp_path / "cache",
+    )
+
+    assert request_image.resolved is not None
+    assert request_image.resolved.uri is not None
+    assert request_image.resolved.uri.startswith("data:video/mp4;base64,")
+    assert request_image.resolved.mime_type == "video/mp4"
+    assert request_image.resolved.transport_reason == "local_video_passthrough"
+    # PIL never ran: no dimensions populated for a video.
+    assert request_image.resolved.width is None
+    assert request_image.resolved.height is None
